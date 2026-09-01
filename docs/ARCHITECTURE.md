@@ -96,11 +96,14 @@ flowchart LR
     C --> T
     A --> T
     S --> T
+
+    T -.->|타입 전용| L
 ```
 
 - `components/` → `services/` 직접 호출 금지. 반드시 `app/api/`를 경유한다. 클라이언트 번들에 `ANTHROPIC_API_KEY`·`ALADIN_TTB_KEY`가 새어 나가는 것을 구조적으로 차단하기 위함이다.
 - `services/` → `components/` 역방향 import 금지. 서버 전용 모듈이 React 컴포넌트를 참조하면 서버 코드가 클라이언트 번들로 끌려 들어간다.
 - `lib/` → `services/` 금지. `lib/`는 외부 호출을 하지 않는 순수 함수만 담는다. 이 경계 덕분에 `lib/`는 모킹 없이 단위 테스트할 수 있다.
+- `types/` → `lib/schemas.ts`는 **타입 전용**으로만 허용한다(점선). 스키마와 타입을 이중 정의하지 않으려면(TR-002) `z.infer`가 스키마를 참조할 수밖에 없다. 대신 `types/`는 `import type`·`export type`만 쓰고 값을 하나도 내보내지 않으므로, 컴파일 후 런타임 import가 남지 않아 클라이언트 번들에 `lib/`가 끌려 들어가지 않는다. 역방향(`lib/` → `types/`)과 `types/`의 값 export는 계속 금지다.
 - `lib/image.ts`만 브라우저 API(Canvas)에 의존한다. 서버 코드에서 import하지 않는다.
 - 저장소를 도입하면(ADR-007) Supabase도 위 그래프의 `외부 API`와 같은 자리에 놓인다. `components/` → Supabase 직접 호출 금지이며, 반드시 `app/api/`를 경유한다. `service_role` 키가 클라이언트 번들로 새는 경로를 구조적으로 막기 위함이고, 이는 `ANTHROPIC_API_KEY`에 적용하는 규칙과 같은 것이다.
 

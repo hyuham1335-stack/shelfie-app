@@ -484,7 +484,8 @@ npm audit --audit-level=high
 ```
 
 - 네 번째 줄은 6.5·9번의 CI 게이트와 같은 것이다. 세 개만 돌리면 audit 게이트가 문서에만 있고 실제로는 검증되지 않는다.
-- **미이행 항목**: `package.json`에 `audit` 스크립트가 없고, `src/lib/env.ts`가 7번이 요구한 zod 필수값 검증 대신 조용한 기본값 폴백을 하고 있으며, `vitest.config.ts`에 `setupFiles`가 없어 `@testing-library/jest-dom` 매처가 로드되지 않는다. 컴포넌트 테스트(TR-011)를 시작하기 전에 셋 다 해소한다.
+- 네 번째 줄은 `npm run audit`으로도 실행할 수 있다.
+- **미이행 항목**: `src/lib/env.ts`가 7번이 요구한 zod 필수값 검증 대신 조용한 기본값 폴백을 하고 있고, `vitest.config.ts`에 `setupFiles`가 없어 `@testing-library/jest-dom` 매처가 로드되지 않는다. 각각 `services/` 첫 구현(TR-003)과 컴포넌트 테스트(TR-011) 착수 전에 해소한다.
 
 ---
 
@@ -597,4 +598,4 @@ flowchart LR
 | 이벤트 로그를 표준 출력으로만 | 저장소가 없어 이벤트 DB를 세울 이유가 없다 | 일 요청 100건 초과로 수동 집계가 불가능해질 때 |
 | 관측성이 로그 단일 축 | 메트릭·트레이싱 도구 도입 비용이 현재 규모에 비해 크다 | 단계 전환 트리거 도달 시 |
 | `lib/env.ts`가 필수 환경변수를 zod로 검증하지 않음 | 스캐폴딩 단계에서 상수만 먼저 만들었다. 현재는 키가 없어도 조용히 기본값으로 넘어간다 | `services/`를 처음 구현할 때. 7번이 요구하는 "런타임 중 조용한 실패 금지"와 정면으로 어긋나므로 미루지 않는다 |
-| `package.json`에 `audit` 스크립트 없음 / `vitest.config.ts`에 `setupFiles` 없음 | 아직 CI를 돌리지 않았고 컴포넌트 테스트를 쓰지 않았다 | audit은 다음 커밋에서, `setupFiles`는 TR-011 착수 전 |
+| `vitest.config.ts`에 `setupFiles` 없음 | 아직 컴포넌트 테스트를 쓰지 않아 `@testing-library/jest-dom` 매처가 필요한 곳이 없다. setup 파일 위치는 `components/`를 만들 때 함께 정하는 편이 문서 변경이 한 번으로 끝난다 | TR-011 착수 전 |

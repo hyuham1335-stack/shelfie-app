@@ -7,7 +7,8 @@
     },
     {
       "dir": "services-core",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-01T16:21:30+0900"
     }
   ]
 }

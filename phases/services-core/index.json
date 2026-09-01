@@ -32,7 +32,7 @@
       "status": "completed",
       "started_at": "2026-09-01T16:02:30+0900",
       "summary": "src/services/aladin.ts 신설(services/ 디렉토리 첫 파일) — 상수 ALADIN_CONCURRENCY(12)·BREAKER_CONSECUTIVE_FAILURES(5)·ALADIN_CALL_TIMEOUT_MS(5s)·ALADIN_SEARCH_MAX_RESULTS(10), 타입 RequestBreaker·SearchOptions, 함수 createRequestBreaker(threshold?)·searchByTitle(title, author, options)·searchMany(queries, options)가 lib/match.ts의 LookupOutcome을 그대로 돌려준다(유사도 판정은 judge()에 맡기고 여기선 네트워크만 한다). 실패 분리: 200+0건은 {status:'ok',candidates:[]}(→no_match), 5xx·4xx·타임아웃·네트워크 오류·JSON 파싱 실패·봉투 불일치는 전부 {status:'failed'}(→lookup_failed)로 나른다 — 200인데 형태를 모르는 응답도 '책이 없다'고 말하지 않고 failed다. 응답은 searchEnvelopeSchema(totalResults 필수)→aladinItemSchema(필드 이름만 옮김)→schemas.ts의 aladinCandidateSchema 순으로 통과시키고, 탈락 레코드는 조용히 버리지 않고 제외 건수를 warn 로그로 남긴다(ISBN13 없는 세트 상품이 여기서 걸린다). 브레이커는 요청마다 새로 만드는 클로저라 모듈 스코프에 상태가 없고(ADR-003), 연속 5회 실패에 latch되어 잔여 후보는 fetch 없이 failed로 온다. 재시도는 5xx·타임아웃·네트워크 오류만 1회(4xx는 재시도 안 함), 개별 호출 타임아웃은 min(5s, 남은 데드라인)이라 합이 대조 예산 12s를 넘지 않는다. ALADIN_TTB_KEY가 없으면 네트워크 없이 목업(제목 echo + 0000000###### 형태의 가짜 ISBN)을 돌려주되 호출마다 warn을 남긴다. 로그 출구를 warn() 하나로 좁혀 URL·응답 본문·fetch 에러 메시지를 절대 찍지 않는다(TTB 키 유출 방지). aladin.test.ts 32건 신설(ADR-005 회귀·시크릿 유출 회귀 포함, fetch는 전부 주입) → 전체 296건 통과. 새 의존성 0건, lib/ 파일은 한 줄도 고치지 않았다. 보고: LookupOutcome이 aladinCandidate(isbn13·title·author·publisher·coverUrl)만 담는 형태라 IdentifiedBook에 필요한 pages·aladinRating·aladinLink는 이 함수로 채울 수 없다 — ItemLookUp 경로가 라우트 step에서 따로 필요하다.",
-      "completed_at": "2026-09-01T16:10:31+0900"
+      "completed_at": "2026-09-01T16:11:20+0900"
     },
     {
       "step": 4,

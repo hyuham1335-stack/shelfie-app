@@ -4,6 +4,9 @@ import { fileURLToPath } from "url";
 export default defineConfig({
   test: {
     environment: "jsdom",
+    // jest-dom 매처 등록 + RTL 자동 cleanup. 없으면 테스트 파일마다
+    // afterEach(cleanup) 을 손으로 부르게 된다 (런 #3·#4가 보고했다).
+    setupFiles: ["./vitest.setup.ts"],
     // junit 리포터 — 하네스 게이트가 "테스트가 몇 개 돌았는가"를 기계로 읽는다 (harness/adapters/nextjs-ts.json).
     reporters: ["default", ["junit", { outputFile: "reports/junit/vitest.xml" }]],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],

@@ -32,7 +32,7 @@
       "status": "completed",
       "started_at": "2026-09-01T15:10:52+0900",
       "summary": "src/lib/merge.ts 신규 — reduceBeforeLookup·dedupeByIsbn·capIdentified·capUnidentified와 CONFIDENCE_FLOOR(0.3). 조회 전 축소(확신도 강등 → match.ts 정규화 키 사전 병합 → 확신도순 80건)에서 잘린 후보도 unreadable로 보존, ISBN13 중복 제거 시 최초 photoIndex 유지, 확인 50·미확인 100 절단은 평점 내림차순(null 최하위) → photoIndex → isbn13 전순서로 결정적. 전부 입력 비변형 순수 함수. src/lib/merge.test.ts 33건.",
-      "completed_at": "2026-09-01T15:16:30+0900"
+      "completed_at": "2026-09-01T15:15:46+0900"
     },
     {
       "step": 4,

@@ -17,11 +17,11 @@
 | 워크플로우 | `.claude/skills/harness/SKILL.md` (doctor → step 설계 → `phases/` 생성 → 실행), `.claude/skills/review/SKILL.md` |
 | **계약 계층** | `harness/config.json` · `config.schema.json` · `adapters/{nextjs-ts,_template}.json` + `adapter.schema.json` · `profiles/nextjs-ts/` · `templates/contract.md` |
 | 실행기 | `scripts/harness.py` — `init` · `doctor` · `calibrate`. `scripts/execute.py` — 순차 step 실행기, CLI는 `{task-name}` + `--push` |
-| 테스트 | `scripts/test_harness.py` (65건) · `scripts/test_execute.py` (113건) |
+| 테스트 | `scripts/test_harness.py` (65건) · `scripts/test_execute.py` (128건) |
 | 파일럿 | `phases/lib-core/` · `phases/services-core/` · `phases/routes-core/` · `phases/app-core/` 각 5 step · `phases/app-shell/` 6 step — **다섯 런 26 step 완주.** 기록은 [PILOT-LOG.md](PILOT-LOG.md) |
 | 실측 | `harness/calibration.json` — `calibrate` 산출. 정책 4종이 여기서 유도된다 |
 
-`scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md 상시 + `steps[].docs`가 고른 docs/\*.md, 미지정이면 전량 + 경고 — [ADR-H008](DECISIONS.md)) · summary 컨텍스트 누적 · 자가 교정(상한은 `calibrate`가 유도, 미측정이면 `MAX_RETRIES`가 바닥값) · 2단계 커밋 · 타임스탬프와 `attempts` 기록 · **시도별 실측(`steps[].runs[]`) 기록** · **실행 중 상태(`phases/{phase}/RUNNING`) 관리**.
+`scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md 상시 + `steps[].docs`가 고른 docs/\*.md, 미지정이면 전량 + 경고 — [ADR-H008](DECISIONS.md)) · 소스 첨부(`steps[].sources` — [ADR-H009](DECISIONS.md)) · summary 컨텍스트 누적 · 자가 교정(상한은 `calibrate`가 유도, 미측정이면 `MAX_RETRIES`가 바닥값) · 2단계 커밋 · 타임스탬프와 `attempts` 기록 · **시도별 실측(`steps[].runs[]`) 기록** · **실행 중 상태(`phases/{phase}/RUNNING`) 관리**.
 
 `RUNNING`은 관찰자를 위한 계약이다 — `started_at`만으로는 "돌고 있다"와 "죽었다"가 갈리지 않아 감독 세션이 살아 있는 step의 산출물을 지운 적이 있다 ([ADR-H006](DECISIONS.md)).
 
@@ -131,12 +131,12 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 ## 6. 다음 행동
 
-1~11과 13·15·16·17·19가 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#5가 `lib/`·`services/`·`app/api/`·`components/`·`app/` 계층을 완주해 **앱이 업로드에서 추천까지 이어졌다.** **남은 것은 12·14·18·21·22·23이다.** 20과 24는 런 #5 직후에 닫혔다. 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
+1~11과 13·15·16·17·19가 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#5가 `lib/`·`services/`·`app/api/`·`components/`·`app/` 계층을 완주해 **앱이 업로드에서 추천까지 이어졌다.** **남은 것은 12·14·18·21·22·23이다.** 20·24·25·26은 런 #5 직후에 닫혔고, **13은 답이 뒤집혀 다시 열렸다가 닫혔다**(아래). 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
 
 **런 #4가 11번에서 하지 못한 것**: 런 #3의 보고 3건(알라딘 호출 상한 260회 · 이미지 상수 이중화 · `errorCodeSchema`의 500대 공백)을 "여기서 정리한다"고 적었으나 **하나도 정리되지 않았다.** step 파일 5개가 전부 `src/lib/`·`docs/` 수정을 금지해 **설계 단계에서 이미 불가능해져 있었다.** 아래 15번으로 옮긴다.
 
 12. **3단계 게이트 재검토** — "두 스택에서 완주"의 두 번째 스택(`gradle-java`) 대상 리포가 이 머신에 없다. 게이트를 바꿀지, 대상을 구할지 먼저 정한다
-13. ~~**`scoped` 스테이지의 존재 이유를 다시 묻는다**~~ — **런 #4가 답했다.** `full` 대비 83%(런 #3) → **101%**(런 #4, jsdom 이후). vitest가 테스트를 건너뛰어도 파일 환경은 세우므로 선택 실행이 이익을 내지 못한다. **이 스택에서 `loop_stage`는 켜면 손해다** — 8페이즈 스테이지 체인은 이것을 스택별 판정으로 다뤄야 한다
+13. ~~**`scoped` 스테이지의 존재 이유를 다시 묻는다**~~ — **답이 뒤집혔다 (M16).** 런 #3·#4·#5는 전부 `-t <테스트 이름>`으로 쟀는데 그 문법은 파일 수집을 줄이지 않는다. **경로 필터로 재니 `full` 대비 14.6%(4.56s vs 31.23s) — 6.8배 싸다.** `loop_stage`는 이 스택에서 **성립한다.** 8페이즈의 `tests_from`은 계약 심볼을 테스트 이름이 아니라 파일 경로로 조립해야 한다 ([ADR-H009](DECISIONS.md)). 아래는 뒤집히기 전의 서술이다 — **런 #4가 답했다.** `full` 대비 83%(런 #3) → **101%**(런 #4, jsdom 이후). vitest가 테스트를 건너뛰어도 파일 환경은 세우므로 선택 실행이 이익을 내지 못한다. **이 스택에서 `loop_stage`는 켜면 손해다** — 8페이즈 스테이지 체인은 이것을 스택별 판정으로 다뤄야 한다
 14. 어댑터 `verified: true` 승격은 **04-gate가 어댑터를 실제로 소비한 뒤**다
 15. ~~**이월 보고 4건을 받을 step을 명시적으로 배치한다**~~ — **해결. 다만 답이 "배치"가 아니라 "라우팅"이었다.** 소유 경계를 실제로 판정해 보니 4건 중 `main_owned_paths`에 걸리는 것은 2건뿐이었고, `src/lib/**`는 **처음부터 워커 소유라 막힌 적이 없었다** — `main_owned_paths`의 `*.ts`는 `*`가 디렉토리를 넘지 않아 리포 루트만 잡는다. 세 런을 막은 것은 config가 아니라 **step 파일이 워커가 소유한 경로를 습관적으로 금지한 한 줄**이었고, 설계자가 소유를 눈으로 판정했기 때문이다. `SKILL.md`에 보고를 손댈 파일 기준으로 분류하는 절을 넣었고(메인 소유는 사람이 런 전에, 역할 소유는 step이 이름으로 지정받아, 걸치면 문서 먼저), **판정은 `glob_any`로 하라**를 함께 박았다. 메인 소유분 4건은 런 #5 시작 전에 처리했다
 16. ~~**M10 — `RUNNING` 파일**~~ — **해결** ([ADR-H006](DECISIONS.md)). 생존 판정을 pid가 아니라 heartbeat로 한다 — **Windows에서 `os.kill(pid, 0)`은 프로세스를 죽이므로** POSIX 관용구를 그대로 옮겼다면 M10 수정이 M10의 사고를 그대로 일으켰을 것이다. 수정 중 M11(`_finalize`의 `git add -A`가 작업 트리 전체를 쓸어담는다)이 드러나 부분 해결했다
@@ -149,6 +149,9 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 21. **M13 — 재개 신호가 "출력 파일 존재"가 아니라 "산출물 존재"를 봐야 한다.** 25초 만에 한도로 잘려 소스를 한 줄도 못 쓴 step이 다음 실행에서 재개로 판정됐다. 무해했지만 8페이즈 파이프라인은 이 신호로 페이즈 재개를 판정한다. `exitCode != 0`인 출력 파일을 빼는 것이 최소 수정이다
 22. **M14 — 전체 `calibrate`가 `scoped`의 기존 실측을 지운다.** `--select` 없이 돌면 런 #4의 21.81s가 `skipped`로 덮이고, 그런데도 `partial: false`로 적혀 `doctor`가 통과시킨다. **M9의 형제다** — 그때는 부분이 전체를 덮었고 이번은 전체가 부분을 덮는다. 고칠 때 `cmd:null`(없는 것)·"이번에 못 쟀다"(모르는 것)·옛 값(stale) 셋을 구분하는 어휘가 필요하다
 24. ~~**M15 — 가드레일 전량 주입**~~ — **해결** ([ADR-H008](DECISIONS.md)). 다섯 런 26 step을 처음 집계하니 청구 토큰 115.6M 중 **cache read가 110.3M(95.4%)** 이고, 그 접두부의 **86.9%가 `CLAUDE.md` + `docs/*.md` 전량 주입**이었다. UI step이 배포 인프라 절을 750 turn 내내 재독한 셈이다. 이제 `steps[].docs`가 문서를 고르고, 미지정이면 전량 주입하되 경고로 드러난다. 런 #5의 step 파일들이 이미 선언한 대로만 넣었다면 문자 기준 **41% 절감**이었다 — **정보는 있었고 실행기가 쓰지 않았다.** 효과는 런 #6이 A/B로 답한다(대조군: turn당 145,491 · step당 $5.61)
+
+25. ~~**M16 — 읽기 turn이 접두부를 다시 읽게 만든다**~~ — **해결** ([ADR-H009](DECISIONS.md)). 26 step 트랜스크립트를 turn 단위로 분해하니 파일 읽기가 도구 호출의 38%, 컨텍스트 투입의 70.5%였고, **읽기 turn 336회가 유발한 접두부 재독이 전체의 44.0%**였다. `steps[].sources`가 있으면 실행기가 그 파일을 접두부에 싣는다(상한 60,000자, 미지정이면 기존 동작). **런 #6에서는 켜지 않는다** — 24번의 A/B가 먼저다. 런 #7이 실측을 준다
+26. ~~**`scoped` 를 경로 필터로 다시 잰다**~~ — **해결.** 위 13번을 본다. 어댑터의 `select` 4줄을 지운 것이 전부이고 코드 변경은 없었다
 
 23. **런 #6 전에 사람이 고쳐야 하는 계약 4건** — 상태도의 `error → moodInput/recommending` 회복 전이(`docs/ARCHITECTURE.md`) · `recommendRequestSchema`의 세션 진행 상태(`docs/API_SPEC.md`) · `recommend_failed`와 `book_resolved.matched`(PRD 7번 이벤트 표). **문서가 비어 있으면 워커는 코드를 소유해도 아무것도 할 수 없다** — 코드 step에 주면 세 런째 이월이 반복된다(15번의 교훈)
 

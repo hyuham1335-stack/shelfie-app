@@ -1,5 +1,5 @@
 {
-  "measured_at": "2026-09-02T01:31:28+0900",
+  "measured_at": "2026-09-02T02:21:32+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": false,
@@ -23,10 +23,10 @@
       "measured_at": "2026-09-02T01:29:40+0900"
     },
     "scoped": {
-      "sec": 31.3,
+      "sec": 4.56,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T01:31:28+0900"
+      "measured_at": "2026-09-02T02:21:32+0900"
     },
     "full": {
       "sec": 31.23,

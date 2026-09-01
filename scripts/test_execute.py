@@ -1312,3 +1312,138 @@ class TestRunsRecorded:
     def test_records_which_docs_were_injected(self, executor):
         step = self._run(executor)
         assert step["runs"][0]["guardrail_chars"] == len("guardrails")
+
+
+# ---------------------------------------------------------------------------
+# step 이 지목한 소스를 실행기가 실어준다 (M16)
+# ---------------------------------------------------------------------------
+
+class TestSourceInjection:
+    """읽기 turn 336회가 유발한 접두부 재독이 전체의 44.0%였다.
+
+    파일을 turn k 에서 읽으면 s·(T−k) + 그 turn 의 접두부 재독이고,
+    미리 실으면 s·T 다. 실측(s≈3,400 · k≈9.5 · 접두부≈133,000)에서
+    읽기 하나를 없앨 때마다 약 100,000 문자·turn 이 절약된다 (M16).
+    """
+
+    def _src(self, tmp_project, rel, body="export const a = 1;\n"):
+        p = tmp_project / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        return p
+
+    # --- 선택 ---
+
+    def test_absent_field_means_no_injection(self, executor):
+        assert executor._resolve_step_sources({"step": 2}) is None
+
+    def test_field_is_used_as_given(self, executor):
+        step = {"step": 2, "sources": ["src/lib/a.ts"]}
+        assert executor._resolve_step_sources(step) == ["src/lib/a.ts"]
+
+    # --- 적재 ---
+
+    def test_none_produces_nothing(self, executor, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            assert executor._load_sources(None) == ""
+            assert executor._load_sources([]) == ""
+
+    def test_content_and_path_are_included(self, executor, tmp_project):
+        self._src(tmp_project, "src/lib/a.ts", "export const MAGIC = 42;\n")
+        with patch.object(ex, "ROOT", tmp_project):
+            out = executor._load_sources(["src/lib/a.ts"])
+        assert "src/lib/a.ts" in out
+        assert "MAGIC = 42" in out
+
+    def test_carries_the_stale_warning(self, executor, tmp_project):
+        """편집 후에도 최신인 것처럼 읽히면 잘못된 코드를 만든다."""
+        self._src(tmp_project, "src/lib/a.ts")
+        with patch.object(ex, "ROOT", tmp_project):
+            out = executor._load_sources(["src/lib/a.ts"])
+        assert "시작 시점" in out
+
+    def test_missing_path_is_refused(self, executor, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as e:
+            executor._load_sources(["src/lib/nope.ts"])
+        assert e.value.code == 2
+
+    def test_over_the_cap_is_refused(self, executor, tmp_project):
+        """접두부는 모든 turn 에 곱해진다 — 상한 없는 첨부는 개선이 아니라 악화다."""
+        self._src(tmp_project, "src/lib/big.ts", "x" * 200_000)
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as e:
+            executor._load_sources(["src/lib/big.ts"])
+        assert e.value.code == 2
+
+    def test_cap_comes_from_config(self, executor, tmp_project):
+        self._src(tmp_project, "src/lib/mid.ts", "y" * 5_000)
+        (tmp_project / "harness").mkdir(exist_ok=True)
+        (tmp_project / "harness" / "config.json").write_text(
+            json.dumps({"project": {"source_inject_max_chars": 100}}), encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as e:
+            executor._load_sources(["src/lib/mid.ts"])
+        assert e.value.code == 2
+
+    def test_fence_longer_than_any_run_inside(self, executor, tmp_project):
+        """본문에 ``` 가 있으면 세 겹 울타리로는 블록이 중간에 닫힌다."""
+        self._src(tmp_project, "src/lib/md.ts", "const s = ````` fence `````;\n")
+        with patch.object(ex, "ROOT", tmp_project):
+            out = executor._load_sources(["src/lib/md.ts"])
+        assert "`````" in out
+
+    # --- 교차검증 ---
+
+    def test_declared_source_missing_from_field_is_refused(self, executor, phase_dir, tmp_project):
+        self._src(tmp_project, "src/lib/a.ts")
+        (phase_dir / "step2.md").write_text(
+            "# Step 2\n\n## 읽어야 할 파일\n\n- `src/lib/a.ts`\n", encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as e:
+            executor._verify_source_selection(2, [])
+        assert e.value.code == 2
+
+    def test_docs_are_not_treated_as_sources(self, executor, phase_dir, tmp_project):
+        """docs/*.md 는 steps[].docs 가 담당한다 — 여기서 또 요구하지 않는다."""
+        (phase_dir / "step2.md").write_text(
+            "# Step 2\n\n## 읽어야 할 파일\n\n- `/docs/arch.md`\n", encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project):
+            executor._verify_source_selection(2, [])
+
+    def test_paths_that_do_not_exist_are_not_demanded(self, executor, phase_dir, tmp_project):
+        """step 이 '만들 파일'을 적어 두는 경우가 있다. 없는 것을 요구하면 시작이 막힌다."""
+        (phase_dir / "step2.md").write_text(
+            "# Step 2\n\n## 읽어야 할 파일\n\n- `src/lib/tobecreated.ts`\n", encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project):
+            executor._verify_source_selection(2, [])
+
+    def test_none_skips_the_check(self, executor, phase_dir, tmp_project):
+        self._src(tmp_project, "src/lib/a.ts")
+        (phase_dir / "step2.md").write_text(
+            "# Step 2\n\n## 읽어야 할 파일\n\n- `src/lib/a.ts`\n", encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project):
+            executor._verify_source_selection(2, None)
+
+    # --- 프롬프트와 기록 ---
+
+    def test_preamble_carries_the_section(self, executor):
+        text = executor._build_preamble("G", "", sources="## 소스\n\nBODY")
+        assert "BODY" in text
+
+    def test_run_records_source_chars(self, executor):
+        seen = []
+
+        def fake_invoke(step_arg, preamble):
+            seen.append(preamble)
+            index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+            for s in index["steps"]:
+                if s["step"] == 2:
+                    s["status"] = "completed"; s["summary"] = "done"
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False),
+                                            encoding="utf-8")
+            return {"exitCode": 0, "stdout": "{}", "stderr": ""}
+
+        with patch.object(executor, "_invoke_claude", side_effect=fake_invoke), \
+             patch.object(executor, "_commit_step"):
+            executor._execute_single_step({"step": 2, "name": "ui", "status": "pending"},
+                                          "guardrails")
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        step = next(s for s in index["steps"] if s["step"] == 2)
+        assert step["runs"][0]["source_chars"] == 0

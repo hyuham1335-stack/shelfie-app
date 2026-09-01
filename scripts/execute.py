@@ -266,6 +266,13 @@ class StepExecutor:
     _READ_SECTION_RE = re.compile(r"^##[^\n]*읽어야 할 파일[^\n]*$(.*?)(?=^##\s|\Z)",
                                   re.M | re.S)
     _DOC_REF_RE = re.compile(r"docs/([A-Za-z0-9_.\-]+)\.md")
+    # 같은 절에서 소스 경로도 긁는다. 프로젝트 고유명사를 코어에 두지 않으려고
+    # "src/" 같은 접두사가 아니라 '문서가 아니면서 실재하는 파일'로 판정한다 (M16).
+    _PATH_REF_RE = re.compile(r"[\w][\w./\-]*\.[A-Za-z0-9]+")
+    SOURCE_INJECT_MAX_CHARS = 60000
+    LANG_BY_EXT = {".ts": "ts", ".tsx": "tsx", ".js": "js", ".jsx": "jsx",
+                   ".mjs": "js", ".json": "json", ".py": "python",
+                   ".md": "markdown", ".css": "css", ".sql": "sql"}
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
     TZ = timezone(timedelta(hours=9))
@@ -506,6 +513,94 @@ class StepExecutor:
             return set()
         return set(self._DOC_REF_RE.findall(m.group(1)))
 
+    def _resolve_step_sources(self, step: dict) -> Optional[list]:
+        """이 step 프롬프트에 실을 소스 파일. None 이면 싣지 않는다(기존 동작)."""
+        srcs = step.get("sources")
+        if isinstance(srcs, list):
+            return [str(p).lstrip("/") for p in srcs]
+        return None
+
+    def _source_cap(self) -> int:
+        try:
+            config = self._read_json(ROOT / "harness" / "config.json")
+        except (OSError, ValueError):
+            return self.SOURCE_INJECT_MAX_CHARS
+        cap = (config.get("project") or {}).get("source_inject_max_chars")
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+            return cap
+        return self.SOURCE_INJECT_MAX_CHARS
+
+    @staticmethod
+    def _longest_backtick_run(text: str) -> int:
+        return max((len(r) for r in re.findall(r"`+", text)), default=0)
+
+    def _load_sources(self, paths: Optional[list]) -> str:
+        """step 이 지목한 파일을 접두부에 싣는다.
+
+        읽기 turn 336회가 유발한 접두부 재독이 다섯 런 재독 부담의 44.0%였다.
+        파일을 turn k 에서 읽으면 s·(T−k) + 그 turn 의 접두부 재독이고 미리
+        실으면 s·T 다 — 실측(s≈3,400 · k≈9.5 · 접두부≈133,000)에서 읽기 하나를
+        없앨 때마다 약 10만 문자·turn 이 절약된다 (M16).
+
+        단 접두부는 **모든 turn 에 곱해진다.** 상한이 없으면 개선이 아니라 악화다.
+        """
+        if not paths:
+            return ""
+        blocks = []
+        total = 0
+        for rel in paths:
+            p = ROOT / rel
+            if not p.is_file():
+                print(f"\n  ERROR: steps[].sources 에 실재하지 않는 파일이 있다: {rel}")
+                print(f"    이 절은 '이미 있는 것'을 싣는다. 이 step 이 만들 파일은 넣지 마라.")
+                sys.exit(2)
+            body = p.read_text(encoding="utf-8", errors="replace")
+            total += len(body)
+            fence = "`" * max(3, self._longest_backtick_run(body) + 1)
+            lang = self.LANG_BY_EXT.get(p.suffix, "")
+            blocks.append(f"### {rel}\n\n{fence}{lang}\n{body.rstrip()}\n{fence}")
+        cap = self._source_cap()
+        if total > cap:
+            print(f"\n  ERROR: steps[].sources 합계가 {total:,}자로 상한 {cap:,}자를 넘는다.")
+            print(f"    접두부는 모든 turn 에 곱해진다 — 상한 없는 첨부는 개선이 아니라 악화다.")
+            print(f"    파일을 줄이거나 config 의 project.source_inject_max_chars 를 올려라.")
+            sys.exit(2)
+        head = ("## 소스 (step 시작 시점의 내용이다)\n\n"
+                "이 step 이 지목한 파일이라 미리 실었다. **다시 읽지 마라.**\n"
+                "단 네가 고친 뒤의 내용은 여기에 반영되지 않는다 — "
+                "편집한 파일을 다시 확인해야 하면 그때 읽어라.")
+        return head + "\n\n" + "\n\n".join(blocks)
+
+    def _sources_declared_in_step_file(self, step_num: int) -> set:
+        """'읽어야 할 파일' 절에 적힌 것 중 문서가 아니면서 실재하는 파일."""
+        step_file = self._phase_dir / f"step{step_num}.md"
+        if not step_file.exists():
+            return set()
+        m = self._READ_SECTION_RE.search(step_file.read_text(encoding="utf-8"))
+        if not m:
+            return set()
+        out = set()
+        for raw in self._PATH_REF_RE.findall(m.group(1)):
+            rel = raw.lstrip("/")
+            if rel.startswith("docs/"):
+                continue
+            if (ROOT / rel).is_file():
+                out.add(rel)
+        return out
+
+    def _verify_source_selection(self, step_num: int, sources: Optional[list]):
+        """선언과 첨부가 어긋난 채로 시작하지 않는다 (docs 와 같은 규율)."""
+        if sources is None:
+            return
+        missing = sorted(self._sources_declared_in_step_file(step_num) - set(sources))
+        if not missing:
+            return
+        print(f"\n  ERROR: step {step_num} 의 '읽어야 할 파일'에 있는 소스가 sources 에 없다.")
+        print(f"    빠진 것: {', '.join(missing)}")
+        print(f"    phases/{self._phase_dir_name}/index.json 의 steps[].sources 를 맞추거나")
+        print(f"    step 파일에서 그 파일을 빼라.")
+        sys.exit(2)
+
     def _verify_doc_selection(self, step_num: int, docs: Optional[list]):
         """선언과 주입이 어긋난 채로 시작하지 않는다.
 
@@ -555,7 +650,7 @@ class StepExecutor:
 
     def _build_preamble(self, guardrails: str, step_context: str,
                         prev_error: Optional[str] = None,
-                        resumed: bool = False) -> str:
+                        resumed: bool = False, sources: str = "") -> str:
         commit_example = self.FEAT_MSG.format(
             phase=self._phase_name, num="N", name="<step-name>"
         )
@@ -581,6 +676,7 @@ class StepExecutor:
         return (
             f"당신은 {self._project} 프로젝트의 개발자입니다. 아래 step을 수행하세요.\n\n"
             f"{guardrails}\n\n---\n\n"
+            f"{(sources + chr(10)*2 + '---' + chr(10)*2) if sources else ''}"
             f"{step_context}{resume_section}{retry_section}"
             f"## 작업 규칙\n\n"
             f"1. 이전 step에서 작성된 코드를 확인하고 일관성을 유지하라.\n"
@@ -767,8 +863,15 @@ class StepExecutor:
                       f"step 이 쓰는 것만 고르면 접두부가 줄어든다.", flush=True)
             else:
                 print(f"  문서 {len(docs)}종 주입 ({len(guardrails):,}자)", flush=True)
+        sources = self._resolve_step_sources(step)
+        self._verify_source_selection(step_num, sources)
+        source_block = self._load_sources(sources)
+        if source_block:
+            print(f"  소스 {len(sources)}개 첨부 ({len(source_block):,}자) — "
+                  f"읽기 turn 하나가 접두부 전체를 다시 읽게 만든다", flush=True)
         guard_info = {"guardrail_docs": "all" if docs is None else sorted(docs),
-                      "guardrail_chars": len(guardrails)}
+                      "guardrail_chars": len(guardrails),
+                      "source_chars": len(source_block)}
         # 같은 런의 재시도는 재개가 아니다 — 그쪽에는 retry_section 이 따로 붙는다.
         prior_attempt = self._prior_attempt_exists(step_num)
         if prior_attempt:
@@ -778,7 +881,8 @@ class StepExecutor:
             index = self._read_json(self._index_file)
             step_context = self._build_step_context(index)
             preamble = self._build_preamble(guardrails, step_context, prev_error,
-                                            resumed=prior_attempt and prev_error is None)
+                                            resumed=prior_attempt and prev_error is None,
+                                            sources=source_block)
 
             tag = f"Step {step_num}/{self._total - 1} ({done} done): {step_name}"
             if attempt > 1:

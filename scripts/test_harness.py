@@ -388,14 +388,20 @@ class CalibrateTest(DoctorTestBase):
         self.assertIn("선택 대상", entry["reason"])
 
     def test_scoped_is_measured_with_select(self):
+        """select 는 어댑터의 문법으로 붙는다.
+
+        nextjs-ts 는 select 블록을 두지 않으므로 선택자가 인자로 그대로
+        붙는다 = 경로 필터다. -t(이름 필터)로 재던 런 #3~#5 의 83%→101%→100%
+        는 스코프 실행의 값이 아니었다 — 경로 필터는 14.6% 였다 (M16).
+        """
         runner = self.fake_runner({"scoped": 2.0})
-        harness.run_calibrate(self.root, runner=runner, select="정규화")
+        harness.run_calibrate(self.root, runner=runner, select="src/lib/a.test.ts")
         entry = self.load()["stages"]["scoped"]
         self.assertEqual(2.0, entry["sec"])
         self.assertFalse(entry.get("skipped", False))
         scoped_cmd = next(cmd for stage, cmd in runner.calls if stage == "scoped")
-        self.assertIn("-t", scoped_cmd)
-        self.assertIn("정규화", scoped_cmd)
+        self.assertNotIn("-t", scoped_cmd)
+        self.assertEqual("src/lib/a.test.ts", scoped_cmd[-1])
 
     # --- 부분 측정이 전체를 지우지 않는다 (파일럿 런 #3 M9) ---
 

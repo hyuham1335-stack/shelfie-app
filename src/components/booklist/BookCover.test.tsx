@@ -5,11 +5,9 @@
  * "URL이 없을 때"와 "로드에 실패했을 때"를 같은 폴백으로 흡수하는지 함께 고정한다.
  * 깨진 이미지 아이콘이 뜨는 순간 사실 정보를 보여주는 화면의 신뢰가 먼저 깎인다.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
 import { BookCover } from "./BookCover";
-
-afterEach(cleanup);
 
 const COVER = "https://image.aladin.co.kr/product/1/1/cover/8934972467.jpg";
 

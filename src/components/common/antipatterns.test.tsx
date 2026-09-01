@@ -4,15 +4,13 @@
  * 공통 조각 위에 나머지 화면이 올라가므로, 여기서 안티패턴이 하나 들어가면
  * 그 클래스가 전 화면으로 복제된다.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { render } from "@testing-library/react";
 import { Badge } from "./Badge";
 import { ClaudeText } from "./ClaudeText";
 import { ErrorBanner } from "./ErrorBanner";
 import { Notice } from "./Notice";
 import { Skeleton } from "./Skeleton";
-
-afterEach(cleanup);
 
 const FORBIDDEN = [
   "backdrop-blur",

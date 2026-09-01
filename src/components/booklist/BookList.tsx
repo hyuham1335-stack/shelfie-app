@@ -14,6 +14,7 @@
  *    실패를 드러내는 화면이 감추는 화면보다 신뢰를 얻는다 (UI_GUIDE 원칙 3).
  */
 import { Notice } from "@/components/common/Notice";
+import { MAX_IDENTIFIED_BOOKS } from "@/lib/env";
 import type { AnalyzeResponse } from "@/types/api";
 import type { AladinCandidate, UnidentifiedBook } from "@/types/book";
 import { IdentifiedBookCard } from "./IdentifiedBookCard";
@@ -43,6 +44,7 @@ export function BookList({
     identified,
     unidentified,
     overflowCount,
+    unidentifiedOverflowCount,
     failedPhotoCount,
     failedPhotoIndexes,
   } = result;
@@ -88,7 +90,9 @@ export function BookList({
             ))}
           </ul>
           {overflowCount > 0 && (
-            <Notice>50권까지만 보여드려요 ({overflowCount}권 더 있음)</Notice>
+            <Notice>
+              {MAX_IDENTIFIED_BOOKS}권까지만 보여드려요 ({overflowCount}권 더 있음)
+            </Notice>
           )}
         </section>
       )}
@@ -112,6 +116,13 @@ export function BookList({
               </li>
             ))}
           </ul>
+          {/* 잘려 나간 미확인을 말하지 않으면, 숨기는 대상이 하필 **우리가 실패한
+              쪽**이 된다 — "못 한 일을 숨기지 않는다"를 정면으로 어긴다 (UI_GUIDE). */}
+          {unidentifiedOverflowCount > 0 && (
+            <Notice>
+              못 읽어낸 책 {unidentifiedOverflowCount}권은 목록에서 생략했어요
+            </Notice>
+          )}
         </section>
       )}
     </div>

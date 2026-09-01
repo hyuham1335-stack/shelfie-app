@@ -84,6 +84,7 @@ type RecommendErrorCode = Extract<
   | "UPSTREAM_UNAVAILABLE"
   | "TIMEOUT"
   | "SERVICE_DISABLED"
+  | "INTERNAL_ERROR"
 >;
 
 /**
@@ -100,6 +101,9 @@ const ERROR_MESSAGES: Record<RecommendErrorCode, string> = {
   UPSTREAM_UNAVAILABLE: "지금 추천을 만들 수 없어요. 잠시 후 다시 시도해 주세요.",
   TIMEOUT: "시간이 오래 걸려 중단했어요. 잠시 후 다시 시도해 주세요.",
   SERVICE_DISABLED: "점검 중이에요. 잠시 후 다시 찾아와 주세요.",
+  // 우리 쪽 결함(500). 문구는 502와 같다 — 사용자가 할 수 있는 일이 같기 때문이고,
+  // 원인을 구분해야 하는 자리는 응답이 아니라 로그다 (API_SPEC).
+  INTERNAL_ERROR: "문제가 생겨 중단했어요. 잠시 후 다시 시도해 주세요.",
 };
 
 /** 누적 토큰. 재요청이 일어나면 두 호출을 모두 센다 (PRD 2번 비용 가드레일) */
@@ -230,9 +234,12 @@ function success(
   // "고를 책이 없었다"는 뜻이 되어 사실이 아닌 화면을 만들기 때문이다.
   const validated = recommendResponseSchema.safeParse(candidate);
   if (!validated.success) {
+    // 우리가 조립한 본문이 우리 계약을 어긴 것이므로 우리 결함이다(500).
+    // 모델이 목록 밖 책을 준 경우는 아래에서 502로 따로 남는다 — 두 실패의
+    // 원인이 다르므로 로그에서도 구분한다 (API_SPEC).
     console.error(`[recommend] 생성된 추천이 계약을 어겼습니다 — request_id=${requestId}`);
-    warnBurnedTokens(requestId, "UPSTREAM_UNAVAILABLE", usage);
-    return errorResponse(502, "UPSTREAM_UNAVAILABLE", requestId);
+    warnBurnedTokens(requestId, "INTERNAL_ERROR", usage);
+    return errorResponse(500, "INTERNAL_ERROR", requestId);
   }
 
   // 방어적 재확인. 위에서 이미 걸렀지만, 목록 밖 책이 응답에 실릴 수 있는 경로가

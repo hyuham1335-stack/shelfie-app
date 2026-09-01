@@ -4,12 +4,10 @@
  * lookup_failed가 중립색이라는 단언은 ADR-005 회귀 테스트다. 삭제하지 않는다 —
  * 우리 쪽 조회 실패를 사용자 책장의 문제처럼 표시하면 사실이 아닌 설명을 하게 된다.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { Badge } from "./Badge";
 import type { UnidentifiedReason } from "@/types/book";
-
-afterEach(cleanup);
 
 const REASONS: UnidentifiedReason[] = [
   "unreadable",

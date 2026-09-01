@@ -4,13 +4,11 @@
  * "못 한 일을 숨기지 않는다"(UI_GUIDE 원칙 3)가 배치의 문제이기도 하다는 점을 고정한다.
  * 실패를 목록 뒤에 알리면 사용자는 이미 그 목록이 전부인 줄 안다.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
 import type { AnalyzeResponse } from "@/types/api";
 import type { AladinCandidate, IdentifiedBook, UnidentifiedBook } from "@/types/book";
 import { BookList } from "./BookList";
-
-afterEach(cleanup);
 
 function makeIdentified(overrides: Partial<IdentifiedBook> = {}): IdentifiedBook {
   return {

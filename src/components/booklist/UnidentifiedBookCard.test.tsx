@@ -5,12 +5,10 @@
  * 알라딘이 멈춰서 못 찾은 책(`lookup_failed`)에 "절판일 수 있어요"라고 쓰는 것은
  * 시스템 문제를 데이터 문제로 설명하는 것이고, 없는 책을 지어내는 것과 같은 종류의 거짓말이다.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import type { AladinCandidate, UnidentifiedBook } from "@/types/book";
 import { UnidentifiedBookCard } from "./UnidentifiedBookCard";
-
-afterEach(cleanup);
 
 function makeBook(overrides: Partial<UnidentifiedBook> = {}): UnidentifiedBook {
   return {

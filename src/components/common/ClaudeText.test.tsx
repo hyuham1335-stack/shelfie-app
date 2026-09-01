@@ -4,11 +4,9 @@
  * 이 파일의 시각 층위 단언은 회귀 테스트다. 삭제하지 않는다 —
  * 한줄평·추천 이유가 알라딘 사실과 같은 층위로 렌더되는 순간 이 프로젝트의 전제가 무너진다.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 import { ClaudeText } from "./ClaudeText";
-
-afterEach(cleanup);
 
 describe("ClaudeText", () => {
   it("라벨과 본문을 함께 렌더한다", () => {

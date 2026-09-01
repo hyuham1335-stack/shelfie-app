@@ -2,11 +2,9 @@
  * Notice — 목록에 딸린 짧은 사실 안내 (UI_GUIDE "안내 문구").
  * 에러가 아니므로 색을 쓰지 않는다.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 import { Notice } from "./Notice";
-
-afterEach(cleanup);
 
 describe("Notice", () => {
   it("문구를 그대로 렌더한다", () => {

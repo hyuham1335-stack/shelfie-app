@@ -1,12 +1,10 @@
 /**
  * 확인된 책 카드 — 사실(알라딘)과 해석(Claude)이 다른 층위로 나오는지 고정한다 (ADR-002).
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { render } from "@testing-library/react";
 import type { IdentifiedBook } from "@/types/book";
 import { IdentifiedBookCard } from "./IdentifiedBookCard";
-
-afterEach(cleanup);
 
 function makeBook(overrides: Partial<IdentifiedBook> = {}): IdentifiedBook {
   return {

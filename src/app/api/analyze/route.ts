@@ -28,7 +28,11 @@ import { randomUUID } from "node:crypto";
 
 import { logEvent, type AnalyticsEvent, type UnidentifiedReasonCounts } from "@/lib/analytics";
 import { createBudget } from "@/lib/budget";
-import { isServiceEnabled } from "@/lib/env";
+import {
+  isServiceEnabled,
+  MAX_OUTPUT_BYTES_PER_IMAGE,
+  MAX_OUTPUT_BYTES_TOTAL,
+} from "@/lib/env";
 import { judge } from "@/lib/match";
 import { capIdentified, capUnidentified, dedupeByIsbn, reduceBeforeLookup } from "@/lib/merge";
 import { issueProof } from "@/lib/proof";
@@ -47,16 +51,14 @@ export const maxDuration = 60;
 /**
  * 데이터 URI 1건과 요청 전체의 전송 크기 상한 (FR-002, API_SPEC 공통 규약).
  *
- * 같은 값이 `lib/image.ts`에도 `MAX_OUTPUT_BYTES_PER_IMAGE`·`MAX_OUTPUT_BYTES_TOTAL`로
- * 있지만 **거기서 import하지 않는다** — 그 모듈은 Canvas·FileReader를 쓰는
- * 브라우저 전용이라 서버 코드가 참조하지 못하게 되어 있다(/docs/ARCHITECTURE.md).
- * 클라이언트 검증을 신뢰하지 않고 서버에서 다시 재는 것이 규칙이므로(TRD 6.5)
- * 이 두 값은 여기 다시 적는다. 두 곳에 있는 상수라는 사실 자체는 부채다.
+ * 값은 `lib/env.ts` 하나에서 온다. 클라이언트 검증을 신뢰하지 않고 서버에서
+ * **다시 재는 것**이 규칙이지만(TRD 6.5), 재는 일이 두 곳인 것과 값이 두 벌인
+ * 것은 다르다 — 값이 갈리면 클라이언트가 통과시킨 요청을 서버가 거부하는
+ * 조합이 조용히 생긴다. 브라우저 전용인 `lib/image.ts`에서 가져오지 않는
+ * 이유는 그 모듈이 Canvas·FileReader를 쓰기 때문이다(/docs/ARCHITECTURE.md).
  *
  * data URI는 정의상 ASCII이므로 문자 수가 곧 바이트 수다.
  */
-const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
-const MAX_REQUEST_IMAGE_BYTES = 4 * 1024 * 1024;
 
 /** 사용자에게 그대로 보이는 문구. 모델 생성물·내부 원문은 절대 쓰지 않는다 (API_SPEC) */
 const ERROR_MESSAGES: Record<ErrorCode, string> = {
@@ -74,6 +76,9 @@ const ERROR_MESSAGES: Record<ErrorCode, string> = {
   RECOMMENDATION_VALIDATION_FAILED: "추천을 만들지 못했어요. 잠시 후 다시 시도해 주세요.",
   TIMEOUT: "시간이 오래 걸려 중단했어요. 사진 장수를 줄여 다시 시도해 주세요.",
   SERVICE_DISABLED: "점검 중이에요. 잠시 후 다시 찾아와 주세요.",
+  // 502와 같은 문구를 쓴다. 사용자가 할 수 있는 일이 같기 때문이고, 원인을
+  // 구분해야 하는 자리는 응답이 아니라 로그다 (API_SPEC).
+  INTERNAL_ERROR: "문제가 생겨 중단했어요. 잠시 후 다시 시도해 주세요.",
 };
 
 /** `sessionId`를 읽기 전에 실패했을 때 로그에 쓰는 값 (API_SPEC 인증 절) */
@@ -259,15 +264,17 @@ export async function POST(request: Request): Promise<Response> {
   const validated = analyzeResponseSchema.safeParse(body);
   if (!validated.success) {
     // 여기까지 오는 유일한 경로는 `services/`의 검증을 통과한 외부 값이 우리
-    // 계약과 어긋나는 경우다. 정의된 코드 중 그 상황을 가장 덜 왜곡하는 것이 502다.
+    // 계약과 어긋나는 경우다. 그것을 502로 내보내면 **우리 결함이 남의 장애로**
+    // 기록된다 — 알라딘 장애를 no_match로 적지 않는 것(ADR-005)과 같은 규율이고
+    // 방향만 반대다. 500 INTERNAL_ERROR가 이 상황을 왜곡하지 않는 코드다.
     console.error(`[analyze] 응답이 계약 스키마를 어겼습니다 — request_id=${requestId}`);
     record({
       event: "analyze_failed",
       session_id: sessionId,
-      error_code: "UPSTREAM_UNAVAILABLE",
+      error_code: "INTERNAL_ERROR",
       failed_photo_count: failedPhotoIndexes.length,
     });
-    return errorResponse(502, "UPSTREAM_UNAVAILABLE", requestId);
+    return errorResponse(500, "INTERNAL_ERROR", requestId);
   }
 
   record({
@@ -330,12 +337,12 @@ async function readRequest(request: Request): Promise<RequestOutcome> {
   const { sessionId, images } = parsed.data;
 
   // 크기는 스키마가 보지 않는다(MIME과 개수만 본다). 서버가 직접 잰다.
-  if (images.some((image) => image.length > MAX_IMAGE_BYTES)) {
+  if (images.some((image) => image.length > MAX_OUTPUT_BYTES_PER_IMAGE)) {
     return { ok: false, status: 400, code: "IMAGE_TOO_LARGE", sessionId };
   }
 
   const totalBytes = images.reduce((sum, image) => sum + image.length, 0);
-  if (totalBytes > MAX_REQUEST_IMAGE_BYTES) {
+  if (totalBytes > MAX_OUTPUT_BYTES_TOTAL) {
     return { ok: false, status: 413, code: "PAYLOAD_TOO_LARGE", sessionId };
   }
 

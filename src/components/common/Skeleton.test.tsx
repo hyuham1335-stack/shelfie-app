@@ -1,11 +1,9 @@
 /**
  * Skeleton — 정적 스켈레톤 블록 (UI_GUIDE 애니메이션: 펄스 없음).
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { render } from "@testing-library/react";
 import { Skeleton } from "./Skeleton";
-
-afterEach(cleanup);
 
 describe("Skeleton", () => {
   it("펄스 애니메이션을 쓰지 않는다 (회귀 — 삭제하지 마라)", () => {

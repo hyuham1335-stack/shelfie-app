@@ -96,9 +96,15 @@ const propertiesSchema = {
 const ERROR_MESSAGES: Record<EventsErrorCode, string> = {
   INVALID_REQUEST: "요청을 처리할 수 없어요.",
   SERVICE_DISABLED: "점검 중이에요. 잠시 후 다시 찾아와 주세요.",
+  // 우리 쪽 결함(500). 문구는 502와 같다 — 사용자가 할 수 있는 일이 같기 때문이고,
+  // 원인을 구분해야 하는 자리는 응답이 아니라 로그다 (API_SPEC).
+  INTERNAL_ERROR: "문제가 생겨 중단했어요. 잠시 후 다시 시도해 주세요.",
 };
 
-type EventsErrorCode = Extract<ErrorCode, "INVALID_REQUEST" | "SERVICE_DISABLED">;
+type EventsErrorCode = Extract<
+  ErrorCode,
+  "INVALID_REQUEST" | "SERVICE_DISABLED" | "INTERNAL_ERROR"
+>;
 
 /** 허용 3종. 나머지는 서버가 직접 관측하므로 이 경로로 받지 않는다 */
 type ClientEventName = z.infer<typeof clientEventSchema>;
@@ -149,9 +155,10 @@ export async function POST(request: Request): Promise<Response> {
   const validated = eventsResponseSchema.safeParse(responseBody);
   if (!validated.success) {
     // 들어오는 값만 검증 경계가 아니다. 다만 이 본문은 리터럴이라 여기까지 올
-    // 수 없고, 온다면 계약 자체가 바뀐 것이다.
+    // 수 없고, 온다면 계약 자체가 바뀐 것이다 — 즉 **우리 결함**이지 잘못된
+    // 요청이 아니다. 400으로 내보내면 클라이언트가 보낸 값을 탓하게 된다.
     console.error(`[events] 응답이 계약 스키마를 어겼습니다 — request_id=${requestId}`);
-    return errorResponse(400, "INVALID_REQUEST", requestId);
+    return errorResponse(500, "INTERNAL_ERROR", requestId);
   }
 
   // 202 — 받았다는 사실만 알리고 로깅 결과를 기다리지 않는다 (API_SPEC).

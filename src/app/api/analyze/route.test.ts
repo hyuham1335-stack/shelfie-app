@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { STAGE_BUDGET_MS, TOTAL_BUDGET_MS } from "@/lib/budget";
-import { MAX_IDENTIFIED_BOOKS, MAX_UNIDENTIFIED_BOOKS } from "@/lib/env";
+import {
+  MAX_IDENTIFIED_BOOKS,
+  MAX_OUTPUT_BYTES_PER_IMAGE,
+  MAX_OUTPUT_BYTES_TOTAL,
+  MAX_UNIDENTIFIED_BOOKS,
+} from "@/lib/env";
 import { verifyProof } from "@/lib/proof";
 import { analyzeResponseSchema } from "@/lib/schemas";
 import type { LookupOutcome } from "@/lib/match";
@@ -351,7 +356,8 @@ describe("요청 검증", () => {
   });
 
   it("장당 2MB를 넘으면 400 IMAGE_TOO_LARGE다", async () => {
-    const huge = `data:image/jpeg;base64,${"A".repeat(2 * 1024 * 1024)}`;
+    // 상한 값을 여기 다시 적지 않는다. 상한이 바뀌면 이 픽스처도 함께 움직여야 한다.
+    const huge = `data:image/jpeg;base64,${"A".repeat(MAX_OUTPUT_BYTES_PER_IMAGE)}`;
 
     const response = await POST(analyzeRequest([huge]));
 
@@ -361,7 +367,10 @@ describe("요청 검증", () => {
   });
 
   it("합계가 4MB를 넘으면 413 PAYLOAD_TOO_LARGE다", async () => {
-    const large = `data:image/jpeg;base64,${"A".repeat(1_500_000)}`;
+    // 3장이면 합계 상한을 넘되 장당 상한에는 걸리지 않는 크기다.
+    const large = `data:image/jpeg;base64,${"A".repeat(
+      Math.floor(MAX_OUTPUT_BYTES_TOTAL / 3) + 1,
+    )}`;
 
     const response = await POST(analyzeRequest([large, large, large]));
 

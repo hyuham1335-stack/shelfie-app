@@ -279,6 +279,10 @@ export const errorCodeSchema = z.enum([
   "RECOMMENDATION_VALIDATION_FAILED",
   "TIMEOUT",
   "SERVICE_DISABLED",
+  // 우리 쪽 결함 (500). 502와 뭉개지 않는다 — 우리 응답이 우리 계약을 어긴 것을
+  // 502로 내보내면 남의 장애로 기록된다. 사용자에게 보이는 문구가 같은 것과
+  // 로그에 남는 원인이 같은 것은 다른 문제다 (API_SPEC 에러 응답 규약).
+  "INTERNAL_ERROR",
 ]);
 
 /**

@@ -62,11 +62,19 @@ const ERROR_MESSAGES: Record<ResolveErrorCode, string> = {
   UPSTREAM_UNAVAILABLE: "지금 확인할 수 없었어요. 잠시 후 다시 시도해 주세요.",
   TIMEOUT: "시간이 오래 걸려 중단했어요. 잠시 후 다시 시도해 주세요.",
   SERVICE_DISABLED: "점검 중이에요. 잠시 후 다시 찾아와 주세요.",
+  // 우리 쪽 결함(500). 문구는 502와 같다 — 사용자가 할 수 있는 일이 같기 때문이고,
+  // 원인을 구분해야 하는 자리는 응답이 아니라 로그다 (API_SPEC).
+  INTERNAL_ERROR: "문제가 생겨 중단했어요. 잠시 후 다시 시도해 주세요.",
 };
 
 type ResolveErrorCode = Extract<
   ErrorCode,
-  "INVALID_REQUEST" | "NOT_FOUND_IN_ALADIN" | "UPSTREAM_UNAVAILABLE" | "TIMEOUT" | "SERVICE_DISABLED"
+  | "INVALID_REQUEST"
+  | "NOT_FOUND_IN_ALADIN"
+  | "UPSTREAM_UNAVAILABLE"
+  | "TIMEOUT"
+  | "SERVICE_DISABLED"
+  | "INTERNAL_ERROR"
 >;
 
 export async function POST(request: Request): Promise<Response> {
@@ -160,9 +168,10 @@ export async function POST(request: Request): Promise<Response> {
   const validated = resolveResponseSchema.safeParse(body);
   if (!validated.success) {
     // 여기까지 오는 유일한 경로는 `services/`의 검증을 통과한 외부 값이 우리
-    // 계약과 어긋나는 경우다. 정의된 코드 중 그 상황을 가장 덜 왜곡하는 것이 502다.
+    // 계약과 어긋나는 경우다. 502로 내보내면 **우리 결함이 알라딘 장애로**
+    // 기록된다. 알라딘이 실제로 실패한 위쪽 경로는 그대로 502로 남는다.
     console.error(`[resolve] 응답이 계약 스키마를 어겼습니다 — request_id=${requestId}`);
-    return errorResponse(502, "UPSTREAM_UNAVAILABLE", requestId);
+    return errorResponse(500, "INTERNAL_ERROR", requestId);
   }
 
   return jsonResponse(200, validated.data, requestId);

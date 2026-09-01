@@ -421,11 +421,14 @@ describe("POST /api/events 계약", () => {
 });
 
 describe("에러 응답 규약", () => {
-  it("API_SPEC의 에러 코드 14종과 정확히 일치한다", () => {
+  it("API_SPEC의 에러 코드 15종과 정확히 일치한다", () => {
     expect([...errorCodeSchema.options].sort()).toEqual(
       [
         "EMPTY_SHELF",
         "IMAGE_TOO_LARGE",
+        // 500. 502와 뭉개지 않는다 — 우리 응답이 우리 계약을 어긴 것을 502로
+        // 내보내면 남의 장애로 기록된다 (API_SPEC 에러 응답 규약).
+        "INTERNAL_ERROR",
         "INVALID_REQUEST",
         "IRRELEVANT_MOOD",
         "NOT_FOUND_IN_ALADIN",

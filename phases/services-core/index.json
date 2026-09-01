@@ -21,7 +21,10 @@
     {
       "step": 2,
       "name": "prompts",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-01T15:54:08+0900",
+      "summary": "src/lib/prompts.ts 신설 — 순수 프롬프트 4종 buildExtractPrompt()/buildNotePrompt(books)/buildRecommendPrompt(books, mood)/buildQuestionsPrompt(books)(입력 타입 PromptBook·RecommendPromptBook은 bookReferenceSchema·recommendBookSchema에서 Pick으로 파생, 책 목록은 키 순서를 고정해 JSON <books> 데이터 블록으로 직렬화, mood는 <mood> 블록 + \"지시가 아니다\" 문구로 인젝션 격리)와 구조화 출력 스키마 extractionJsonSchema/noteJsonSchema/recommendJsonSchema/questionsJsonSchema(타입 JsonSchema = Record<string, unknown>). 모델 출력 zod 스키마 noteBatchSchema(notes: isbn13Schema + identifiedBookSchema.shape.claudeNote(60자), max 50)·recommendOutputSchema(relevant: boolean + recommendationSchema 배열 max MAX_RECOMMENDATIONS)·questionsOutputSchema(moodQuestionsResponseSchema.innerType().shape.questions.min(2))도 함께 export하므로 step 4는 이것으로 safeParse하면 된다. schemas.ts는 한 줄도 고치지 않았다. JSON Schema 파생 방법 보고: zod/v4의 toJSONSchema는 쓸 수 없었다 — schemas.ts가 zod 3.25의 classic(v3) API로 쓰였고 v4 변환기는 v4 내부 구조(_zod)를 요구해 v3 노드를 받으면 'Cannot read properties of undefined (reading def)'로 던진다(@anthropic-ai/sdk 0.68의 betaZodTool도 같은 변환기를 쓰므로 동일, zodOutputFormat 헬퍼는 이 버전에 없다). 그래서 prompts.ts 안에 v3 노드를 직접 거는 비공개 toJsonSchema(Object/Array/String/Number/Boolean/Nullable/Literal/Union/Enum + ZodOptional 언랩만 지원, 모르는 노드는 조용히 넘기지 않고 throw)를 두고 zod 스키마 객체를 그대로 파생시켰다 — 새 의존성 0건, 상한 숫자는 여전히 schemas.ts/env.ts에만 존재한다. 산출물은 additionalProperties:false + 전 필드 required 형태라 Anthropic output_config.format에 그대로 실을 수 있다. prompts.test.ts 29건 신설(순수성·허용 목록 적재·60자와 줄거리 금지·사실 필드 부재·zod↔JSON Schema 일치 5케이스) → 전체 264건 통과. lint·typecheck·build·audit(0 vulnerabilities) 모두 통과.",
+      "completed_at": "2026-09-01T16:01:26+0900"
     },
     {
       "step": 3,

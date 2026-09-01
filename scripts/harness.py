@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harness 계약 계층 CLI — init · doctor.
+"""Harness 계약 계층 CLI — init · doctor · calibrate.
 
 하네스는 프로젝트의 언어를 쓰지 않는다. python stdlib 만으로 돌아가므로
 node_modules·빌드 산출물이 깨진 상태에서도 게이트가 동작한다.
@@ -7,10 +7,12 @@ node_modules·빌드 산출물이 깨진 상태에서도 게이트가 동작한�
 Usage:
     python scripts/harness.py doctor
     python scripts/harness.py init --adapter nextjs-ts --name my-app [--force]
+    python scripts/harness.py calibrate [--stage <name>] [--select <test-name>]
 
 종료 코드:
     0  통과 (경고는 허용한다 — 단, 전부 출력에 드러난다)
     2  미통과. 무엇이 어긋났는지 출력에 명시된다
+   10  calibrate 중 스테이지가 실패했다. 잰 값을 쓰지 않는다
 
 step 실행기는 scripts/execute.py 로 분리돼 있다. 두 진입점의 통합은
 docs/harness/ROADMAP.md 3단계 몫이다 (ADR-H003).
@@ -18,12 +20,16 @@ docs/harness/ROADMAP.md 3단계 몫이다 (ADR-H003).
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
+from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -475,9 +481,16 @@ def _check_adapter(root, config, report):
                 stale.append(other.name)
         except (ValueError, SchemaError):
             stale.append(other.name)
+    notes = []
+    if not adapter.get("verified"):
+        notes.append("verified:false 다 — 실제 프로젝트에서 어댑터를 소비하는 게이트로 "
+                     "완주시킨 뒤에만 true 로 올린다. 지금은 정적으로 검사한 것까지만 참이다.")
     if stale:
-        report.add("어댑터", "WARN", "%s 는 통과했으나 다른 어댑터가 스키마를 어긴다: %s"
-                   % (adapter_id, ", ".join(stale)))
+        notes.append("다른 어댑터가 스키마를 어긴다: %s" % ", ".join(stale))
+
+    if notes:
+        report.add("어댑터", "WARN", "%s.json — 스키마 통과.\n%s"
+                   % (adapter_id, "\n".join("- " + n for n in notes)))
     else:
         report.add("어댑터", "PASS", "%s.json — 스키마 통과" % adapter_id)
     return adapter
@@ -514,8 +527,9 @@ def _check_adapter_requires(root, adapter, report):
 
 def _check_runner_bin(root, adapter, report):
     binary = adapter["runner"]["bin"]
-    if shutil.which(binary) or (root / binary).exists():
-        report.add("러너 바이너리", "PASS", "%s 실행 가능" % binary)
+    resolved = _resolve_bin(root, binary)
+    if resolved != binary:
+        report.add("러너 바이너리", "PASS", "%s → %s" % (binary, resolved))
     else:
         report.add("러너 바이너리", "FAIL",
                    "runner.bin %r 를 PATH 에서도 리포 루트에서도 찾을 수 없다." % binary)
@@ -725,14 +739,20 @@ def _check_path_limit(root, config, report):
 
 
 def _check_calibration(root, config, adapter, report):
+    """캘리브레이션은 '실측이 있는가'만 본다.
+
+    어댑터의 verified 여부는 여기가 아니라 어댑터 검사에 있다 — 둘은 다른 것이다.
+    실측을 했다고 어댑터가 검증된 것이 아니고, 그 반대도 아니다.
+    """
     notes = []
-    if not adapter.get("verified"):
-        notes.append("어댑터 %r 가 verified:false 다 — 실제 프로젝트에서 완주시킨 뒤에만 "
-                     "true 로 올린다. 지금은 정적으로 검사한 것까지만 참이다." % adapter["id"])
-    calibration = config.get("calibration_file")
-    if calibration and not (root / calibration).exists():
+    calibration_rel = config.get("calibration_file")
+    calibration = _load_calibration(root, config)
+
+    if calibration_rel and calibration is None:
         notes.append("%s 가 없다 — 미캘리브레이션 런이다. 타임아웃·백그라운드 회귀 여부·"
-                     "테스트 수 하한이 실측이 아니라 보수적 기본값으로 간다." % calibration)
+                     "테스트 수 하한이 실측이 아니라 보수적 기본값으로 간다. "
+                     "`python scripts/harness.py calibrate` 로 잰다." % calibration_rel)
+
     globs = adapter["test_report"]["glob"]
     matched = [p for g in globs for p in root.glob(g)]
     if adapter["test_report"]["format"] == "none":
@@ -742,10 +762,235 @@ def _check_calibration(root, config, adapter, report):
         notes.append("test_report.glob(%s) 매칭 0건 — 아직 테스트를 한 번도 돌리지 않았거나 "
                      "리포트 경로 설정이 어긋난 것이다. 게이트 전에 한 번 돌려 확인하라."
                      % ", ".join(globs))
+
     if notes:
         report.add("캘리브레이션 상태", "WARN", "\n".join("- " + n for n in notes))
+        return
+
+    measured = [n for n, s in calibration["stages"].items() if not s.get("skipped")]
+    skipped = [n for n, s in calibration["stages"].items() if s.get("skipped")]
+    derived = calibration.get("derived", {})
+    report.add("캘리브레이션 상태", "PASS",
+               "%s 기준 실측 — 측정 %d종(%s) · 미측정 %d종(%s)\n"
+               "정책: 백그라운드 전체 회귀 %s · full 타임아웃 %ss · 테스트 수 하한 %s"
+               % (calibration.get("measured_at", "?"), len(measured), ", ".join(sorted(measured)),
+                  len(skipped), ", ".join(sorted(skipped)) or "없음",
+                  "ON" if derived.get("background_full_regression") else "OFF",
+                  derived.get("full_timeout_sec", "?"),
+                  derived.get("tests_ran_floor", "미측정")))
+
+
+def _load_calibration(root, config):
+    rel = config.get("calibration_file")
+    if not rel:
+        return None
+    path = root / rel
+    if not path.is_file():
+        return None
+    try:
+        data = _read_json(path)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) and "stages" in data else None
+
+
+# ------------------------------------------------------------------ calibrate
+#
+# 목표 파이프라인의 정책(백그라운드 회귀 여부·타임아웃·테스트 수 하한)은 전부
+# 실측값의 함수다. 이 명령이 그 실측을 만든다. 재지 않은 것은 재지 않았다고
+# 적는다 — "미측정"과 "0"을 같은 칸에 쓰지 않는 것이 이 파일의 전부다.
+
+STAGE_ORDER = ["compile", "lint", "check", "scoped", "full", "e2e", "build", "docs"]
+
+DEFAULT_FULL_TIMEOUT_FLOOR = 300
+FULL_TIMEOUT_FACTOR = 4
+TESTS_FLOOR_RATIO = 0.9
+
+
+def _subprocess_runner(stage, cmd, cwd, timeout_sec):
+    """기본 러너. 테스트는 이것을 쓰지 않는다 — 실제 npm 을 돌리지 않기 위해."""
+    started = time.monotonic()
+    try:
+        result = subprocess.run(cmd, cwd=str(cwd), capture_output=True,
+                                text=True, encoding="utf-8", timeout=timeout_sec)
+        code = result.returncode
+    except subprocess.TimeoutExpired:
+        code = 124
+    except OSError as exc:
+        print("  실행할 수 없다: %s (%s)" % (" ".join(cmd), exc))
+        code = 127
+    return code, round(time.monotonic() - started, 2)
+
+
+def _resolve_bin(root, name):
+    """러너 바이너리를 실행 가능한 경로로 해석한다.
+
+    Windows 에서 npm 은 npm.cmd 이고, subprocess 는 shell 없이 bare name 으로
+    이것을 띄우지 못한다(WinError 2). shell=True 로 푸는 것은 러너 화이트리스트가
+    막으려는 임의 명령 실행 벡터를 되살리는 일이라 쓰지 않는다.
+    """
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+    local = root / name
+    if local.exists():
+        return str(local)
+    return name
+
+
+def _stage_argv(root, adapter, stage_name, select):
+    runner_cfg = adapter["runner"]
+    stage = adapter["stages"][stage_name]
+    argv = ([_resolve_bin(root, runner_cfg["bin"])]
+            + list(runner_cfg.get("common_args") or [])
+            + list(stage["cmd"]))
+    if stage_name == "scoped" and select:
+        sel = stage.get("select")
+        if sel:
+            argv += [sel["flag"], select]
+        else:
+            argv += [select]
+    return argv
+
+
+def _parse_junit(root, adapter):
+    """junit XML 에서 테스트 수를 읽는다. 없으면 (None, None, None, False)."""
+    if adapter["test_report"]["format"] != "junit-xml":
+        return None, None, None, False
+    paths = sorted(p for g in adapter["test_report"]["glob"] for p in root.glob(g))
+    if not paths:
+        return None, None, None, False
+    tests = failures = suites = 0
+    for path in paths:
+        try:
+            tree = ElementTree.parse(str(path))
+        except (ElementTree.ParseError, OSError):
+            continue
+        root_el = tree.getroot()
+        found = root_el.findall(".//testsuite")
+        suites += len(found)
+        if root_el.tag == "testsuites" and root_el.get("tests") is not None:
+            tests += int(root_el.get("tests") or 0)
+            failures += int(root_el.get("failures") or 0)
+        else:
+            for suite in found:
+                tests += int(suite.get("tests") or 0)
+                failures += int(suite.get("failures") or 0)
+    return tests, suites, failures, True
+
+
+def _derive_policy(stages, config):
+    """상수를 함수로 바꾸는 지점. 입력이 없으면 정책도 '미측정'이다."""
+    full = stages.get("full", {})
+    sec = full.get("sec")
+    tests_ran = full.get("tests_ran")
+    threshold = config.get("background_threshold_sec", 180)
+
+    derived = {
+        "background_threshold_sec": threshold,
+        "background_full_regression": None,
+        "full_timeout_sec": None,
+        "tests_ran_floor": None,
+    }
+    if sec is not None:
+        derived["background_full_regression"] = sec > threshold
+        derived["full_timeout_sec"] = max(DEFAULT_FULL_TIMEOUT_FLOOR,
+                                          int(math.ceil(sec * FULL_TIMEOUT_FACTOR)))
+    if tests_ran:
+        derived["tests_ran_floor"] = int(math.floor(tests_ran * TESTS_FLOOR_RATIO))
+    return derived
+
+
+def _probe_infra(adapter):
+    """env 프로브는 존재 여부만 남긴다. 값은 절대 기록하지 않는다 —
+    calibration.json 은 커밋 대상이므로 여기에 시크릿이 실리면 리포로 샌다."""
+    infra = {}
+    for probe in adapter.get("infra_preflight", []):
+        if probe["kind"] == "env":
+            infra[probe["name"]] = bool(os.environ.get(probe.get("var", "")))
+    return infra
+
+
+def run_calibrate(root, stage=None, select=None, runner=None, now=None):
+    root = Path(root)
+    runner = runner or _subprocess_runner
+
+    report = run_doctor(root)
+    if report.exit_code != 0:
+        print(report.text())
+        print("\n  calibrate 거부 — doctor 가 통과하지 않았다. "
+              "어긋난 설정으로 잰 값은 근거가 아니다.")
+        return 2
+
+    config = _read_json(root / CONFIG_REL)
+    adapter = _read_json(root / ADAPTER_DIR_REL / ("%s.json" % config["adapter"]))
+    cwd = root / (adapter["runner"].get("cwd") or ".")
+
+    targets = [stage] if stage else STAGE_ORDER
+    unknown = [s for s in targets if s not in adapter["stages"]]
+    if unknown:
+        print("ERROR: 어댑터에 없는 스테이지: %s" % ", ".join(unknown))
+        return 2
+
+    stages = {}
+    failed = []
+    for name in targets:
+        spec = adapter["stages"][name]
+        if not spec.get("cmd"):
+            stages[name] = {"sec": None, "skipped": True,
+                            "reason": "cmd:null — 이 스택에 없는 스테이지"}
+            continue
+        if name == "scoped" and not select:
+            stages[name] = {"sec": None, "skipped": True,
+                            "reason": "선택 대상 없음 — 계약이 있어야 측정된다. "
+                                      "--select <test-name> 으로 수동 측정할 수 있다"}
+            continue
+
+        argv = _stage_argv(root, adapter, name, select)
+        print("  재는 중: %-8s %s" % (name, " ".join(argv)))
+        code, seconds = runner(name, argv, cwd, spec.get("timeout_sec", 600))
+        entry = {"sec": seconds, "ok": code == 0, "exit_code": code}
+        if name == "full":
+            tests, suites, failures, matched = _parse_junit(root, adapter)
+            entry.update({"tests_ran": tests, "suites": suites, "failures": failures})
+        stages[name] = entry
+        if code != 0:
+            failed.append("%s (exit %d)" % (name, code))
+
+    if failed:
+        print("\n  calibrate 실패 — 스테이지가 통과하지 못했다: %s" % ", ".join(failed))
+        print("  빨간 트리에서 잰 값은 캘리브레이션이 아니다. "
+              "%s 를 쓰지 않는다." % config.get("calibration_file", "calibration.json"))
+        return 10
+
+    _, _, _, report_matched = _parse_junit(root, adapter)
+    payload = {
+        "measured_at": now or datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "adapter": adapter["id"],
+        "adapter_verified": bool(adapter.get("verified")),
+        "partial": bool(stage),
+        "stages": stages,
+        "report_glob_matched": report_matched,
+        "infra": _probe_infra(adapter),
+        "derived": _derive_policy(stages, config),
+    }
+
+    target = root / config["calibration_file"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print("\n  생성: %s" % config["calibration_file"])
+    d = payload["derived"]
+    full_sec = stages.get("full", {}).get("sec")
+    if full_sec is None:
+        print("  정책 — full 미측정이라 백그라운드 회귀·타임아웃을 결정하지 못했다. "
+              "부분 캘리브레이션이다.")
     else:
-        report.add("캘리브레이션 상태", "PASS", "캘리브레이션·리포트 경로 확인됨")
+        print("  정책 — 백그라운드 전체 회귀 %s (full %ss vs 임계 %ss) · full 타임아웃 %ss · "
+              "테스트 수 하한 %s"
+              % ("ON" if d["background_full_regression"] else "OFF",
+                 full_sec, d["background_threshold_sec"],
+                 d["full_timeout_sec"], d["tests_ran_floor"] or "미측정"))
+    return 0
 
 
 # ----------------------------------------------------------------------- init
@@ -795,10 +1040,16 @@ def main(argv=None):
     p_init.add_argument("--name", required=True)
     p_init.add_argument("--force", action="store_true")
 
+    p_cal = sub.add_parser("calibrate", help="스테이지를 1회씩 실측해 calibration.json 을 쓴다")
+    p_cal.add_argument("--stage", help="이 스테이지만 잰다")
+    p_cal.add_argument("--select", help="scoped 스테이지의 테스트 선택자")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "init":
         return run_init(ROOT, adapter=args.adapter, name=args.name, force=args.force)
+    if args.cmd == "calibrate":
+        return run_calibrate(ROOT, stage=args.stage, select=args.select)
     if args.cmd == "doctor":
         report = run_doctor(ROOT)
         print("\n  harness doctor — %s" % ROOT)

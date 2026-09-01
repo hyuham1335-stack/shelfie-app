@@ -315,6 +315,196 @@ class InitTest(DoctorTestBase):
         self.assertEqual(2, harness.run_init(self.root, adapter="nextjs-ts", name="Not A Slug"))
 
 
+JUNIT_FIXTURE = """<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="203" failures="0" errors="0" time="0.22">
+  <testsuite name="a.test.ts" tests="120" failures="0" errors="0" />
+  <testsuite name="b.test.ts" tests="83" failures="0" errors="0" />
+</testsuites>
+"""
+
+
+class CalibrateTest(DoctorTestBase):
+    """실측이 정책의 입력이 되므로, 재지 않은 것을 잰 척하는 경로가 하나도 없어야 한다."""
+
+    def setUp(self):
+        super().setUp()
+        _write(self.root / "reports/junit/vitest.xml", JUNIT_FIXTURE)
+
+    def fake_runner(self, durations=None, failing=None):
+        """(stage, cmd, cwd, timeout) -> (exit_code, seconds). 실제 npm 을 돌리지 않는다."""
+        durations = durations or {}
+        failing = set(failing or [])
+        calls = []
+
+        def run(stage, cmd, cwd, timeout_sec):
+            calls.append((stage, tuple(cmd)))
+            return (1 if stage in failing else 0), durations.get(stage, 1.0)
+
+        run.calls = calls
+        return run
+
+    def load(self):
+        return json.loads((self.root / "harness/calibration.json").read_text(encoding="utf-8"))
+
+    # --- 기본 동작 ---
+
+    def test_writes_calibration_file(self):
+        code = harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        self.assertEqual(0, code)
+        data = self.load()
+        self.assertEqual("nextjs-ts", data["adapter"])
+        self.assertIn("measured_at", data)
+        self.assertEqual(4.7, data["stages"]["full"]["sec"])
+        self.assertTrue(data["stages"]["full"]["ok"])
+
+    def test_null_cmd_stage_is_skipped_not_measured(self):
+        runner = self.fake_runner()
+        harness.run_calibrate(self.root, runner=runner)
+        for stage in ("e2e", "docs"):
+            entry = self.load()["stages"][stage]
+            self.assertIsNone(entry["sec"])
+            self.assertTrue(entry["skipped"])
+            self.assertIn("cmd:null", entry["reason"])
+        ran = set(stage for stage, _ in runner.calls)
+        self.assertNotIn("e2e", ran)
+        self.assertNotIn("docs", ran)
+
+    def test_scoped_is_skipped_without_select(self):
+        harness.run_calibrate(self.root, runner=self.fake_runner())
+        entry = self.load()["stages"]["scoped"]
+        self.assertIsNone(entry["sec"])
+        self.assertTrue(entry["skipped"])
+        self.assertIn("선택 대상", entry["reason"])
+
+    def test_scoped_is_measured_with_select(self):
+        runner = self.fake_runner({"scoped": 2.0})
+        harness.run_calibrate(self.root, runner=runner, select="정규화")
+        entry = self.load()["stages"]["scoped"]
+        self.assertEqual(2.0, entry["sec"])
+        self.assertFalse(entry.get("skipped", False))
+        scoped_cmd = next(cmd for stage, cmd in runner.calls if stage == "scoped")
+        self.assertIn("-t", scoped_cmd)
+        self.assertIn("정규화", scoped_cmd)
+
+    def test_single_stage_only(self):
+        runner = self.fake_runner()
+        harness.run_calibrate(self.root, stage="lint", runner=runner)
+        self.assertEqual({"lint"}, set(stage for stage, _ in runner.calls))
+
+    def test_runner_bin_is_resolved_to_a_real_path(self):
+        """Windows 에서 npm 은 npm.cmd 다.
+
+        shutil.which 가 찾았다고 subprocess 가 bare name 으로 띄울 수 있는 것이
+        아니다 — 해석된 경로를 argv[0] 에 넣어야 한다. shell=True 는 쓰지 않는다:
+        러너 화이트리스트가 막으려는 임의 명령 실행 벡터가 되살아난다.
+        """
+        original = harness.shutil.which
+        harness.shutil.which = lambda name: "C:\\fake\\npm.cmd" if name == "npm" else original(name)
+        try:
+            runner = self.fake_runner()
+            harness.run_calibrate(self.root, stage="lint", runner=runner)
+        finally:
+            harness.shutil.which = original
+        argv = next(cmd for stage, cmd in runner.calls if stage == "lint")
+        self.assertEqual("C:\\fake\\npm.cmd", argv[0])
+
+    def test_unresolvable_bin_blocks_before_running_anything(self):
+        """해석되지 않는 러너는 doctor 가 먼저 막는다 — 잴 기회조차 오지 않는다.
+
+        _resolve_bin 이 bare name 을 그대로 돌려주는 것이 곧 '못 찾았다'는 신호이고,
+        doctor 의 러너 검사가 그 신호를 FAIL 로 바꾼다.
+        """
+        original = harness.shutil.which
+        harness.shutil.which = lambda name: None
+        try:
+            self.assertEqual("npm", harness._resolve_bin(self.root, "npm"))
+            runner = self.fake_runner()
+            code = harness.run_calibrate(self.root, stage="lint", runner=runner)
+        finally:
+            harness.shutil.which = original
+        self.assertEqual(2, code)
+        self.assertEqual([], runner.calls)
+
+    # --- 실패한 트리에서 잰 값은 캘리브레이션이 아니다 ---
+
+    def test_failing_stage_exits_10_and_writes_nothing(self):
+        code = harness.run_calibrate(self.root, runner=self.fake_runner(failing={"lint"}))
+        self.assertEqual(10, code)
+        self.assertFalse(
+            (self.root / "harness/calibration.json").exists(),
+            "빨간 트리에서 잰 값이 근거로 커밋되면 안 된다",
+        )
+
+    def test_refuses_when_doctor_fails(self):
+        cfg = self.config()
+        cfg["adapter"] = "does-not-exist"
+        self.save_config(cfg)
+        code = harness.run_calibrate(self.root, runner=self.fake_runner())
+        self.assertEqual(2, code)
+        self.assertFalse((self.root / "harness/calibration.json").exists())
+
+    # --- junit 파싱 ---
+
+    def test_parses_junit_report(self):
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        full = self.load()["stages"]["full"]
+        self.assertEqual(203, full["tests_ran"])
+        self.assertEqual(2, full["suites"])
+        self.assertEqual(0, full["failures"])
+
+    def test_missing_report_is_recorded_as_unmatched(self):
+        (self.root / "reports/junit/vitest.xml").unlink()
+        harness.run_calibrate(self.root, runner=self.fake_runner())
+        data = self.load()
+        self.assertFalse(data["report_glob_matched"])
+        self.assertIsNone(data["stages"]["full"]["tests_ran"])
+
+    # --- 정책은 상수가 아니라 캘리브레이션의 함수다 ---
+
+    def test_derived_policy_short_suite(self):
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        d = self.load()["derived"]
+        self.assertFalse(d["background_full_regression"])
+        self.assertEqual(300, d["full_timeout_sec"])
+        self.assertEqual(182, d["tests_ran_floor"])
+
+    def test_derived_policy_long_suite(self):
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 500.0}))
+        d = self.load()["derived"]
+        self.assertTrue(d["background_full_regression"])
+        self.assertEqual(2000, d["full_timeout_sec"])
+
+    # --- 시크릿 유출 차단 ---
+
+    def test_env_probe_records_presence_not_value(self):
+        import os
+
+        os.environ["ANTHROPIC_API_KEY"] = "sk-secret-value-do-not-leak"
+        try:
+            harness.run_calibrate(self.root, runner=self.fake_runner())
+        finally:
+            del os.environ["ANTHROPIC_API_KEY"]
+        raw = (self.root / "harness/calibration.json").read_text(encoding="utf-8")
+        self.assertNotIn("sk-secret-value-do-not-leak", raw)
+        self.assertIs(True, self.load()["infra"]["anthropic_key"])
+
+    # --- doctor 연동 ---
+
+    def test_doctor_stops_warning_once_calibrated(self):
+        before = "\n".join(c.message for c in self.doctor().checks if c.status == "WARN")
+        self.assertIn("캘리브레이션", before)
+
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+
+        report = self.doctor()
+        self.assertEqual(0, report.exit_code, report.text())
+        calibration = next(c for c in report.checks if c.name == "캘리브레이션 상태")
+        self.assertEqual("PASS", calibration.status, report.text())
+        # 어댑터 검증과 캘리브레이션은 다른 것이다 — verified:false 경고는 남는다
+        warns = "\n".join(c.message for c in report.checks if c.status == "WARN")
+        self.assertIn("verified", warns)
+
+
 class RealRepoTest(unittest.TestCase):
     """실물 리포에서도 통과해야 한다 — 픽스처만 통과하는 것은 의미가 없다."""
 

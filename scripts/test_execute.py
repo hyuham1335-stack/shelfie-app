@@ -437,8 +437,28 @@ class TestInvokeClaude:
         assert "-p" in cmd
         assert "--dangerously-skip-permissions" in cmd
         assert "--output-format" in cmd
-        assert "PREAMBLE" in cmd[-1]
-        assert "UI를 구현하세요" in cmd[-1]
+
+        # 프롬프트는 명령행 인자가 아니라 stdin 으로 간다.
+        # 가드레일(CLAUDE.md + docs/*.md)이 커지면 Windows CreateProcess 인자
+        # 상한(32,767자)을 넘겨 WinError 206 으로 죽기 때문이다.
+        kwargs = mock_run.call_args[1]
+        assert not any("PREAMBLE" in part for part in cmd)
+        assert "PREAMBLE" in kwargs["input"]
+        assert "UI를 구현하세요" in kwargs["input"]
+        assert kwargs["encoding"] == "utf-8"
+
+    def test_prompt_is_not_passed_as_argv(self, executor):
+        """가드레일이 32KB를 넘어도 호출이 성립해야 한다 (WinError 206 회귀)."""
+        mock_result = MagicMock(returncode=0, stdout='{"result": "ok"}', stderr="")
+        step = {"step": 2, "name": "ui"}
+        huge = "가" * 50_000
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            executor._invoke_claude(step, huge)
+
+        cmd = mock_run.call_args[0][0]
+        assert sum(len(part) for part in cmd) < 200
+        assert huge in mock_run.call_args[1]["input"]
 
     def test_saves_output_json(self, executor):
         mock_result = MagicMock(returncode=0, stdout='{"ok": true}', stderr="")

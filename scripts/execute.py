@@ -235,9 +235,16 @@ class StepExecutor:
             sys.exit(1)
 
         prompt = preamble + step_file.read_text(encoding="utf-8")
+
+        # 프롬프트는 stdin 으로 넘긴다. 명령행 인자로 넘기면 가드레일
+        # (CLAUDE.md + docs/*.md)이 커지는 순간 Windows CreateProcess 의
+        # 인자 상한(32,767자)을 넘겨 WinError 206 으로 죽는다 — 이 리포는
+        # 가드레일만 97KB라 인자 경로가 구조적으로 성립하지 않는다.
+        # encoding 을 명시하지 않으면 로캘(cp949)로 인코딩돼 한글 프롬프트가 깨진다.
         result = subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json", prompt],
-            cwd=self._root, capture_output=True, text=True, timeout=1800,
+            ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json"],
+            input=prompt,
+            cwd=self._root, capture_output=True, text=True, encoding="utf-8", timeout=1800,
         )
 
         if result.returncode != 0:

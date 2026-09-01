@@ -1,35 +1,35 @@
 {
-  "measured_at": "2026-09-01T15:41:02+0900",
+  "measured_at": "2026-09-01T21:01:31+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": false,
   "stages": {
     "compile": {
-      "sec": 3.16,
+      "sec": 2.56,
       "ok": true,
       "exit_code": 0
     },
     "lint": {
-      "sec": 5.75,
+      "sec": 6.25,
       "ok": true,
       "exit_code": 0
     },
     "check": {
-      "sec": 1.66,
+      "sec": 1.58,
       "ok": true,
       "exit_code": 0
     },
     "scoped": {
-      "sec": null,
-      "skipped": true,
-      "reason": "선택 대상 없음 — 계약이 있어야 측정된다. --select <test-name> 으로 수동 측정할 수 있다"
+      "sec": 8.95,
+      "ok": true,
+      "exit_code": 0
     },
     "full": {
-      "sec": 5.56,
+      "sec": 10.83,
       "ok": true,
       "exit_code": 0,
-      "tests_ran": 203,
-      "suites": 7,
+      "tests_ran": 482,
+      "suites": 14,
       "failures": 0
     },
     "e2e": {
@@ -38,7 +38,7 @@
       "reason": "cmd:null — 이 스택에 없는 스테이지"
     },
     "build": {
-      "sec": 7.92,
+      "sec": 9.95,
       "ok": true,
       "exit_code": 0
     },
@@ -57,6 +57,6 @@
     "background_threshold_sec": 180,
     "background_full_regression": false,
     "full_timeout_sec": 300,
-    "tests_ran_floor": 182
+    "tests_ran_floor": 433
   }
 }

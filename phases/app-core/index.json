@@ -21,7 +21,9 @@
     {
       "step": 2,
       "name": "recommend-route",
-      "status": "pending"
+      "status": "completed",
+      "summary": "app/api/recommend/route.ts 신설(runtime=nodejs, maxDuration=30, 자체 예산 28s — step 1과 같은 이유로 lib/budget의 STAGE_BUDGET_MS를 넓히지 않았다). 순서: SERVICE_ENABLED → recommendRequestSchema → filterVerified → 통과 0권이면 400 UNVERIFIED_BOOKS(모델 미호출) → generateRecommendations → relevant 판정 → bookId 화이트리스트 → 위반 시 correction 재요청 1회 → 그래도 위반이면 502 RECOMMENDATION_VALIDATION_FAILED → recommendResponseSchema → 200. 화이트리스트 기준은 원본 요청 목록이 아니라 **서명 검증 통과 목록**이라 버려진 책의 isbn13도 목록 밖으로 취급한다(회귀 테스트로 고정). 실패 매핑: reason==='timeout'만 504 TIMEOUT, 나머지 4종(upstream·refusal·schema·max_tokens)은 502 UPSTREAM_UNAVAILABLE, relevant:false는 422 IRRELEVANT_MOOD(재요청하지 않는다). shortfall은 검증 통과 권수 < 3, 추천은 bookId 중복 제거 후 최대 3권이며 position은 모델 값을 그대로 보존한다. mood는 라우트에서 가공하지 않고 services에 그대로 넘긴다(TRD 6.5). ★계약 공백 2건 보고(문서 결정 사항이라 스키마·API_SPEC을 고치지 않고 라우트 주석에만 남겼다): ① API_SPEC의 '같은 세션에서 relevant:false가 2회 연속이면 판정을 무시하고 추천 진행'을 서버가 수행할 수 없다 — 무상태(ADR-003)라 세션 카운터를 둘 수 없고 recommendRequestSchema에 그 횟수를 담을 필드가 없다. 서버는 매 요청을 독립 판정해 422를 내고 '2회 연속 무시'는 클라이언트 책임으로 뒀다. ② 같은 원인으로 mood_submitted.retry_index('다시 추천받기' 횟수)도 서버가 알 수 없어 0으로 고정 기록된다 — 지표가 항상 0이 된다. 두 공백은 '요청 스키마에 세션 진행 상태가 없다'는 한 원인이므로 요청 필드 추가 vs 클라이언트 전담을 함께 결정해야 한다. ★관측성 판단 2건: ⓐ step 지시대로 recommend_viewed를 라우트에서 남기지만 PRD 7번 표는 이 이벤트를 클라이언트 관측(/api/events)으로 정의하므로, 클라이언트도 보내면 North Star 분모가 이중 계상된다 — 어느 쪽이 정본인지 문서 결정이 필요하다(추천 토큰은 응답 스키마에 없어 클라이언트가 알 수 없으므로 비용 계측만 놓고 보면 서버 기록이 유일한 경로다). ⓑ 실패로 끝난 요청(422·502·504)이 태운 토큰은 recommend_viewed로 올리면 분모를 오염시키고 PRD 7번 표에 recommend_failed 이벤트가 없어(lib/analytics 유니온에도 없다) 이벤트 대신 event 키 없는 console.warn 한 줄로 남겼다 — 집계에는 안 섞이고 사람은 읽을 수 있다. 재요청이 일어나면 두 호출 usage를 합산한다. 테스트 53건 추가(전체 564→617건 통과, typecheck·lint·build·audit 0건). lib/·services/ 결함 없음.",
+      "started_at": "2026-09-01T22:00:13+0900"
     },
     {
       "step": 3,

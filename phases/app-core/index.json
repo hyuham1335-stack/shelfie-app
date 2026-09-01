@@ -1,0 +1,11 @@
+{
+  "project": "shelfie",
+  "phase": "app-core",
+  "steps": [
+    { "step": 0, "name": "anthropic-recommend", "status": "pending" },
+    { "step": 1, "name": "questions-route", "status": "pending" },
+    { "step": 2, "name": "recommend-route", "status": "pending" },
+    { "step": 3, "name": "ui-common", "status": "pending" },
+    { "step": 4, "name": "ui-booklist", "status": "pending" }
+  ]
+}

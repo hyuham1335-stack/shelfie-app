@@ -1,3 +1,8 @@
+---
+name: harness
+description: 이 프로젝트는 Harness 프레임워크를 사용한다. docs/ 문서를 읽고 구현 계획을 step 단위로 설계한 뒤 phases/ 파일을 생성하고 execute.py로 실행하는 워크플로우. 기능 구현 계획을 세우거나 step 파일을 만들 때 사용한다.
+---
+
 이 프로젝트는 Harness 프레임워크를 사용한다. 아래 워크플로우에 따라 작업을 진행하라.
 
 ---

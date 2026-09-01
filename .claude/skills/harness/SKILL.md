@@ -31,6 +31,22 @@ description: 이 프로젝트는 Harness 프레임워크를 사용한다. docs/ 
 6. **주의사항은 구체적으로** — "조심해라" 대신 "X를 하지 마라. 이유: Y" 형식으로 적는다.
 7. **네이밍** — step name은 kebab-case slug로, 해당 step의 핵심 모듈/작업을 한두 단어로 표현한다 (예: `project-setup`, `api-layer`, `auth-flow`).
 
+#### 이전 런의 미해소 보고를 어느 step이 받는가
+
+step들이 `summary`로 올린 보고는 **다음 런 설계에서 명시적으로 배정하지 않으면 영원히 이월된다.** 이 리포에서 실제로 네 건이 세 런 연속 살아남았고, 원인은 설계 단계에 있었다 — step 파일이 금지사항에 "`src/lib/`을 고치지 마라"를 넣어 놓고 다음 런의 계획서에는 "여기서 정리한다"고 적었다. 두 문서가 서로를 부정했고, 실행 중에는 아무도 그것을 알아채지 못했다.
+
+설계 시작 전에 이전 런의 보고를 전부 꺼내 **손댈 파일 기준으로** 분류한다:
+
+| 분류 | 판정 방법 | 처리 |
+|------|-----------|------|
+| **역할 소유** | `harness/config.json`의 `roles[].owns`에 걸린다 (이 리포에서는 `src/**`) | **어느 step이 받는지 이름으로 지정하고**, 그 step의 금지사항에서 그 경로를 뺀다 |
+| **메인 소유** | `main_owned_paths`에 걸린다 (`docs/**` · `.env*` · `harness/**` · `scripts/**` · `.claude/**` · **리포 루트의** `*.ts`·`*.json`·`*.mjs`) | **step에 주지 마라.** 런을 시작하기 전에 사람이 처리한다 |
+| **둘에 걸침** | 문서와 코드를 함께 고쳐야 한다 | **문서를 먼저(메인), 코드를 나중(step).** 계약이 없으면 step이 이름을 지어낸다 |
+
+`main_owned_paths`의 glob은 `*`가 디렉토리를 넘지 않는다. 즉 `*.ts`는 **루트의** `vitest.config.ts`·`next.config.ts`만 잡고 `src/lib/env.ts`는 잡지 않는다. 워커가 실제로 소유한 경로를 금지사항으로 막고 있지 않은지 확인하라 — 판정은 눈이 아니라 `harness.py`의 `glob_any`로 한다.
+
+어느 분류에도 넣지 못한 보고는 **이번 런에서 해소되지 않는다고 `phases/{task-name}/index.json`이나 계획서에 명시한다.** 조용히 떨어뜨리는 것이 이 실패의 원형이다.
+
 ### D. 파일 생성
 
 사용자가 승인하면 아래 파일들을 생성한다.
@@ -88,6 +104,8 @@ description: 이 프로젝트는 Harness 프레임워크를 사용한다. docs/ 
 
 `created_at`은 execute.py가 최초 실행 시 task 레벨에 한 번만 기록한다. step 레벨의 `started_at`도 execute.py가 각 step 시작 시 자동 기록한다. 생성 시 넣지 않는다.
 
+`attempts`(그 step을 몇 번 태웠는가)도 execute.py가 쓴다. 1회에 통과해도 `1`을 남긴다 — **"기록 없음"과 "재시도 0회"는 다른 것**이고, 재시도 상한(`calibrate`의 `retry_budget`)이 이 값에서 유도된다. 생성 시 넣지 말고, step 세션도 건드리지 않는다.
+
 #### D-3. `phases/{task-name}/step{N}.md` (각 step마다 1개)
 
 ```markdown
@@ -131,8 +149,12 @@ npm test        # 테스트 통과
 ## 금지사항
 
 - {이 step에서 하지 말아야 할 것. "X를 하지 마라. 이유: Y" 형식}
+- **`index.json`의 실행기 소유 필드를 쓰지 마라** (타임스탬프 5종 · `attempts`). 이유: 실행기가 기록한다. 네가 쓰면 실측이 오염된다
+- **`RUNNING` 파일을 읽지도 지우지도 마라.** 이유: 실행기 소유다
 - 기존 테스트를 깨뜨리지 마라
 ```
+
+금지사항을 쓰기 전에 위의 **소유 분류**를 다시 본다. 워커가 소유한 경로를 습관적으로 금지하면 그 step이 받기로 한 보고가 설계 단계에서 이미 불가능해진다 — 실제로 그 방식으로 네 건이 세 런을 살아남았다.
 
 ### E. 실행
 
@@ -154,11 +176,27 @@ execute.py가 자동으로 처리하는 것:
 - `feat-{task-name}` 브랜치 생성/checkout
 - 가드레일 주입 — CLAUDE.md + docs/*.md 내용을 매 step 프롬프트에 포함
 - 컨텍스트 누적 — 완료된 step의 summary를 다음 step 프롬프트에 전달
-- 자가 교정 — 실패 시 최대 3회 재시도하며, 이전 에러 메시지를 프롬프트에 피드백
+- 자가 교정 — 실패 시 재시도하며 이전 에러 메시지를 프롬프트에 피드백한다. 상한은 `harness/calibration.json`의 `derived.retry_budget`에서 오고, 실측이 없으면 `MAX_RETRIES`(3)가 바닥값이다
 - 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋
-- 타임스탬프 — started_at, completed_at, failed_at, blocked_at 자동 기록
+- 타임스탬프와 `attempts` — started_at, completed_at, failed_at, blocked_at 자동 기록
+- **실행 중 상태** — `phases/{task-name}/RUNNING`에 pid·step·heartbeat를 남기고, 끝나면(성공·실패·차단 모두) 지운다
+
+### 실행 중인 런을 오독하지 않기
+
+`started_at`은 있는데 `step{N}-output.json`이 없는 상태는 **"지금 돌고 있다"와 "죽었다"를 동시에 뜻한다.** 출력 파일은 모델 호출이 반환한 뒤에야 쓰이기 때문이다. 실제로 감독 세션이 9분째 작업 중이던 step을 "끊겼다"로 읽고 산출물을 되돌린 적이 있다.
+
+**진행 중인지 보려면 `RUNNING`을 본다.** `heartbeat`가 5분 이내면 살아 있는 것이다.
+
+```bash
+cat phases/{task-name}/RUNNING     # heartbeat 가 지금과 가까우면 돌고 있다
+```
+
+- 살아 있는 런의 소스·`index.json`을 고치지 마라. 실행기를 하나 더 띄우지도 마라 — 둘이 같은 `index.json`을 고치면 산출물이 서로를 덮는다. 실행기가 `exit 2`로 막지만, 막히기 전에 사람이 파일을 건드리는 것까지 막지는 못한다.
+- **`RUNNING`을 손으로 지우지 마라.** 실행기 소유다. 정말 죽은 런이라고 확신할 때만 지운다.
+- 실행기가 죽은 런의 `RUNNING`을 발견하면 스스로 회수하고, 그 step을 재개로 표시해 세션에게 "이미 있는 것을 먼저 읽어라"라고 알린다.
 
 에러 복구:
 
 - **error 발생 시**: `phases/{task-name}/index.json`에서 해당 step의 `status`를 `"pending"`으로 바꾸고 `error_message`를 삭제한 뒤 재실행한다.
 - **blocked 발생 시**: `blocked_reason`에 적힌 사유를 해결한 뒤, `status`를 `"pending"`으로 바꾸고 `blocked_reason`을 삭제한 뒤 재실행한다.
+- 어느 쪽이든 `started_at`·`attempts`는 되돌리지 않는다. 실행기가 소유한 실측이다.

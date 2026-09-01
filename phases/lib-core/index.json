@@ -40,7 +40,7 @@
       "status": "completed",
       "started_at": "2026-09-01T15:15:46+0900",
       "summary": "src/lib/image.ts 신규 — 순수 함수 validateSelection·hashBytes·targetDimensions·isTooSmallAfterResize·dataUriByteLength·checkOutputBudget와 DOM 의존 resizeToDataUri, ImageDecodeError·RejectReason·SelectedFileMeta 타입, 상수 8종(MAX_LONG_EDGE 1568·MIN_SHORT_EDGE 600·JPEG_QUALITY 0.85·MAX_SOURCE_BYTES·산출물 2MB/4MB·SUPPORTED_MIME_TYPES). 파일 단위 거부(우선순위 unsupported_type→too_large→duplicate→too_many)로 한 장 결함이 전체를 막지 않고, 디코드는 imageOrientation \"from-image\"로 EXIF 정립 후 축소, 모든 실패를 ImageDecodeError(decode_failed)로 명시. src/lib/image.test.ts 40건 (캔버스는 vi.spyOn/stubGlobal로 대체, 새 의존성 0).",
-      "completed_at": "2026-09-01T15:24:30+0900"
+      "completed_at": "2026-09-01T15:22:50+0900"
     }
   ],
   "created_at": "2026-09-01T14:53:28+0900"

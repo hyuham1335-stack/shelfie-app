@@ -271,6 +271,16 @@ class TestBuildPreamble:
         result = executor._build_preamble("", "")
         assert "/phases/0-mvp/index.json" in result
 
+    def test_forbids_writing_timestamp_fields(self, executor):
+        """타임스탬프는 실행기 소유다 (파일럿 M5).
+
+        세션에게 index.json 을 고치라고만 하고 형식 규약을 주지 않으면,
+        세션이 자기 형식으로 타임스탬프를 쓴다. 실측이 조용히 오염된다.
+        """
+        result = executor._build_preamble("", "")
+        for field in ("started_at", "completed_at", "failed_at", "blocked_at", "created_at"):
+            assert field in result, f"{field} 를 쓰지 말라는 지시가 없다"
+
 
 # ---------------------------------------------------------------------------
 # _update_top_index
@@ -506,6 +516,53 @@ class TestProgressIndicator:
         with ex.progress_indicator("test") as pi:
             time.sleep(0.2)
         assert pi.elapsed > 0
+
+    def test_elapsed_readable_inside_the_block(self):
+        """블록 안에서 읽어도 실제 경과 시간이 나와야 한다.
+
+        finally 에서만 채우면 호출부가 with 안에서 읽을 때 언제나 0 이고,
+        실행기가 표시하는 step 소요가 전부 0s 가 된다 (파일럿 M4).
+        """
+        import time
+        with ex.progress_indicator("test") as pi:
+            time.sleep(0.15)
+            inside = pi.elapsed
+        assert inside >= 0.1, "with 블록 안에서 읽은 경과 시간이 0이다"
+        assert pi.elapsed >= inside
+
+    def test_spinner_is_silent_when_stderr_is_not_a_tty(self):
+        """리다이렉트된 로그를 스피너로 덮지 않는다 (파일럿 M2).
+
+        \\r 로 덮이는 것은 터미널에서뿐이다. 파일에서는 프레임이 전부 쌓여
+        실제 출력을 못 찾는다.
+        """
+        import io
+        import time
+
+        class NotATty(io.StringIO):
+            def isatty(self):
+                return False
+
+        fake = NotATty()
+        with patch.object(ex.sys, "stderr", fake):
+            with ex.progress_indicator("test"):
+                time.sleep(0.3)
+        assert "◐" not in fake.getvalue()
+        assert "◓" not in fake.getvalue()
+
+    def test_spinner_runs_when_stderr_is_a_tty(self):
+        import io
+        import time
+
+        class IsATty(io.StringIO):
+            def isatty(self):
+                return True
+
+        fake = IsATty()
+        with patch.object(ex.sys, "stderr", fake):
+            with ex.progress_indicator("test"):
+                time.sleep(0.3)
+        assert "test" in fake.getvalue()
 
 
 # ---------------------------------------------------------------------------

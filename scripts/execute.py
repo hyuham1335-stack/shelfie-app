@@ -14,7 +14,6 @@ import subprocess
 import sys
 import threading
 import time
-import types
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -22,32 +21,68 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 
 
+class _Stopwatch:
+    """경과 시간을 **언제 읽어도** 유효하게 돌려준다.
+
+    finally 에서만 값을 채우면 호출부가 with 블록 안에서 읽을 때 언제나 0 이고,
+    실행기가 표시하는 step 소요가 전부 0s 가 된다(파일럿에서 두 런 동안
+    그랬다). 진행 중에는 실시간으로 계산하고, 끝나면 그 시점 값으로 고정한다.
+    """
+
+    __slots__ = ("_t0", "_final")
+
+    def __init__(self):
+        self._t0 = time.monotonic()
+        self._final = None
+
+    @property
+    def elapsed(self) -> float:
+        if self._final is not None:
+            return self._final
+        return time.monotonic() - self._t0
+
+    def freeze(self):
+        self._final = time.monotonic() - self._t0
+
+
 @contextlib.contextmanager
 def progress_indicator(label: str):
-    """터미널 진행 표시기. with 문으로 사용하며 .elapsed 로 경과 시간을 읽는다."""
+    """진행 표시기. `.elapsed` 로 경과 시간을 읽는다 (블록 안에서도 유효하다).
+
+    스피너는 터미널에서만 띄운다. `\\r` 로 덮이는 것은 TTY 에서뿐이고,
+    리다이렉트된 로그에서는 프레임이 전부 쌓여 실제 출력을 가린다.
+    """
     frames = "◐◓◑◒"
     stop = threading.Event()
-    t0 = time.monotonic()
+    watch = _Stopwatch()
+    stream = sys.stderr
+    animated = bool(getattr(stream, "isatty", lambda: False)())
 
     def _animate():
         idx = 0
         while not stop.wait(0.12):
-            sec = int(time.monotonic() - t0)
-            sys.stderr.write(f"\r{frames[idx % len(frames)]} {label} [{sec}s]")
-            sys.stderr.flush()
+            stream.write(f"\r{frames[idx % len(frames)]} {label} [{int(watch.elapsed)}s]")
+            stream.flush()
             idx += 1
-        sys.stderr.write("\r" + " " * (len(label) + 20) + "\r")
-        sys.stderr.flush()
+        stream.write("\r" + " " * (len(label) + 20) + "\r")
+        stream.flush()
 
-    th = threading.Thread(target=_animate, daemon=True)
-    th.start()
-    info = types.SimpleNamespace(elapsed=0.0)
+    th = None
+    if animated:
+        th = threading.Thread(target=_animate, daemon=True)
+        th.start()
+    else:
+        # 비대화형에서는 스피너 대신 시작 한 줄. flush 하지 않으면 블록 버퍼링에
+        # 걸려 프로세스가 끝날 때까지 아무것도 보이지 않는다.
+        print(f"  ▶ {label}", flush=True)
+
     try:
-        yield info
+        yield watch
     finally:
+        watch.freeze()
         stop.set()
-        th.join()
-        info.elapsed = time.monotonic() - t0
+        if th is not None:
+            th.join()
 
 
 class StepExecutor:
@@ -131,7 +166,7 @@ class StepExecutor:
             print(f"  Hint: 변경사항을 stash하거나 commit한 후 다시 시도하세요.")
             sys.exit(1)
 
-        print(f"  Branch: {branch}")
+        print(f"  Branch: {branch}", flush=True)
 
     def _commit_step(self, step_num: int, step_name: str):
         output_rel = f"phases/{self._phase_dir_name}/step{step_num}-output.json"
@@ -145,7 +180,7 @@ class StepExecutor:
             msg = self.FEAT_MSG.format(phase=self._phase_name, num=step_num, name=step_name)
             r = self._run_git("commit", "-m", msg)
             if r.returncode == 0:
-                print(f"  Commit: {msg}")
+                print(f"  Commit: {msg}", flush=True)
             else:
                 print(f"  WARN: 코드 커밋 실패: {r.stderr.strip()}")
 
@@ -220,7 +255,11 @@ class StepExecutor:
             f"   - AC 통과 → \"completed\" + \"summary\" 필드에 이 step의 산출물을 한 줄로 요약\n"
             f"   - {self.MAX_RETRIES}회 수정 시도 후에도 실패 → \"error\" + \"error_message\" 기록\n"
             f"   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → \"blocked\" + \"blocked_reason\" 기록 후 즉시 중단\n"
-            f"6. 모든 변경사항을 커밋하라:\n"
+            f"6. **타임스탬프 필드를 쓰지 마라.** started_at · completed_at · failed_at ·\n"
+            f"   blocked_at · created_at 은 전부 실행기가 기록한다. 네가 쓰면 형식이\n"
+            f"   어긋나 실측이 오염된다. index.json 에서 네가 고칠 것은 status 와\n"
+            f"   summary · error_message · blocked_reason 뿐이다.\n"
+            f"7. 모든 변경사항을 커밋하라:\n"
             f"   {commit_example}\n\n---\n\n"
         )
 
@@ -314,7 +353,7 @@ class StepExecutor:
 
             with progress_indicator(tag) as pi:
                 self._invoke_claude(step, preamble)
-                elapsed = int(pi.elapsed)
+            elapsed = int(pi.elapsed)
 
             index = self._read_json(self._index_file)
             status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
@@ -326,7 +365,7 @@ class StepExecutor:
                         s["completed_at"] = ts
                 self._write_json(self._index_file, index)
                 self._commit_step(step_num, step_name)
-                print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]")
+                print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]", flush=True)
                 return True
 
             if status == "blocked":
@@ -335,7 +374,7 @@ class StepExecutor:
                         s["blocked_at"] = ts
                 self._write_json(self._index_file, index)
                 reason = next((s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num), "")
-                print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]")
+                print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]", flush=True)
                 print(f"    Reason: {reason}")
                 self._update_top_index("blocked")
                 sys.exit(2)
@@ -352,7 +391,7 @@ class StepExecutor:
                         s.pop("error_message", None)
                 self._write_json(self._index_file, index)
                 prev_error = err_msg
-                print(f"  ↻ Step {step_num}: retry {attempt}/{self.MAX_RETRIES} — {err_msg}")
+                print(f"  ↻ Step {step_num}: retry {attempt}/{self.MAX_RETRIES} — {err_msg}", flush=True)
             else:
                 for s in index["steps"]:
                     if s["step"] == step_num:
@@ -361,7 +400,7 @@ class StepExecutor:
                         s["failed_at"] = ts
                 self._write_json(self._index_file, index)
                 self._commit_step(step_num, step_name)
-                print(f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]")
+                print(f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]", flush=True)
                 print(f"    Error: {err_msg}")
                 self._update_top_index("error")
                 sys.exit(1)

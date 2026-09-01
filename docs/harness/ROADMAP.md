@@ -2,22 +2,28 @@
 
 > **이 문서의 위치**
 > 이 문서는 **템플릿 리포 자신**에 대한 것이다. 클론한 프로젝트가 채우는 `/docs/PRD.md`·`/docs/TRD.md` 등과는 층이 다르다.
-> `docs/harness/` 하위는 하네스 자체의 문서이고, `docs/` 직속의 6개 문서는 **프로젝트가 채우는 빈 템플릿**이다.
-> 프로젝트를 시작할 때 이 폴더는 읽기만 하고 고치지 않는다.
+> `docs/harness/` 하위는 하네스 자체의 문서이고, `docs/` 직속의 6개 문서는 **프로젝트가 채우는 자리**다.
+> 이 리포에서는 그 자리를 파일럿 대상인 Shelfie가 채우고 있다 — 하네스와 파일럿이 한 리포에 사는 이유는 [ADR-H003](DECISIONS.md).
+> 프로젝트 작업 중에는 이 폴더를 읽기만 하고 고치지 않는다. 고치는 것은 하네스 작업일 때뿐이다.
 
 ---
 
-## 1. 현재 상태 (0단계)
+## 1. 현재 상태 (1단계 — 계약 계층 구축 완료)
 
 | 계층 | 내용 |
 |------|------|
-| 문서 골격 | `docs/` 6종 — PRD · TRD · API_SPEC · ARCHITECTURE · ADR · UI_GUIDE. 전부 `{...}` 플레이스홀더 |
+| 문서 골격 | `docs/` 6종 — PRD · TRD · API_SPEC · ARCHITECTURE · ADR · UI_GUIDE. **파일럿 대상(Shelfie)으로 채워져 있다** |
 | 가드레일 | `CLAUDE.md` — 각 문서 경로만 참조. CRITICAL 규칙(TDD·Mermaid·API 단일 출처·레이어 경계) |
-| 워크플로우 | `.claude/skills/harness/SKILL.md` (step 설계 → `phases/` 생성 → 실행), `.claude/skills/review/SKILL.md` |
-| 실행기 | `scripts/execute.py` — 순차 step 실행기 417줄. CLI는 `{task-name}` + `--push` |
-| 테스트 | `scripts/test_execute.py` 559줄 |
+| 워크플로우 | `.claude/skills/harness/SKILL.md` (doctor → step 설계 → `phases/` 생성 → 실행), `.claude/skills/review/SKILL.md` |
+| **계약 계층** | `harness/config.json` · `config.schema.json` · `adapters/{nextjs-ts,_template}.json` + `adapter.schema.json` · `profiles/nextjs-ts/` · `templates/contract.md` |
+| 실행기 | `scripts/harness.py` — `init` · `doctor`. `scripts/execute.py` — 순차 step 실행기 417줄, CLI는 `{task-name}` + `--push` |
+| 테스트 | `scripts/test_harness.py` (34건) · `scripts/test_execute.py` 559줄 |
 
 `scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md + docs/\*.md) · summary 컨텍스트 누적 · 실패 시 3회 자가 교정 · 2단계 커밋 · 타임스탬프 기록.
+
+`scripts/harness.py doctor`가 하는 일: python 런타임 · config·어댑터 스키마 · 어댑터 전제조건 · 러너 바이너리 · 스테이지 명령의 실물 존재 · 역할과 소유 경계 · 계약 절 ↔ 템플릿 일치 · base 브랜치와 원격 · 경로 240자 상한 · 캘리브레이션 상태. 실패는 exit 2로 `/feature` 진입 자체를 막고, 경고는 통과시키되 전부 출력에 드러낸다.
+
+진입점이 둘인 이유와 통합 시점은 [ADR-H003](DECISIONS.md)에 있다.
 
 ---
 
@@ -27,7 +33,7 @@
 
 ### 왜 지금 전부 넣지 않는가
 
-1. **실측 없는 상수를 상속하지 않는다.** 목표 파이프라인의 정책(백그라운드 회귀 여부, 타임아웃, 테스트 수 하한)은 전부 실측값의 함수다. 지금 이 리포의 `docs/`는 전부 빈칸이고, 파이프라인은 **실제 프로젝트 제약을 한 번도 만난 적이 없다.**
+1. **실측 없는 상수를 상속하지 않는다.** 목표 파이프라인의 정책(백그라운드 회귀 여부, 타임아웃, 테스트 수 하한)은 전부 실측값의 함수다. `docs/`는 이제 Shelfie로 채워졌지만 파이프라인은 아직 **한 번도 완주한 적이 없다** — 스테이지별 실측 시간도, 테스트 수 기준선도 없다. 그 값이 생기기 전에 정책을 상수로 굳히면 근거 없는 숫자를 모든 파생 프로젝트가 물려받는다.
 2. **검증 전 승격 금지.** 어댑터의 `verified` 플래그와 같은 원칙이다 — 실제 프로젝트에서 완주시킨 뒤에만 `true`로 올린다. 문서·스크립트에도 같은 규율을 적용한다.
 3. **그렇다고 프로젝트마다 하네스를 새로 만들지도 않는다.** 그러면 일반화의 목적이 무너진다. 개선이 축적되지 않고, 고유명사·상수가 매번 다시 박힌다.
 
@@ -41,9 +47,9 @@
 
 ```mermaid
 flowchart LR
-    S0["0단계 · 현재<br/>docs 골격 + 순차 실행기"]
-    S1["1단계 · 계약 계층<br/>config · adapter · init · doctor"]
-    S2["2단계 · 파일럿<br/>첫 실제 프로젝트 완주"]
+    S0["0단계 · 완료<br/>docs 골격 + 순차 실행기"]
+    S1["1단계 · 완료<br/>config · adapter · init · doctor"]
+    S2["2단계 · 현재<br/>Shelfie 파일럿 완주"]
     S3["3단계 · 8페이즈 승격<br/>파이프라인 이식"]
 
     S0 --> G1{"doctor가 깨진 config를<br/>전부 거부하는가"}
@@ -58,12 +64,16 @@ flowchart LR
     G3 -->|미통과| S2
 ```
 
-| 단계 | 내용 | 승격 조건 | 예상 |
+| 단계 | 내용 | 승격 조건 | 상태 |
 |------|------|-----------|------|
-| **0. 현재** | docs 골격 + 단순 순차 실행기 | — | 완료 |
-| **1. 계약 계층** | `harness/config.json` · `config.schema.json` · 어댑터 스키마 · `init` · `doctor` | 일부러 깨뜨린 config(역할 glob 교집합 · 계약 절 불일치 · 화이트리스트 밖 러너 등)를 `doctor`가 **전부 거부**하고, 정상 config는 통과 | ~1일 |
-| **2. 파일럿** | 첫 실제 프로젝트를 클론해 `docs/`를 채우고 **현재 실행기로** 완주. 부족한 지점을 기록 | 스테이지별 실측 시간 · 테스트 개수 · 린트 위반 기준선 확보 | 프로젝트 1건 |
-| **3. 8페이즈 승격** | 파일럿 실측을 근거로 목표 파이프라인을 템플릿에 이식 | 두 스택에서 완주 + 코어 파일에 스택 고유명사 grep **0건** | ~5.5일 |
+| **0. 골격** | docs 골격 + 단순 순차 실행기 | — | 완료 |
+| **1. 계약 계층** | `harness/config.json` · `config.schema.json` · 어댑터 스키마 · `init` · `doctor` | 일부러 깨뜨린 config(역할 소유 겹침 · 계약 절 불일치 · 화이트리스트 밖 러너 등)를 `doctor`가 **전부 거부**하고, 정상 config는 통과 | **완료** — `scripts/test_harness.py`의 거부 8종 + 오탐 검사가 게이트다 |
+| **2. 파일럿** | 첫 실제 프로젝트(**Shelfie**)를 **현재 실행기로** 완주. 부족한 지점을 기록 | 스테이지별 실측 시간 · 테스트 개수 · 린트 위반 기준선 확보 → `calibrate`가 `harness/calibration.json`을 쓰고 어댑터를 `verified: true`로 승격 | 진행 중 |
+| **3. 8페이즈 승격** | 파일럿 실측을 근거로 목표 파이프라인을 이식 | 두 스택에서 완주 + 코어 파일에 스택 고유명사 grep **0건** | ~5.5일 |
+
+**1단계에서 실제로 회수한 것**: 첫 `doctor` 실행이 어댑터의 `compile` 스테이지가 참조하는 `npm run typecheck`가 `package.json`에 없다는 것을 잡았다(G5). 게이트가 없었다면 첫 파일럿 런이 25분 돌고 나서 드러났을 불일치다.
+
+**1단계가 아직 못 하는 것**: `calibrate`가 없어 타임아웃·백그라운드 회귀 여부·테스트 수 하한이 전부 보수적 기본값이다. 어댑터의 `attribution` 블록은 형태만 있고 소비자가 없다. 역할 에이전트 정의(`.claude/agents/*.md`)도 없다 — `doctor`가 이 셋을 매번 경고로 드러낸다.
 
 각 단계의 게이트를 통과하지 못하면 **다음 단계로 넘어가지 않는다.** "일단 넣고 나중에 고친다"는 이 로드맵이 막으려는 실패 자체다.
 
@@ -111,9 +121,10 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 ## 6. 다음 행동
 
-1. 첫 실제 프로젝트를 정한다 (2단계 파일럿 대상)
-2. 클론 후 `CLAUDE.md`와 `docs/` 6종을 그 프로젝트에 맞게 채운다
-3. 현재 실행기로 완주시키고, **막힌 지점·수동 개입이 필요했던 지점을 기록**한다
-4. 그 기록이 1단계 `config.json`의 스키마를 결정한다 — 추측이 아니라 실측으로
+1~2는 완료됐다 — 파일럿 대상은 **Shelfie**이고 `CLAUDE.md`와 `docs/` 6종은 채워져 있다.
+
+3. `python scripts/harness.py doctor`가 통과하는 것을 확인한 뒤 현재 실행기로 기능을 완주시키고, **막힌 지점·수동 개입이 필요했던 지점을 기록**한다
+4. 스테이지별 실측 시간·테스트 개수·린트 위반 기준선을 모은다. 이것이 `calibrate`와 `harness/calibration.json`의 입력이다 — 추측이 아니라 실측으로
+5. 어댑터 `nextjs-ts`를 `verified: true`로 올릴 수 있는지 판단한다. 완주 전에는 올리지 않는다
 
 결정 기록은 [DECISIONS.md](DECISIONS.md)를 본다.

@@ -1,0 +1,111 @@
+"use client";
+
+/**
+ * 에러 배너 (UI_GUIDE "에러 배너", API_SPEC 에러 응답 규약).
+ *
+ * 두 가지가 이 컴포넌트의 계약이다.
+ * ① `requestId`를 반드시 화면에 노출한다. 서버 로그를 이 값으로 찾도록 설계돼 있으므로
+ *    (TRD 6.4 상관관계 ID), 화면에 없으면 규칙 자체가 무의미해진다. 탭하면 복사된다.
+ * ② 코드 → 정해진 문구 매핑만 쓴다. 모델이 생성한 문장이나 내부 에러 원문을 넣지 않는다
+ *    (API_SPEC: 내부 정보 비노출).
+ */
+import { useState } from "react";
+import type { ErrorCode } from "@/types/api";
+
+/** 에러 코드별로 사용자 언어의 정해진 문구를 쓴다. 필드 경로·zod 원문은 노출하지 않는다 */
+const MESSAGE: Record<ErrorCode, string> = {
+  INVALID_REQUEST: "요청을 처리할 수 없어요. 입력을 확인하고 다시 시도해 주세요",
+  TOO_MANY_PHOTOS: "사진은 최대 5장까지 올릴 수 있어요",
+  UNSUPPORTED_IMAGE_TYPE: "JPG·PNG·WEBP 사진만 올릴 수 있어요",
+  IMAGE_TOO_LARGE: "사진 한 장이 너무 커요. 다른 사진으로 시도해 주세요",
+  PAYLOAD_TOO_LARGE: "사진 용량이 너무 커요. 장수를 줄여 주세요",
+  EMPTY_SHELF: "책등이 보이도록 다시 찍어 주세요",
+  NOT_FOUND_IN_ALADIN: "알라딘에서 찾을 수 없는 책이에요 (원서·절판일 수 있어요)",
+  UNVERIFIED_BOOKS: "책 정보가 만료됐어요. 사진을 다시 분석해 주세요",
+  IRRELEVANT_MOOD: "책 고르는 데 참고할 내용을 적어 주세요",
+  RATE_LIMITED: "요청이 몰렸어요. 잠시 후 다시 시도해 주세요",
+  UPSTREAM_UNAVAILABLE: "지금 책을 확인할 수 없어요. 잠시 후 다시 시도해 주세요",
+  RECOMMENDATION_VALIDATION_FAILED:
+    "추천을 만들지 못했어요. 잠시 후 다시 시도해 주세요",
+  TIMEOUT: "시간이 오래 걸려 중단됐어요. 사진 장수를 줄여 다시 시도해 주세요",
+  SERVICE_DISABLED: "지금은 점검 중이에요. 잠시 후 다시 찾아와 주세요",
+};
+
+/** 목록에 없는 코드(서버가 새 코드를 내보내거나 응답이 어긋난 경우)의 기본 문구 */
+const FALLBACK_MESSAGE = "문제가 생겼어요. 잠시 후 다시 시도해 주세요";
+
+export interface ErrorBannerProps {
+  code: ErrorCode;
+  /** 에러 응답 본문의 `requestId`. 화면에서 지우지 않는다 */
+  requestId: string;
+  /** 재시도 경로가 있을 때만 넘긴다. SERVICE_DISABLED에서는 무시된다 */
+  onRetry?: () => void;
+  onReset?: () => void;
+}
+
+export function ErrorBanner({
+  code,
+  requestId,
+  onRetry,
+  onReset,
+}: ErrorBannerProps) {
+  const [copied, setCopied] = useState(false);
+
+  // 503은 눌러도 결과가 달라지지 않는다. 없느니만 못한 버튼은 그리지 않는다 (UI_GUIDE).
+  const canRetry = onRetry !== undefined && code !== "SERVICE_DISABLED";
+
+  function handleCopy() {
+    // 클립보드는 권한·비보안 컨텍스트·구형 브라우저에서 없을 수 있다.
+    // 복사가 안 되는 것보다 배너가 사라지는 것이 훨씬 나쁘다 — 실패는 조용히 삼킨다.
+    try {
+      const clipboard = navigator.clipboard as Clipboard | undefined;
+      if (clipboard === undefined) return;
+      void clipboard.writeText(requestId).then(
+        () => setCopied(true),
+        () => undefined,
+      );
+    } catch {
+      // 무시
+    }
+  }
+
+  return (
+    <div
+      role="alert"
+      className="space-y-2 rounded-md border border-danger/30 bg-card p-4"
+    >
+      <p className="text-sm text-ink">{MESSAGE[code] ?? FALLBACK_MESSAGE}</p>
+
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="flex min-h-11 w-full items-center text-left font-mono text-[11px] text-disabled"
+      >
+        {copied ? "복사됨 — " : ""}오류 ID: {requestId}
+      </button>
+
+      {(canRetry || onReset !== undefined) && (
+        <div className="flex items-center gap-3">
+          {canRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="min-h-11 rounded-md border border-line bg-card px-5 py-3 text-sm text-ink hover:bg-muted-surface"
+            >
+              다시 시도
+            </button>
+          )}
+          {onReset !== undefined && (
+            <button
+              type="button"
+              onClick={onReset}
+              className="min-h-11 text-sm text-subtle underline underline-offset-2 hover:text-ink"
+            >
+              처음으로
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "ui-common",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-01T22:09:49+0900",
+      "summary": "src/components/common/에 공통 조각 5종 신설(전부 named export, PascalCase 파일). ① ClaudeText({label:'AI 한줄평'|'추천 이유', text:string}) — UI_GUIDE 형태(border-l-2 border-accent/40 pl-3 text-sm italic text-subtle + 라벨 text-[11px] uppercase tracking-wide text-disabled not-italic)를 그대로 쓰고, text.trim()==='' 이면 null을 반환해 빈 인용 블록을 그리지 않는다(한줄평 생성 실패는 빈 문자열로 온다). label 타입 ClaudeTextLabel이 유니온이라 다른 자리에 이 블록을 쓰면 컴파일이 막힌다 — 한줄평·추천 이유는 반드시 이것으로만 렌더한다(ADR-002). ② ErrorBanner({code:ErrorCode, requestId:string, onRetry?:()=>void, onReset?:()=>void}) — 'use client'. role='alert', 코드→정해진 문구 매핑(14종 + 목록 밖 코드용 기본 문구 '문제가 생겼어요…')만 쓰고 내부 원문은 넣지 않는다. requestId는 min-h-11 버튼('오류 ID: {id}')으로 노출하고 탭하면 navigator.clipboard로 복사 후 '복사됨' 표시 — clipboard가 없거나 rejected여도 삼키고 배너는 그대로 남는다. code==='SERVICE_DISABLED'면 onRetry를 넘겨도 재시도 버튼을 그리지 않는다. ③ Notice({children:ReactNode}) — text-xs text-subtle 한 줄, 색 없음. ④ Badge(props) — 판별 유니온 {kind:'reason', reason:UnidentifiedReason} | {kind:'rating', rating:number}. reason 4종은 UI_GUIDE 배지 문구(못 읽음/검색 결과 없음/후보 여럿/확인 못 함)를 항상 텍스트로 담고, lookup_failed만 중립(bg-muted-surface text-subtle)이며 나머지 셋은 앰버(bg-unverified/10 text-unverified)다(ADR-005). rating은 별 아이콘 없이 '독자 8.6'(toFixed(1)) text-xs text-subtle. ⑤ Skeleton({className?}) — 기본 'h-4 w-full', rounded-sm bg-muted-surface, aria-hidden, 애니메이션 없음. 색상은 globals.css 토큰 클래스만 쓰고 원시 hex 0건, 서버 전용 모듈(services/·lib/proof·lib/env) import 0건 — 런타임 import는 react뿐이고 types/는 type-only다(아이콘·새 의존성 추가 없음). 테스트 48건 추가(전체 617→665건 통과, typecheck·lint·build·audit 0건). ★보고: vitest.config.ts에 setupFiles가 없어 @testing-library/jest-dom 매처는 여전히 등록돼 있지 않다(main_owned_paths라 고치지 않았다). 테스트는 표준 expect(not.toBeNull()/textContent/className)로 썼고, RTL 자동 cleanup도 globals:false라 동작하지 않아 각 파일에서 afterEach(cleanup)을 직접 호출했다 — step 4도 같은 방식이 필요하다. ★주의: JSX 속성 문자열은 이스케이프를 처리하지 않으므로 공백 판정 테스트는 text={\"...\"} 표현식으로 넘겨야 한다."
     },
     {
       "step": 4,

@@ -4,6 +4,8 @@ import { fileURLToPath } from "url";
 export default defineConfig({
   test: {
     environment: "jsdom",
+    // junit 리포터 — 하네스 게이트가 "테스트가 몇 개 돌았는가"를 기계로 읽는다 (harness/adapters/nextjs-ts.json).
+    reporters: ["default", ["junit", { outputFile: "reports/junit/vitest.xml" }]],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     // 골든 인식률 테스트는 실제 API를 호출하므로 CI에서 제외한다 (TRD 8번).
     exclude: ["**/node_modules/**", "**/*.golden.test.ts"],

@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "harness adapter",
+  "description": "스택 의존을 담는 선언형 파일. 코드가 아니라 데이터다. 어댑터는 선언만 하고 분기 로직을 담지 않는다 — 어댑터에 조건문이 필요해지면 그건 코어에 빠진 개념이라는 신호이므로, 필드를 늘리지 말고 코어에 스테이지·신호를 추가한다.",
+  "type": "object",
+  "required": ["id", "verified", "runner", "stages", "test_report"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "verified": {
+      "description": "실제 프로젝트에서 완주시킨 뒤에만 true. false면 doctor 가 경고하고 첫 런을 미캘리브레이션으로 표기한다.",
+      "type": "boolean"
+    },
+    "requires": {
+      "description": "이 어댑터를 쓸 수 있는 리포인가. doctor 가 /feature 진입 전에 검사한다.",
+      "type": "array",
+      "items": {"$ref": "#/definitions/requirement"}
+    },
+    "runner": {
+      "type": "object",
+      "required": ["bin"],
+      "additionalProperties": false,
+      "properties": {
+        "bin": {
+          "description": "실행 바이너리 화이트리스트. 페이즈 파일·어댑터가 임의 명령 실행 벡터가 되지 않게 하는 장치이며, 목록 확장은 이 enum 한 줄이다. 실행기 코드에는 두지 않는다.",
+          "type": "string",
+          "enum": ["npm", "pnpm", "yarn", "gradlew", "gradlew.bat", "mvn", "python", "python3", "go", "cargo", "make"]
+        },
+        "common_args": {"type": "array", "items": {"type": "string"}},
+        "cwd": {"type": "string"}
+      }
+    },
+    "stages": {
+      "description": "스테이지 이름은 코어가 고정하고 명령은 어댑터가 소유한다. 페이즈 파일은 이름만 참조하므로 스택 비종속이 된다.",
+      "type": "object",
+      "required": ["compile", "lint", "check", "scoped", "full", "e2e", "build", "docs"],
+      "additionalProperties": false,
+      "properties": {
+        "compile": {"$ref": "#/definitions/stage"},
+        "lint": {"$ref": "#/definitions/stage"},
+        "check": {"$ref": "#/definitions/stage"},
+        "scoped": {"$ref": "#/definitions/stage"},
+        "full": {"$ref": "#/definitions/stage"},
+        "e2e": {"$ref": "#/definitions/stage"},
+        "build": {"$ref": "#/definitions/stage"},
+        "docs": {"$ref": "#/definitions/stage"}
+      }
+    },
+    "test_report": {
+      "type": "object",
+      "required": ["format", "glob"],
+      "additionalProperties": false,
+      "properties": {
+        "format": {"type": "string", "enum": ["junit-xml", "jest-json", "go-json", "none"]},
+        "glob": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      }
+    },
+    "attribution": {
+      "description": "04-gate 의 실패 귀속 입력. 이 계층에는 아직 소비자가 없다 — 2단계에서 실측 픽스처로 검증한 뒤에만 동작한다고 말할 수 있다.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compile_error_regex": {"type": "string"},
+        "app_frame_prefixes": {"type": "array", "items": {"type": "string"}},
+        "test_file_globs": {"type": "array", "items": {"type": "string"}},
+        "symbol_not_found_patterns": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "entrypoint_resolver": {
+      "description": "계약의 진입점이 실재하는가를 스택 비종속으로 확인한다. none 이면 그 검사만 스킵하고 보고서에 '진입점 미검증'으로 드러난다.",
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string", "enum": ["file-convention", "annotation-grep", "none"]},
+        "map": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["route", "file"],
+            "additionalProperties": false,
+            "properties": {
+              "route": {"type": "string"},
+              "file": {"type": "string"},
+              "export": {"type": "string"}
+            }
+          }
+        },
+        "pattern": {"type": "string"}
+      }
+    },
+    "migration": {
+      "description": "마이그레이션 개념이 없는 스택에서는 null. null 은 '검사 없음'으로 기록되지 검사 통과가 아니다.",
+      "type": ["object", "null"],
+      "required": ["dir", "version_pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "dir": {"type": "string"},
+        "version_pattern": {"type": "string"},
+        "destructive_patterns": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "infra_preflight": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "kind": {"type": "string", "enum": ["tcp", "cmd", "env"]},
+          "host": {"type": "string"},
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "var": {"type": "string"},
+          "cmd": {"type": "array", "items": {"type": "string"}},
+          "required_when_touched": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "infra_failure_patterns": {
+      "description": "이 패턴에 걸린 실패는 owner: infra 로 분류되어 반복 카운터를 소모하지 않는다. 시스템 문제를 제출물 문제로 설명하지 않기 위한 장치.",
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "definitions": {
+    "requirement": {
+      "type": "object",
+      "required": ["kind", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string", "enum": ["file", "dir", "json_key"]},
+        "path": {"type": "string"},
+        "pointer": {
+          "description": "kind=json_key 일 때 점으로 구분한 키 경로 (예: scripts.test).",
+          "type": "string"
+        }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "required": ["cmd"],
+      "additionalProperties": false,
+      "properties": {
+        "cmd": {
+          "description": "null 이면 그 스테이지는 없는 것이고 게이트는 '스킵됨'으로 기록한다. 조용히 통과가 아니다.",
+          "type": ["array", "null"],
+          "items": {"type": "string"}
+        },
+        "cwd": {"description": "모노레포용 스테이지별 오버라이드.", "type": "string"},
+        "timeout_sec": {"type": "integer", "minimum": 1},
+        "blocking": {"type": "boolean"},
+        "loop_stage": {"description": "여기까지가 재작업 루프.", "type": "boolean"},
+        "once_after_loop": {"type": "boolean"},
+        "when_touched": {"type": "array", "items": {"type": "string"}},
+        "baseline_file": {"type": "string"},
+        "baseline_cmd": {"type": ["array", "null"], "items": {"type": "string"}},
+        "select": {
+          "description": "스코프 테스트 선택 문법.",
+          "type": "object",
+          "required": ["flag", "join"],
+          "additionalProperties": false,
+          "properties": {
+            "flag": {"type": "string"},
+            "join": {"type": "string", "enum": ["space", "repeat", "comma"]}
+          }
+        }
+      }
+    }
+  }
+}

@@ -136,6 +136,14 @@ npm test        # 테스트 통과
 
 ### E. 실행
 
+먼저 계약 계층 게이트를 통과해야 한다. **미통과면 실행하지 않는다** — 설정과 실물이 어긋난 채로 시작하면 25분 뒤에 알게 된다.
+
+```bash
+python3 scripts/harness.py doctor              # exit 0 이어야 다음으로 간다
+```
+
+`doctor`는 `harness/config.json`과 어댑터가 이 리포의 실물(스크립트·소유 경계·계약 절 제목·base 브랜치)과 맞는지 검사한다. 경고는 통과를 막지 않지만 전부 출력에 드러난다 — `verified:false` 어댑터, 미캘리브레이션, `cmd:null` 스테이지는 "없는 것"이지 "통과한 것"이 아니다.
+
 ```bash
 python3 scripts/execute.py {task-name}        # 순차 실행
 python3 scripts/execute.py {task-name} --push  # 실행 후 push

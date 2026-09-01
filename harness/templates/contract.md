@@ -1,0 +1,58 @@
+# 계약: {기능명}
+
+> 계약은 **메인 에이전트 단독 소유**다. 워커도 리뷰어도 고치지 않는다.
+> 결함을 발견하면 고치지 말고 `CONTRACT_DEFECT`로 보고한다.
+>
+> 아래 절 제목은 `harness/config.json`의 `contract.sections`와 **글자 그대로 일치**해야 한다.
+> 한쪽만 고치면 계약 추적이 조용히 아무것도 못 찾고 통과한다 — `doctor`가 그 불일치를 사전에 거부한다.
+
+## 범위
+
+- 프로파일: small | normal
+- 대상 경로(역할별): impl → `{glob}` / test → `{glob}`
+- 신규 / 기존 수정
+
+## 스키마·데이터 변경
+
+마이그레이션 파일명과 변경 내용. 없으면 "없음".
+
+## 외부 경계
+
+테스트가 모킹할 대상. 시그니처와 반환 형태를 적는다.
+
+- `AladinClient.search(title: string) -> AladinBook | null`
+
+## 데이터 형태
+
+- `CreateFooInput { name: string(≤255), amount: number(≥0) }`
+- `FooDetail { id, name, ... }`
+
+## 유닛
+
+계약 추적과 스코프 테스트 선택이 이 절을 파싱한다. 컨테이너명과 심볼명을 함께 적는다 — 심볼명만으로는 흔한 이름이 다른 파일에서 거짓 통과한다.
+
+- `lib/match.ts · matchTitle(a: string, b: string): number`
+  - 정상: 0~1 유사도 반환 / 부수효과: 없음
+  - 예외: 빈 문자열 → `0`
+
+## 진입점
+
+어댑터의 `entrypoint_resolver`가 실재를 확인한다. 진입점 개념이 없는 스택이면 "없음".
+
+- `POST /api/analyze` → 200
+- `GET /api/mood/questions` → 200
+
+## 오류 어휘
+
+응답에 실제로 나가는 상수. 코드에 실재하는지 검사된다.
+
+- `ANALYZE_TIMEOUT` (200, 부분 성공)
+- `INVALID_IMAGE` (400)
+
+## 인가
+
+필요한 규칙과 그것을 어디에 추가하는가(미들웨어·가드·설정).
+
+## 계약 밖 (에이전트 자율)
+
+내부 헬퍼, 로깅, 변수명, 테스트 픽스처 구성.

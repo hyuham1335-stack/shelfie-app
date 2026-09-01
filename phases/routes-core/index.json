@@ -1,0 +1,11 @@
+{
+  "project": "shelfie",
+  "phase": "routes-core",
+  "steps": [
+    { "step": 0, "name": "aladin-lookup", "status": "pending" },
+    { "step": 1, "name": "anthropic-notes", "status": "pending" },
+    { "step": 2, "name": "analyze-route", "status": "pending" },
+    { "step": 3, "name": "resolve-route", "status": "pending" },
+    { "step": 4, "name": "events-route", "status": "pending" }
+  ]
+}

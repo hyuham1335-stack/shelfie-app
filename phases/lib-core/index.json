@@ -8,7 +8,7 @@
       "status": "completed",
       "started_at": "2026-09-01T14:53:28+0900",
       "summary": "src/lib/proof.ts 신규 — issueProof·verifyProof·filterVerified와 ProofSubject·ProofVerdict 타입 (HMAC-SHA256, TTL 2h, 사유 3종 구분, fail-soft). src/lib/proof.test.ts 16건.",
-      "completed_at": "2026-09-01T15:00:00+0900"
+      "completed_at": "2026-09-01T14:59:57+0900"
     },
     {
       "step": 1,

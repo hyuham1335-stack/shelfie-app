@@ -8,6 +8,11 @@ tsconfig.tsbuildinfo
 phases/**/phase*-output.json
 phases/**/step*-output.json
 
+# 실행 중 상태 (M10). 산출물이 아니라 살아 있는 프로세스의 표식이고,
+# _finalize 의 `git add -A` 가 이것을 커밋에 쓸어담은 적이 있다.
+phases/*/RUNNING
+phases/*/RUNNING.tmp
+
 # 로컬 시크릿 — 절대 커밋하지 않는다 (TRD 6.5 시크릿 관리)
 .env.local
 .env*.local

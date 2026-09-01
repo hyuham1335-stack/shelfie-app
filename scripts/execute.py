@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -19,6 +20,13 @@ from pathlib import Path
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# 실행 중 상태 파일 (M10). 산출물이 아니라 실행 중 상태이므로 .gitignore 대상이다.
+RUNNING_FILENAME = "RUNNING"
+HEARTBEAT_INTERVAL_SEC = 30
+# 이 시간 넘게 heartbeat 가 갱신되지 않으면 죽은 런으로 본다. 간격의 10배로,
+# 세션이 잠깐 멈칫한 것과 프로세스가 사라진 것을 가르기에 충분히 넉넉하다.
+STALE_AFTER_SEC = 300
 
 
 def _force_utf8_output():
@@ -105,6 +113,150 @@ def progress_indicator(label: str):
             th.join()
 
 
+class RunningFile:
+    """실행 중 상태를 `phases/{phase}/RUNNING` 으로 외재화한다 (파일럿 결함 M10).
+
+    `started_at` 은 있고 `step{N}-output.json` 은 없는 상태가 "진행 중"과
+    "죽었음"을 **동시에** 뜻해 관찰자가 둘을 구분할 수 없었다. 런 #4에서
+    감독 세션이 9분째 작업 중이던 step 을 "끊겼다"로 오독해 산출물을 되돌렸고,
+    원래 계획은 실행기를 하나 더 띄우는 것이었다 — 그랬다면 둘이 같은
+    index.json 을 두고 다퉜다.
+
+    생존 판정은 **heartbeat 신선도**로 한다. pid 는 사람이 읽으라고 남기되
+    기계 판정에 쓰지 않는다 — Windows 에서 `os.kill(pid, 0)` 은 생존 확인이
+    아니라 **프로세스 종료**다. CPython 의 os.kill 은 Windows 에서
+    CTRL_C_EVENT·CTRL_BREAK_EVENT 가 아닌 모든 시그널을 OpenProcess +
+    TerminateProcess(handle, sig) 로 처리한다. POSIX 의 관용구를 그대로 옮기면
+    M10 이 막으려는 사고를 M10 수정이 일으킨다.
+    """
+
+    def __init__(self, path: Path, stamp, *, clock=None,
+                 interval: float = HEARTBEAT_INTERVAL_SEC,
+                 stale_after: float = STALE_AFTER_SEC):
+        self._path = path
+        self._stamp = stamp            # () -> str, 실행기와 같은 타임스탬프 형식
+        self._clock = clock or (lambda: datetime.now(StepExecutor.TZ))
+        self._interval = interval
+        self._stale_after = stale_after
+        self._state: Optional[dict] = None
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def read(self, attempts: int = 5, delay: float = 0.02) -> Optional[dict]:
+        """디스크의 RUNNING 을 읽는다. **파일이 없을 때만** None 이다.
+
+        Windows 에서는 heartbeat 의 os.replace 와 읽기가 겹치면 공유 위반으로
+        열기 자체가 실패한다. 그 일시적 실패를 "실행 중인 런이 없다"로 읽으면
+        두 번째 실행기가 그대로 시작한다 — 파일이 있는데 못 읽었다면 빈 dict 를
+        돌려 **살아 있는 쪽으로** 판정하게 한다 (is_fresh 가 같은 규율이다).
+        """
+        for _ in range(attempts):
+            if not self._path.exists():
+                return None
+            try:
+                data = json.loads(self._path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                time.sleep(delay)
+                continue
+            if isinstance(data, dict):
+                return data
+            time.sleep(delay)
+        return {} if self._path.exists() else None
+
+    def age_sec(self, state: dict) -> Optional[float]:
+        """heartbeat 가 얼마나 낡았는지. 읽을 수 없으면 None(= 판정 불가)."""
+        beat = state.get("heartbeat") or state.get("started_at")
+        if not isinstance(beat, str):
+            return None
+        try:
+            then = datetime.strptime(beat, "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError:
+            return None
+        return (self._clock() - then).total_seconds()
+
+    def is_fresh(self, state: dict) -> bool:
+        """heartbeat 를 읽을 수 없으면 **살아 있다고 본다.**
+
+        모르는 상태에서 남의 런을 죽은 것으로 단정하는 쪽이 위험하다 —
+        M10 이 낸 사고가 정확히 그 오판이었다.
+        """
+        age = self.age_sec(state)
+        return True if age is None else age < self._stale_after
+
+    def claim(self, phase: str, step: Optional[int] = None):
+        """RUNNING 을 이 프로세스 것으로 쓰고 heartbeat 스레드를 띄운다."""
+        now = self._stamp()
+        self._state = {
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "phase": phase,
+            "step": step,
+            "started_at": now,
+            "heartbeat": now,
+        }
+        self._flush()
+        self._stop.clear()
+        # daemon 스레드다. 실행기가 예기치 않게 죽으면 heartbeat 도 함께 멈추고,
+        # 그 정지가 곧 "죽었다"는 신호가 된다.
+        self._thread = threading.Thread(target=self._beat, daemon=True)
+        self._thread.start()
+
+    def set_step(self, step: int):
+        if self._state is None:
+            return
+        self._state["step"] = step
+        self._flush()
+
+    def release(self):
+        """스레드를 세우고 파일을 지운다. 여러 번 불러도 안전하다."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval + 1)
+            self._thread = None
+        self._state = None
+        try:
+            self._path.unlink()
+        except OSError:
+            pass
+
+    # --- 내부 ---
+
+    def _beat(self):
+        while not self._stop.wait(self._interval):
+            if self._state is None:
+                return
+            self._state["heartbeat"] = self._stamp()
+            self._flush()
+
+    def _flush(self):
+        """임시 파일에 쓴 뒤 원자적으로 갈아끼운다.
+
+        제자리 쓰기는 truncate 와 write 사이에 **빈 파일**을 노출한다.
+        heartbeat 는 30초마다 도는데, 하필 그 순간 다른 실행기가 읽으면
+        read() 가 None 을 돌려주고 "실행 중인 런이 없다"로 판정해 그대로
+        시작한다 — RUNNING 파일이 막으려는 바로 그 사고다.
+        """
+        if self._state is None:
+            return
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self._state, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8")
+            os.replace(tmp, self._path)
+        except OSError:
+            # 상태 파일을 못 써도 런을 죽이지 않는다. 관측 장치가 작업을
+            # 중단시키면 관측이 결함이 된다 (M8 과 같은 규율).
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 class StepExecutor:
     """Phase 디렉토리 안의 step들을 순차 실행하는 하네스."""
 
@@ -135,14 +287,71 @@ class StepExecutor:
         self._phase_name = idx.get("phase", phase_dir_name)
         self._total = len(idx["steps"])
 
+        self._running = RunningFile(self._phase_dir / RUNNING_FILENAME, self._stamp)
+        # 죽은 런이 어느 step 에서 끊겼는지. claim 전에 읽어 둬야 한다.
+        self._stale_step: Optional[int] = None
+        self._retry_limit = self._resolve_retry_limit()
+
     def run(self):
         self._print_header()
         self._check_blockers()
-        self._checkout_branch()
-        guardrails = self._load_guardrails()
-        self._ensure_created_at()
-        self._execute_all_steps(guardrails)
-        self._finalize()
+        self._claim_running()
+        try:
+            self._checkout_branch()
+            guardrails = self._load_guardrails()
+            self._ensure_created_at()
+            self._execute_all_steps(guardrails)
+            self._finalize()
+        finally:
+            # blocked·error 의 sys.exit 도 SystemExit 로 여기를 지난다.
+            self._running.release()
+
+    # --- 실행 중 상태 (M10) ---
+
+    def _claim_running(self):
+        prior = self._running.read()
+        if prior is not None:
+            if self._running.is_fresh(prior):
+                age = self._running.age_sec(prior)
+                print(f"\n  ERROR: 이 phase 를 이미 실행 중인 실행기가 있다.")
+                print(f"    pid {prior.get('pid')} @ {prior.get('host')} · "
+                      f"step {prior.get('step')} · 시작 {prior.get('started_at')}")
+                if age is not None:
+                    print(f"    마지막 heartbeat {int(age)}초 전 — 살아 있다.")
+                else:
+                    print(f"    heartbeat 를 읽을 수 없다 — 살아 있다고 본다.")
+                print(f"    실행기 둘이 같은 index.json 을 고치면 산출물이 서로를 덮는다.")
+                print(f"    정말 죽은 런이면 {self._running.path} 를 지우고 다시 돌려라.")
+                sys.exit(2)
+
+            self._stale_step = prior.get("step") if isinstance(prior.get("step"), int) else None
+            age = self._running.age_sec(prior)
+            print(f"  ⟲ 죽은 런의 흔적을 회수한다 — pid {prior.get('pid')} · "
+                  f"step {self._stale_step} · heartbeat {int(age or 0)}초 전 정지")
+
+        self._running.claim(self._phase_name)
+
+    # --- 재시도 상한 ---
+
+    def _resolve_retry_limit(self) -> int:
+        """상한은 실측에서 온다. 실측이 없으면 MAX_RETRIES 가 바닥값이다.
+
+        MAX_RETRIES = 3 은 파일럿 20 step 동안 한 번도 발동하지 않은 상수였다.
+        지우면 자가 교정 장치 자체가 사라지므로, 상수는 바닥값으로 남기고
+        상한은 calibration 이 유도한 retry_budget 에 넘긴다 (ADR-H007).
+        """
+        try:
+            config = self._read_json(ROOT / "harness" / "config.json")
+            rel = config.get("calibration_file")
+            if not rel:
+                return self.MAX_RETRIES
+            derived = self._read_json(ROOT / rel).get("derived") or {}
+        except (OSError, ValueError, KeyError):
+            return self.MAX_RETRIES
+        budget = derived.get("retry_budget")
+        if isinstance(budget, int) and budget >= 1:
+            return budget
+        return self.MAX_RETRIES
 
     # --- timestamps ---
 
@@ -264,8 +473,15 @@ class StepExecutor:
         갱신하기 직전에 떨어졌다 — status 는 pending 인데 산출물은 디스크에
         있는 상태다. 실행기가 이 사실을 세션에게 알려주지 않으면 세션이
         검증된 산출물을 처음부터 다시 쓸 수 있다.
+
+        출력 파일은 claude 서브프로세스가 **반환한 뒤에야** 쓰인다. 세션이
+        도중에 죽으면 부분 수정된 소스만 남고 출력 파일이 없어 이 신호가
+        비어 있었다 — M10 의 좁은 형태다. 죽은 런의 RUNNING 이 이 step 을
+        지목하면 그것도 재개 신호로 본다.
         """
-        return (self._phase_dir / f"step{step_num}-output.json").exists()
+        if (self._phase_dir / f"step{step_num}-output.json").exists():
+            return True
+        return self._stale_step == step_num
 
     def _build_preamble(self, guardrails: str, step_context: str,
                         prev_error: Optional[str] = None,
@@ -303,12 +519,13 @@ class StepExecutor:
             f"4. AC(Acceptance Criteria) 검증을 직접 실행하라.\n"
             f"5. /phases/{self._phase_dir_name}/index.json의 해당 step status를 업데이트하라:\n"
             f"   - AC 통과 → \"completed\" + \"summary\" 필드에 이 step의 산출물을 한 줄로 요약\n"
-            f"   - {self.MAX_RETRIES}회 수정 시도 후에도 실패 → \"error\" + \"error_message\" 기록\n"
+            f"   - {self._retry_limit}회 수정 시도 후에도 실패 → \"error\" + \"error_message\" 기록\n"
             f"   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → \"blocked\" + \"blocked_reason\" 기록 후 즉시 중단\n"
-            f"6. **타임스탬프 필드를 쓰지 마라.** started_at · completed_at · failed_at ·\n"
-            f"   blocked_at · created_at 은 전부 실행기가 기록한다. 네가 쓰면 형식이\n"
-            f"   어긋나 실측이 오염된다. index.json 에서 네가 고칠 것은 status 와\n"
+            f"6. **실행기 소유 필드를 쓰지 마라.** started_at · completed_at · failed_at ·\n"
+            f"   blocked_at · created_at · attempts 는 전부 실행기가 기록한다. 네가 쓰면\n"
+            f"   형식이 어긋나 실측이 오염된다. index.json 에서 네가 고칠 것은 status 와\n"
             f"   summary · error_message · blocked_reason 뿐이다.\n"
+            f"   phases/{self._phase_dir_name}/RUNNING 도 실행기 것이다. 읽지도 지우지도 마라.\n"
             f"7. 모든 변경사항을 커밋하라:\n"
             f"   {commit_example}\n\n---\n\n"
         )
@@ -416,7 +633,7 @@ class StepExecutor:
         if prior_attempt:
             print(f"  ↺ Step {step_num}: 이전 실행의 산출물이 있다 — 세션에 재개를 알린다", flush=True)
 
-        for attempt in range(1, self.MAX_RETRIES + 1):
+        for attempt in range(1, self._retry_limit + 1):
             index = self._read_json(self._index_file)
             step_context = self._build_step_context(index)
             preamble = self._build_preamble(guardrails, step_context, prev_error,
@@ -424,7 +641,7 @@ class StepExecutor:
 
             tag = f"Step {step_num}/{self._total - 1} ({done} done): {step_name}"
             if attempt > 1:
-                tag += f" [retry {attempt}/{self.MAX_RETRIES}]"
+                tag += f" [retry {attempt}/{self._retry_limit}]"
 
             with progress_indicator(tag) as pi:
                 out = self._invoke_claude(step, preamble)
@@ -448,6 +665,7 @@ class StepExecutor:
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["completed_at"] = ts
+                        s["attempts"] = attempt
                 self._write_json(self._index_file, index)
                 self._commit_step(step_num, step_name)
                 print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s]", flush=True)
@@ -457,6 +675,7 @@ class StepExecutor:
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["blocked_at"] = ts
+                        s["attempts"] = attempt
                 self._write_json(self._index_file, index)
                 reason = next((s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num), "")
                 print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]", flush=True)
@@ -469,23 +688,25 @@ class StepExecutor:
                 "Step did not update status",
             )
 
-            if attempt < self.MAX_RETRIES:
+            if attempt < self._retry_limit:
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["status"] = "pending"
+                        s["attempts"] = attempt
                         s.pop("error_message", None)
                 self._write_json(self._index_file, index)
                 prev_error = err_msg
-                print(f"  ↻ Step {step_num}: retry {attempt}/{self.MAX_RETRIES} — {err_msg}", flush=True)
+                print(f"  ↻ Step {step_num}: retry {attempt}/{self._retry_limit} — {err_msg}", flush=True)
             else:
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["status"] = "error"
-                        s["error_message"] = f"[{self.MAX_RETRIES}회 시도 후 실패] {err_msg}"
+                        s["error_message"] = f"[{self._retry_limit}회 시도 후 실패] {err_msg}"
                         s["failed_at"] = ts
+                        s["attempts"] = attempt
                 self._write_json(self._index_file, index)
                 self._commit_step(step_num, step_name)
-                print(f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]", flush=True)
+                print(f"  ✗ Step {step_num}: {step_name} failed after {self._retry_limit} attempts [{elapsed}s]", flush=True)
                 print(f"    Error: {err_msg}")
                 self._update_top_index("error")
                 sys.exit(1)
@@ -501,6 +722,9 @@ class StepExecutor:
                 return
 
             step_num = pending["step"]
+            # RUNNING 이 어느 step 에서 도는지 먼저 남긴다. started_at 만으로는
+            # "진행 중"과 "죽었음"이 갈리지 않는다 (M10).
+            self._running.set_step(step_num)
             for s in index["steps"]:
                 if s["step"] == step_num and "started_at" not in s:
                     s["started_at"] = self._stamp()

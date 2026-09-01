@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -859,3 +860,252 @@ class TestResume:
         assert "재개" not in seen[0], "첫 시도에는 이전 산출물이 없었다"
         assert "이전 시도 실패" in seen[1]
         assert "재개" not in seen[1], "같은 런의 재시도를 재개로 오해하면 안 된다"
+
+
+# ---------------------------------------------------------------------------
+# RUNNING 파일 — 실행 중 상태의 외재화 (M10)
+# ---------------------------------------------------------------------------
+
+def _write_running(phase_dir, *, step=None, age_sec=0, pid=4242):
+    """heartbeat 를 age_sec 만큼 과거로 찍은 RUNNING 파일을 만든다."""
+    tz = ex.StepExecutor.TZ
+    beat = (datetime.now(tz) - timedelta(seconds=age_sec)).strftime("%Y-%m-%dT%H:%M:%S%z")
+    payload = {"pid": pid, "host": "otherbox", "phase": "mvp",
+               "step": step, "started_at": beat, "heartbeat": beat}
+    path = phase_dir / ex.RUNNING_FILENAME
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+class TestRunningFile:
+    """started_at 은 있고 출력 파일은 없는 상태가 '진행 중'과 '죽었음'을
+    동시에 뜻해 관찰자가 둘을 구분할 수 없었다 (파일럿 결함 M10).
+    런 #4에서 감독 세션이 살아 있는 step 을 끊긴 것으로 오독했다.
+    """
+
+    def test_claim_writes_and_release_removes(self, executor):
+        path = executor._phase_dir / ex.RUNNING_FILENAME
+        assert not path.exists()
+
+        executor._running.claim("mvp", step=2)
+        assert path.exists()
+        state = json.loads(path.read_text(encoding="utf-8"))
+        assert state["pid"] == os.getpid()
+        assert state["step"] == 2
+        assert state["heartbeat"]
+
+        executor._running.release()
+        assert not path.exists()
+
+    def test_release_is_idempotent(self, executor):
+        executor._running.claim("mvp")
+        executor._running.release()
+        executor._running.release()
+
+    def test_fresh_running_refuses_a_second_executor(self, executor, capsys):
+        """실행기 둘이 같은 index.json 을 고치면 산출물이 서로를 덮는다."""
+        _write_running(executor._phase_dir, step=1, age_sec=5)
+
+        with pytest.raises(SystemExit) as exc:
+            executor._claim_running()
+        assert exc.value.code == 2
+
+        out = capsys.readouterr().out
+        assert "이미 실행 중" in out
+        assert "4242" in out, "사람이 어느 프로세스인지 알아야 한다"
+
+    def test_stale_running_is_reclaimed(self, executor, capsys):
+        _write_running(executor._phase_dir, step=2, age_sec=ex.STALE_AFTER_SEC + 60)
+
+        executor._claim_running()
+
+        assert executor._stale_step == 2
+        assert "회수" in capsys.readouterr().out
+        executor._running.release()
+
+    def test_stale_running_is_a_resume_signal(self, executor):
+        """M10 의 좁은 형태 — 출력 파일을 쓰기 전에 세션이 죽은 경우.
+
+        step{N}-output.json 은 claude 서브프로세스가 반환한 뒤에야 쓰인다.
+        그전에 죽으면 재개 신호가 통째로 비어 있었다.
+        """
+        assert executor._prior_attempt_exists(2) is False
+
+        _write_running(executor._phase_dir, step=2, age_sec=ex.STALE_AFTER_SEC + 60)
+        executor._claim_running()
+
+        assert executor._prior_attempt_exists(2) is True
+        assert executor._prior_attempt_exists(1) is False, "다른 step 까지 재개로 보면 안 된다"
+        executor._running.release()
+
+    def test_unreadable_heartbeat_counts_as_alive(self, executor):
+        """모르는 상태에서 남의 런을 죽었다고 단정하지 않는다 — M10 의 오판이 그것이었다."""
+        assert executor._running.is_fresh({"pid": 1}) is True
+        assert executor._running.is_fresh({"heartbeat": "쓰레기"}) is True
+        assert executor._running.age_sec({"heartbeat": "쓰레기"}) is None
+
+    def test_heartbeat_advances_while_running(self, executor):
+        """실행기의 타임스탬프는 초 단위라 벽시계로 재면 흔들린다 — 시계를 주입한다."""
+        ticks = iter("t%03d" % i for i in range(1, 10_000))
+        running = ex.RunningFile(executor._phase_dir / ex.RUNNING_FILENAME,
+                                 lambda: next(ticks), interval=0.01)
+        running.claim("mvp", step=0)
+        try:
+            first = running.read()["heartbeat"]
+            deadline = time.monotonic() + 5.0
+            latest = first
+            while time.monotonic() < deadline and latest == first:
+                latest = running.read()["heartbeat"]
+                time.sleep(0.01)
+        finally:
+            running.release()
+        assert latest != first, "heartbeat 가 멈추면 살아 있는 런이 죽은 것으로 보인다"
+
+    def test_heartbeat_stops_after_release(self, executor):
+        """정지가 곧 '죽었다'는 신호다 — release 후에도 뛰면 유령이 살아 있는 척한다."""
+        ticks = iter("t%03d" % i for i in range(1, 10_000))
+        path = executor._phase_dir / ex.RUNNING_FILENAME
+        running = ex.RunningFile(path, lambda: next(ticks), interval=0.01)
+        running.claim("mvp", step=0)
+        running.release()
+
+        assert not path.exists()
+        time.sleep(0.1)
+        assert not path.exists(), "release 뒤에 heartbeat 가 파일을 되살리면 안 된다"
+
+    def test_concurrent_reads_never_see_a_half_written_file(self, executor):
+        """제자리 쓰기는 truncate 와 write 사이에 빈 파일을 노출한다.
+
+        하필 그때 다른 실행기가 읽으면 read() 가 None 이 되고 "실행 중인 런이
+        없다"로 판정해 그대로 시작한다 — RUNNING 이 막으려는 바로 그 사고다.
+        """
+        running = ex.RunningFile(executor._phase_dir / ex.RUNNING_FILENAME,
+                                 executor._stamp, interval=0.001)
+        running.claim("mvp", step=0)
+        try:
+            deadline = time.monotonic() + 2.0
+            reads = 0
+            while time.monotonic() < deadline:
+                assert running.read() is not None, "반쯤 쓰인 RUNNING 이 읽혔다"
+                reads += 1
+            assert reads > 50
+        finally:
+            running.release()
+
+    def test_never_calls_os_kill(self, executor):
+        """Windows 에서 os.kill(pid, 0) 은 생존 확인이 아니라 프로세스 종료다.
+
+        CPython 은 Windows 에서 CTRL_C_EVENT·CTRL_BREAK_EVENT 가 아닌 시그널을
+        OpenProcess + TerminateProcess 로 처리한다. POSIX 관용구를 그대로 옮기면
+        M10 이 막으려는 사고를 M10 수정이 일으킨다.
+        """
+        _write_running(executor._phase_dir, step=1, age_sec=ex.STALE_AFTER_SEC + 60)
+        with patch("os.kill") as killer:
+            executor._claim_running()
+            executor._running.release()
+        killer.assert_not_called()
+
+    def test_run_removes_running_even_when_a_step_blocks(self, executor):
+        """blocked 는 sys.exit(2) 로 빠진다 — finally 가 없으면 유령 파일이 남는다."""
+        path = executor._phase_dir / ex.RUNNING_FILENAME
+
+        def blow_up(_guardrails):
+            assert path.exists(), "step 실행 중에는 RUNNING 이 있어야 한다"
+            sys.exit(2)
+
+        with patch.object(executor, "_print_header"), \
+             patch.object(executor, "_check_blockers"), \
+             patch.object(executor, "_checkout_branch"), \
+             patch.object(executor, "_load_guardrails", return_value="G"), \
+             patch.object(executor, "_ensure_created_at"), \
+             patch.object(executor, "_execute_all_steps", side_effect=blow_up), \
+             patch.object(executor, "_finalize"):
+            with pytest.raises(SystemExit):
+                executor.run()
+
+        assert not path.exists(), "유령 RUNNING 이 남으면 다음 런이 통째로 막힌다"
+
+
+# ---------------------------------------------------------------------------
+# attempts — 재시도 횟수를 기록한다
+# ---------------------------------------------------------------------------
+
+class TestAttemptsRecorded:
+    """'재시도 0회'가 데이터가 아니라 콘솔을 지켜본 사람의 기억이었다.
+
+    파일럿 20 step 은 attempts 를 어디에도 남기지 않았다. 재지 않은 값에서
+    상한을 유도할 수는 없다 (ROADMAP 17 · ADR-H007).
+    """
+
+    def _run_step(self, executor, fail_times):
+        seen = []
+
+        def fake_invoke(step_arg, preamble):
+            seen.append(preamble)
+            index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+            for s in index["steps"]:
+                if s["step"] == 2:
+                    if len(seen) > fail_times:
+                        s["status"] = "completed"
+                        s["summary"] = "done"
+                    else:
+                        s["status"] = "error"
+                        s["error_message"] = "boom"
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False),
+                                            encoding="utf-8")
+            return {"exitCode": 0, "stdout": "{}", "stderr": ""}
+
+        with patch.object(executor, "_invoke_claude", side_effect=fake_invoke), \
+             patch.object(executor, "_commit_step"):
+            executor._execute_single_step({"step": 2, "name": "ui", "status": "pending"},
+                                          "guardrails")
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        return next(s for s in index["steps"] if s["step"] == 2)
+
+    def test_records_one_attempt_on_first_pass(self, executor):
+        step = self._run_step(executor, fail_times=0)
+        assert step["attempts"] == 1, "'없음'과 '0회'를 같은 칸에 쓰지 않는다"
+
+    def test_records_the_retry_count(self, executor):
+        step = self._run_step(executor, fail_times=1)
+        assert step["attempts"] == 2
+
+    def test_records_attempts_on_final_failure(self, executor):
+        with pytest.raises(SystemExit):
+            self._run_step(executor, fail_times=99)
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        step = next(s for s in index["steps"] if s["step"] == 2)
+        assert step["status"] == "error"
+        assert step["attempts"] == executor._retry_limit
+
+
+class TestRetryLimitFromCalibration:
+    """MAX_RETRIES 는 상한이 아니라 바닥값이다. 상한은 실측이 준다 (ADR-H007)."""
+
+    def _make(self, tmp_project, derived):
+        (tmp_project / "harness").mkdir(exist_ok=True)
+        (tmp_project / "harness" / "config.json").write_text(
+            json.dumps({"calibration_file": "harness/calibration.json"}), encoding="utf-8")
+        (tmp_project / "harness" / "calibration.json").write_text(
+            json.dumps({"derived": derived}), encoding="utf-8")
+        with patch.object(ex, "ROOT", tmp_project):
+            return ex.StepExecutor("0-mvp")
+
+    def test_uses_derived_budget(self, tmp_project, phase_dir):
+        assert self._make(tmp_project, {"retry_budget": 2})._retry_limit == 2
+
+    def test_falls_back_when_unmeasured(self, tmp_project, phase_dir):
+        inst = self._make(tmp_project, {"retry_budget": None})
+        assert inst._retry_limit == ex.StepExecutor.MAX_RETRIES
+
+    def test_falls_back_without_calibration_file(self, executor):
+        assert executor._retry_limit == ex.StepExecutor.MAX_RETRIES
+
+    def test_preamble_states_the_effective_limit(self, tmp_project, phase_dir):
+        inst = self._make(tmp_project, {"retry_budget": 2})
+        assert "2회 수정 시도" in inst._build_preamble("G", "")
+
+    def test_preamble_reserves_executor_owned_fields(self, executor):
+        text = executor._build_preamble("G", "")
+        assert "attempts" in text
+        assert "RUNNING" in text

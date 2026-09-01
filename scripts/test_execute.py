@@ -739,3 +739,46 @@ class TestUsageLimit:
         assert "session limit" in s["blocked_reason"]
         assert "blocked_at" in s
         assert "error_message" not in s
+
+
+# ---------------------------------------------------------------------------
+# 실행기 자신의 출력 인코딩 (파일럿 런 #3 M8)
+# ---------------------------------------------------------------------------
+
+class TestForceUtf8Output:
+    """리다이렉트된 stdout 에 ✓ 를 찍다 죽으면 안 된다.
+
+    로캘(cp949) 스트림에 진행 표시를 쓰는 순간 UnicodeEncodeError 가 나고
+    실행기가 통째로 멈춘다 — 런 #3에서 step 3 완료 출력이 phase 를 끊었다.
+    """
+
+    def test_reconfigures_streams_to_utf8(self):
+        calls = []
+
+        class FakeStream:
+            def reconfigure(self, **kwargs):
+                calls.append(kwargs)
+
+        with patch.object(ex.sys, "stdout", FakeStream()), \
+             patch.object(ex.sys, "stderr", FakeStream()):
+            ex._force_utf8_output()
+
+        assert len(calls) == 2
+        for kwargs in calls:
+            assert kwargs["encoding"] == "utf-8"
+            assert kwargs["errors"] == "replace"
+
+    def test_stream_without_reconfigure_is_tolerated(self):
+        import io as _io
+        with patch.object(ex.sys, "stdout", _io.StringIO()), \
+             patch.object(ex.sys, "stderr", _io.StringIO()):
+            ex._force_utf8_output()
+
+    def test_reconfigure_failure_is_tolerated(self):
+        class Hostile:
+            def reconfigure(self, **kwargs):
+                raise ValueError("detached")
+
+        with patch.object(ex.sys, "stdout", Hostile()), \
+             patch.object(ex.sys, "stderr", Hostile()):
+            ex._force_utf8_output()

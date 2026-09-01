@@ -21,6 +21,26 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _force_utf8_output():
+    """실행기 자신의 출력을 UTF-8 로 고정한다.
+
+    리다이렉트된 stdout 은 로캘(cp949)을 쓴다. 진행 표시의 ✓ · ▶ 나 한글
+    에러 메시지가 그 순간 UnicodeEncodeError 를 내고 **실행기가 죽는다** —
+    런 #3에서 step 3 완료를 출력하다 phase 가 중단됐다. 출력 하나 때문에
+    완주가 깨지면 안 되므로 errors="replace" 로 넘어간다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+_force_utf8_output()
+
+
 class _Stopwatch:
     """경과 시간을 **언제 읽어도** 유효하게 돌려준다.
 

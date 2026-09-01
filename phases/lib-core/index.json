@@ -24,7 +24,7 @@
       "status": "completed",
       "started_at": "2026-09-01T15:03:47+0900",
       "summary": "src/lib/match.ts 신규 — normalizeTitle·normalizeAuthor·titleSimilarity(정규화 후 자체 Levenshtein)·judge와 MATCH_THRESHOLD(0.8)·LookupOutcome·MatchVerdict 타입. 조회 결과를 인자로 받는 순수 판정(unreadable → lookup_failed → ISBN13 필터 → 0.8 임계 → 저자 tie-break → ambiguous 5건), no_match/lookup_failed 분리 유지. src/lib/match.test.ts 33건.",
-      "completed_at": "2026-09-01T15:10:12+0900"
+      "completed_at": "2026-09-01T15:10:52+0900"
     },
     {
       "step": 3,

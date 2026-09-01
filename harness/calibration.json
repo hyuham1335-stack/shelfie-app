@@ -1,5 +1,5 @@
 {
-  "measured_at": "2026-09-01T21:01:31+0900",
+  "measured_at": "2026-09-01T21:23:45+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": false,
@@ -7,22 +7,26 @@
     "compile": {
       "sec": 2.56,
       "ok": true,
-      "exit_code": 0
+      "exit_code": 0,
+      "measured_at": "2026-09-01T21:01:31+0900"
     },
     "lint": {
-      "sec": 6.25,
+      "sec": 9.73,
       "ok": true,
-      "exit_code": 0
+      "exit_code": 0,
+      "measured_at": "2026-09-01T21:23:45+0900"
     },
     "check": {
       "sec": 1.58,
       "ok": true,
-      "exit_code": 0
+      "exit_code": 0,
+      "measured_at": "2026-09-01T21:01:31+0900"
     },
     "scoped": {
       "sec": 8.95,
       "ok": true,
-      "exit_code": 0
+      "exit_code": 0,
+      "measured_at": "2026-09-01T21:01:31+0900"
     },
     "full": {
       "sec": 10.83,
@@ -30,22 +34,26 @@
       "exit_code": 0,
       "tests_ran": 482,
       "suites": 14,
-      "failures": 0
+      "failures": 0,
+      "measured_at": "2026-09-01T21:01:31+0900"
     },
     "e2e": {
       "sec": null,
       "skipped": true,
-      "reason": "cmd:null — 이 스택에 없는 스테이지"
+      "reason": "cmd:null — 이 스택에 없는 스테이지",
+      "measured_at": "2026-09-01T21:01:31+0900"
     },
     "build": {
       "sec": 9.95,
       "ok": true,
-      "exit_code": 0
+      "exit_code": 0,
+      "measured_at": "2026-09-01T21:01:31+0900"
     },
     "docs": {
       "sec": null,
       "skipped": true,
-      "reason": "cmd:null — 이 스택에 없는 스테이지"
+      "reason": "cmd:null — 이 스택에 없는 스테이지",
+      "measured_at": "2026-09-01T21:01:31+0900"
     }
   },
   "report_glob_matched": true,

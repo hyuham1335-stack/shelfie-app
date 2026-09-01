@@ -911,7 +911,7 @@ def _probe_infra(adapter):
     return infra
 
 
-def run_calibrate(root, stage=None, select=None, runner=None, now=None):
+def run_calibrate(root, stage=None, select=None, runner=None, now=None, replace=False):
     root = Path(root)
     runner = runner or _subprocess_runner
 
@@ -964,18 +964,41 @@ def run_calibrate(root, stage=None, select=None, runner=None, now=None):
         return 10
 
     _, _, _, report_matched = _parse_junit(root, adapter)
+    stamp = now or datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+    target = root / config["calibration_file"]
+
+    # 부분 측정은 그 스테이지만 갱신한다. 통째로 덮어쓰면 나머지 실측이
+    # 사라지고 derived 의 정책이 전부 null 이 된다 — 실측이 정책의 유일한
+    # 근거인 구조에서 되돌릴 방법은 재측정뿐이다 (파일럿 런 #3 M9).
+    # 전체 교체는 --replace 로 명시했을 때만 한다.
+    stages = {name: dict(entry, measured_at=stamp) for name, entry in stages.items()}
+    if stage and not replace and target.exists():
+        try:
+            prior = _read_json(target)
+        except (ValueError, OSError):
+            prior = None
+        if prior:
+            merged = {}
+            for name, entry in (prior.get("stages") or {}).items():
+                if isinstance(entry, dict):
+                    # 옛 값을 방금 잰 척하지 않는다 — 잰 시각을 항목에 남긴다.
+                    entry = dict(entry)
+                    entry.setdefault("measured_at", prior.get("measured_at"))
+                    merged[name] = entry
+            merged.update(stages)
+            stages = merged
+
     payload = {
-        "measured_at": now or datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "measured_at": stamp,
         "adapter": adapter["id"],
         "adapter_verified": bool(adapter.get("verified")),
-        "partial": bool(stage),
+        "partial": any(name not in stages for name in STAGE_ORDER),
         "stages": stages,
         "report_glob_matched": report_matched,
         "infra": _probe_infra(adapter),
         "derived": _derive_policy(stages, config),
     }
 
-    target = root / config["calibration_file"]
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print("\n  생성: %s" % config["calibration_file"])
@@ -1043,13 +1066,16 @@ def main(argv=None):
     p_cal = sub.add_parser("calibrate", help="스테이지를 1회씩 실측해 calibration.json 을 쓴다")
     p_cal.add_argument("--stage", help="이 스테이지만 잰다")
     p_cal.add_argument("--select", help="scoped 스테이지의 테스트 선택자")
+    p_cal.add_argument("--replace", action="store_true",
+                       help="--stage 와 함께: 기존 실측을 병합하지 않고 통째로 교체한다")
 
     args = parser.parse_args(argv)
 
     if args.cmd == "init":
         return run_init(ROOT, adapter=args.adapter, name=args.name, force=args.force)
     if args.cmd == "calibrate":
-        return run_calibrate(ROOT, stage=args.stage, select=args.select)
+        return run_calibrate(ROOT, stage=args.stage, select=args.select,
+                             replace=args.replace)
     if args.cmd == "doctor":
         report = run_doctor(ROOT)
         print("\n  harness doctor — %s" % ROOT)

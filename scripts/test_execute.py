@@ -782,3 +782,80 @@ class TestForceUtf8Output:
         with patch.object(ex.sys, "stdout", Hostile()), \
              patch.object(ex.sys, "stderr", Hostile()):
             ex._force_utf8_output()
+
+
+# ---------------------------------------------------------------------------
+# 재개 — 산출물이 이미 있는 step (파일럿 런 #3)
+# ---------------------------------------------------------------------------
+
+class TestResume:
+    """중단된 step 을 다시 돌릴 때 세션이 자기 산출물을 덮어쓰면 안 된다.
+
+    런 #3에서 429 는 세션이 코드·테스트를 다 쓰고 index.json 을 갱신하기
+    직전에 떨어졌다. 재실행 세션이 "처음부터 다시 쓴다"를 골랐다면 AC 를
+    통과하던 산출물이 사라졌을 것이다. 실행기가 그 사실을 알려야 한다.
+    """
+
+    def test_detects_prior_attempt(self, executor):
+        assert executor._prior_attempt_exists(2) is False
+        (executor._phase_dir / "step2-output.json").write_text("{}", encoding="utf-8")
+        assert executor._prior_attempt_exists(2) is True
+
+    def test_preamble_warns_when_resuming(self, executor):
+        text = executor._build_preamble("G", "", resumed=True)
+        assert "재개" in text
+        assert "덮어쓰" in text
+
+    def test_preamble_silent_without_prior_attempt(self, executor):
+        text = executor._build_preamble("G", "")
+        assert "재개" not in text
+
+    def test_resume_notice_reaches_the_session(self, executor):
+        """이전 출력 파일이 있으면 첫 시도의 프롬프트에 재개 안내가 붙는다."""
+        (executor._phase_dir / "step2-output.json").write_text("{}", encoding="utf-8")
+        step = {"step": 2, "name": "ui", "status": "pending"}
+
+        def fake_invoke(step_arg, preamble):
+            index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+            for s in index["steps"]:
+                if s["step"] == 2:
+                    s["status"] = "completed"
+                    s["summary"] = "done"
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+            fake_invoke.preamble = preamble
+            return {"exitCode": 0, "stdout": "{}", "stderr": ""}
+
+        with patch.object(executor, "_invoke_claude", side_effect=fake_invoke), \
+             patch.object(executor, "_commit_step"):
+            assert executor._execute_single_step(step, "guardrails") is True
+
+        assert "재개" in fake_invoke.preamble
+
+    def test_retry_does_not_claim_resume(self, executor):
+        """같은 런의 재시도는 '중단된 step'이 아니다 — 재시도 안내가 따로 있다."""
+        step = {"step": 2, "name": "ui", "status": "pending"}
+        seen = []
+
+        def fake_invoke(step_arg, preamble):
+            seen.append(preamble)
+            (executor._phase_dir / "step2-output.json").write_text("{}", encoding="utf-8")
+            index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+            for s in index["steps"]:
+                if s["step"] == 2:
+                    if len(seen) >= 2:
+                        s["status"] = "completed"
+                        s["summary"] = "done"
+                    else:
+                        s["status"] = "error"
+                        s["error_message"] = "boom"
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+            return {"exitCode": 0, "stdout": "{}", "stderr": ""}
+
+        with patch.object(executor, "_invoke_claude", side_effect=fake_invoke), \
+             patch.object(executor, "_commit_step"):
+            executor._execute_single_step(step, "guardrails")
+
+        assert len(seen) == 2
+        assert "재개" not in seen[0], "첫 시도에는 이전 산출물이 없었다"
+        assert "이전 시도 실패" in seen[1]
+        assert "재개" not in seen[1], "같은 런의 재시도를 재개로 오해하면 안 된다"

@@ -386,6 +386,64 @@ class CalibrateTest(DoctorTestBase):
         self.assertIn("-t", scoped_cmd)
         self.assertIn("정규화", scoped_cmd)
 
+    # --- 부분 측정이 전체를 지우지 않는다 (파일럿 런 #3 M9) ---
+
+    def test_stage_run_merges_into_existing_file(self):
+        """--stage 는 그 스테이지만 갱신한다. 나머지 실측을 지우면 안 된다.
+
+        실측이 정책의 유일한 근거인데 부분 측정 한 번이 전체 근거를 지우면
+        되돌릴 방법이 재측정밖에 없다 (파일럿 런 #3 M9).
+        """
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7, "build": 7.9}))
+        harness.run_calibrate(self.root, stage="lint",
+                              runner=self.fake_runner({"lint": 9.9}))
+
+        stages = self.load()["stages"]
+        self.assertEqual(9.9, stages["lint"]["sec"], "새로 잰 값이 반영돼야 한다")
+        self.assertEqual(4.7, stages["full"]["sec"], "이전 실측이 살아 있어야 한다")
+        self.assertEqual(7.9, stages["build"]["sec"])
+
+    def test_stage_run_keeps_derived_policy(self):
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        harness.run_calibrate(self.root, stage="lint", runner=self.fake_runner())
+
+        derived = self.load()["derived"]
+        self.assertIsNotNone(derived["full_timeout_sec"])
+        self.assertIsNotNone(derived["tests_ran_floor"])
+        self.assertIs(False, derived["background_full_regression"])
+
+    def test_merged_entries_keep_their_own_measured_at(self):
+        """언제 잰 값인지 잃지 않는다 — 옛 값을 방금 잰 척하지 않는다."""
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}),
+                              now="2026-01-01T00:00:00+0900")
+        harness.run_calibrate(self.root, stage="lint", runner=self.fake_runner(),
+                              now="2026-02-02T00:00:00+0900")
+
+        data = self.load()
+        self.assertEqual("2026-02-02T00:00:00+0900", data["measured_at"])
+        self.assertEqual("2026-02-02T00:00:00+0900", data["stages"]["lint"]["measured_at"])
+        self.assertEqual("2026-01-01T00:00:00+0900", data["stages"]["full"]["measured_at"])
+
+    def test_partial_is_false_once_every_stage_is_known(self):
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        harness.run_calibrate(self.root, stage="lint", runner=self.fake_runner())
+        self.assertFalse(self.load()["partial"])
+
+    def test_partial_is_true_without_a_prior_file(self):
+        harness.run_calibrate(self.root, stage="lint", runner=self.fake_runner())
+        data = self.load()
+        self.assertTrue(data["partial"])
+        self.assertEqual({"lint"}, set(data["stages"]))
+
+    def test_replace_discards_prior_measurements(self):
+        """전체 교체는 명시적으로 요구했을 때만."""
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        harness.run_calibrate(self.root, stage="lint", runner=self.fake_runner(),
+                              replace=True)
+        data = self.load()
+        self.assertEqual({"lint"}, set(data["stages"]))
+        self.assertTrue(data["partial"])
+
     def test_single_stage_only(self):
         runner = self.fake_runner()
         harness.run_calibrate(self.root, stage="lint", runner=runner)

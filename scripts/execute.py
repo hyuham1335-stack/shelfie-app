@@ -257,11 +257,35 @@ class StepExecutor:
             return ""
         return "## 이전 Step 산출물\n\n" + "\n".join(lines) + "\n\n"
 
+    def _prior_attempt_exists(self, step_num: int) -> bool:
+        """이 step 이 이전 실행에서 이미 한 번 돌았는지 본다.
+
+        런 #3에서 사용량 한도는 세션이 코드·테스트를 다 쓰고 index.json 을
+        갱신하기 직전에 떨어졌다 — status 는 pending 인데 산출물은 디스크에
+        있는 상태다. 실행기가 이 사실을 세션에게 알려주지 않으면 세션이
+        검증된 산출물을 처음부터 다시 쓸 수 있다.
+        """
+        return (self._phase_dir / f"step{step_num}-output.json").exists()
+
     def _build_preamble(self, guardrails: str, step_context: str,
-                        prev_error: Optional[str] = None) -> str:
+                        prev_error: Optional[str] = None,
+                        resumed: bool = False) -> str:
         commit_example = self.FEAT_MSG.format(
             phase=self._phase_name, num="N", name="<step-name>"
         )
+        resume_section = ""
+        if resumed:
+            resume_section = """
+## ⚠ 재개 — 이 step 은 이전 실행에서 시작됐다가 끊겼다
+
+이전 실행의 출력 파일이 남아 있다. **코드·테스트가 이미 디스크에 있을 수 있다.**
+처음부터 다시 쓰지 마라. 먼저 무엇이 이미 있는지 읽고, AC 로 검증한 뒤
+모자란 것만 채워라. 통과하고 있는 산출물을 덮어쓰면 검증된 작업이 사라진다.
+
+---
+
+"""
+
         retry_section = ""
         if prev_error:
             retry_section = (
@@ -271,7 +295,7 @@ class StepExecutor:
         return (
             f"당신은 {self._project} 프로젝트의 개발자입니다. 아래 step을 수행하세요.\n\n"
             f"{guardrails}\n\n---\n\n"
-            f"{step_context}{retry_section}"
+            f"{step_context}{resume_section}{retry_section}"
             f"## 작업 규칙\n\n"
             f"1. 이전 step에서 작성된 코드를 확인하고 일관성을 유지하라.\n"
             f"2. 이 step에 명시된 작업만 수행하라. 추가 기능이나 파일을 만들지 마라.\n"
@@ -387,11 +411,16 @@ class StepExecutor:
         step_num, step_name = step["step"], step["name"]
         done = sum(1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed")
         prev_error = None
+        # 같은 런의 재시도는 재개가 아니다 — 그쪽에는 retry_section 이 따로 붙는다.
+        prior_attempt = self._prior_attempt_exists(step_num)
+        if prior_attempt:
+            print(f"  ↺ Step {step_num}: 이전 실행의 산출물이 있다 — 세션에 재개를 알린다", flush=True)
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             index = self._read_json(self._index_file)
             step_context = self._build_step_context(index)
-            preamble = self._build_preamble(guardrails, step_context, prev_error)
+            preamble = self._build_preamble(guardrails, step_context, prev_error,
+                                            resumed=prior_attempt and prev_error is None)
 
             tag = f"Step {step_num}/{self._total - 1} ({done} done): {step_name}"
             if attempt > 1:

@@ -1,0 +1,11 @@
+{
+  "project": "shelfie",
+  "phase": "lib-core",
+  "steps": [
+    { "step": 0, "name": "proof", "status": "pending" },
+    { "step": 1, "name": "analytics", "status": "pending" },
+    { "step": 2, "name": "match", "status": "pending" },
+    { "step": 3, "name": "merge", "status": "pending" },
+    { "step": 4, "name": "image", "status": "pending" }
+  ]
+}

@@ -634,3 +634,108 @@ class TestCheckBlockers:
         with pytest.raises(SystemExit) as exc_info:
             inst._check_blockers()
         assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# _run_git 디코딩 (파일럿 런 #3 M6)
+# ---------------------------------------------------------------------------
+
+class TestRunGitDecoding:
+    """git 출력을 로캘이 아니라 UTF-8 로 읽어야 한다.
+
+    커밋 제목에 em dash(—)나 한글이 들어가면 cp949 로캘에서 리더 스레드가
+    UnicodeDecodeError 로 죽고, subprocess.communicate 가 IndexError 를 내
+    실행기 전체가 무너진다. 런 #3에서 phase 를 중단시킨 결함이다.
+    """
+
+    def test_decodes_as_utf8(self, executor):
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            executor._run_git("status")
+        assert mock_run.call_args[1]["encoding"] == "utf-8"
+
+    def test_undecodable_bytes_do_not_raise(self, executor):
+        """깨진 바이트가 와도 예외 대신 값을 돌려준다."""
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            executor._run_git("commit", "-m", "feat(x): step 3 — resolve")
+        assert mock_run.call_args[1].get("errors") == "replace"
+
+    def test_real_git_output_with_em_dash(self, tmp_path):
+        """실제 git 을 통과시킨다 (회귀 재현: 런 #3 step 3 커밋)."""
+        subprocess.run(["git", "init", "-q"], cwd=str(tmp_path))
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(tmp_path))
+        subprocess.run(["git", "config", "user.name", "t"], cwd=str(tmp_path))
+        (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=str(tmp_path))
+
+        inst = ex.StepExecutor.__new__(ex.StepExecutor)
+        inst._root = str(tmp_path)
+        r = inst._run_git("commit", "-m", "feat(routes-core): step 3 — resolve-route")
+        assert r.returncode == 0
+        assert "resolve-route" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# 사용량 한도 (파일럿 런 #3 M7)
+# ---------------------------------------------------------------------------
+
+class TestUsageLimit:
+    """429(세션 사용량 한도)는 코드 결함이 아니라 외부 조건이다.
+
+    자가 교정 3회를 태우고 error 로 적으면 (1) 파일럿의 재시도 통계가
+    오염되고 (2) 사용자가 고칠 수 없는 실패를 고치려 든다. blocked 로
+    즉시 세워야 한다.
+    """
+
+    LIMIT_STDOUT = json.dumps({
+        "is_error": True,
+        "api_error_status": 429,
+        "terminal_reason": "api_error",
+        "result": "You've hit your session limit — resets 7:20pm (Asia/Seoul)",
+    })
+
+    def test_detects_429(self):
+        out = {"exitCode": 1, "stdout": self.LIMIT_STDOUT, "stderr": ""}
+        reason = ex.StepExecutor._usage_limit_reason(out)
+        assert reason is not None
+        assert "session limit" in reason
+
+    def test_ignores_success(self):
+        out = {"exitCode": 0, "stdout": self.LIMIT_STDOUT, "stderr": ""}
+        assert ex.StepExecutor._usage_limit_reason(out) is None
+
+    def test_ignores_other_errors(self):
+        payload = json.dumps({"is_error": True, "api_error_status": 500, "result": "boom"})
+        out = {"exitCode": 1, "stdout": payload, "stderr": ""}
+        assert ex.StepExecutor._usage_limit_reason(out) is None
+
+    def test_ignores_non_json(self):
+        out = {"exitCode": 1, "stdout": "not json at all", "stderr": ""}
+        assert ex.StepExecutor._usage_limit_reason(out) is None
+
+    def test_ignores_empty_stdout(self):
+        out = {"exitCode": 1, "stdout": "", "stderr": ""}
+        assert ex.StepExecutor._usage_limit_reason(out) is None
+
+    def test_blocks_without_burning_retries(self, executor):
+        """한도에 걸리면 재시도하지 않고 exit 2 로 즉시 멈춘다."""
+        out = {"exitCode": 1, "stdout": self.LIMIT_STDOUT, "stderr": ""}
+        step = {"step": 2, "name": "ui", "status": "pending"}
+
+        with patch.object(executor, "_invoke_claude", return_value=out) as inv, \
+             patch.object(executor, "_run_git", return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+             patch.object(executor, "_update_top_index") as top:
+            with pytest.raises(SystemExit) as exc_info:
+                executor._execute_single_step(step, "guardrails")
+
+        assert exc_info.value.code == 2
+        assert inv.call_count == 1, "한도는 자가 교정 대상이 아니다 — 재시도하면 안 된다"
+        top.assert_called_once_with("blocked")
+
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        s = next(s for s in index["steps"] if s["step"] == 2)
+        assert s["status"] == "blocked"
+        assert "session limit" in s["blocked_reason"]
+        assert "blocked_at" in s
+        assert "error_message" not in s

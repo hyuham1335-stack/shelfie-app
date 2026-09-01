@@ -142,8 +142,14 @@ class StepExecutor:
     # --- git ---
 
     def _run_git(self, *args) -> subprocess.CompletedProcess:
+        # encoding 을 명시하지 않으면 로캘(cp949)로 디코드한다. 커밋 제목의
+        # em dash(—)나 한글에서 리더 스레드가 UnicodeDecodeError 로 죽고,
+        # communicate 가 IndexError 를 내며 실행기 전체가 무너진다 —
+        # 파일럿 런 #3의 phase 를 중단시킨 결함이다. 평소에는 step 세션이
+        # 스스로 커밋해 이 경로가 no-op 이라 두 런 동안 숨어 있었다.
         cmd = ["git"] + list(args)
-        return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True)
+        return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
 
     def _checkout_branch(self):
         branch = f"feat-{self._phase_name}"
@@ -302,6 +308,26 @@ class StepExecutor:
 
         return output
 
+    @staticmethod
+    def _usage_limit_reason(output: dict) -> Optional[str]:
+        """세션 사용량 한도(429)로 잘렸으면 그 사유를, 아니면 None 을 돌려준다.
+
+        한도는 코드 결함이 아니라 외부 조건이다. 자가 교정 3회를 태우고
+        error 로 적으면 (1) 파일럿의 재시도 통계가 '자가 교정 실패'로
+        오염되고 (2) 사용자는 고칠 수 없는 실패를 고치려 든다.
+        """
+        if output.get("exitCode", 0) == 0:
+            return None
+        try:
+            payload = json.loads(output.get("stdout") or "{}")
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict) or not payload.get("is_error"):
+            return None
+        if payload.get("api_error_status") != 429:
+            return None
+        return str(payload.get("result") or "세션 사용량 한도")
+
     # --- 헤더 & 검증 ---
 
     def _print_header(self):
@@ -352,12 +378,22 @@ class StepExecutor:
                 tag += f" [retry {attempt}/{self.MAX_RETRIES}]"
 
             with progress_indicator(tag) as pi:
-                self._invoke_claude(step, preamble)
+                out = self._invoke_claude(step, preamble)
             elapsed = int(pi.elapsed)
 
             index = self._read_json(self._index_file)
             status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
             ts = self._stamp()
+
+            limit_reason = self._usage_limit_reason(out)
+            if limit_reason and status not in ("completed", "blocked"):
+                for s in index["steps"]:
+                    if s["step"] == step_num:
+                        s["status"] = "blocked"
+                        s["blocked_reason"] = f"사용량 한도로 세션이 잘렸다 — {limit_reason}"
+                        s.pop("error_message", None)
+                self._write_json(self._index_file, index)
+                status = "blocked"
 
             if status == "completed":
                 for s in index["steps"]:

@@ -28,10 +28,36 @@ flowchart TD
     src --> lib["lib/<br/>유틸리티 + 헬퍼"]
     src --> services["services/<br/>외부 API 래퍼"]
 
-    app --> api["api/<br/>{라우트 핸들러}"]
-    app --> page["{페이지 디렉토리}"]
-    components --> comp1["{컴포넌트 그룹}"]
-    services --> svc1["{외부 서비스 래퍼}"]
+    app --> api["api/<br/>라우트 핸들러"]
+    app --> page["page.tsx<br/>단일 페이지 (5개 화면을 상태로 전환)"]
+
+    api --> apiAnalyze["analyze/route.ts<br/>사진 → 확인·미확인 책"]
+    api --> apiResolve["books/resolve/route.ts<br/>수정된 제목으로 재검색"]
+    api --> apiQuestions["mood/questions/route.ts<br/>기분 유도 질문 생성"]
+    api --> apiRecommend["recommend/route.ts<br/>책 목록 + 기분 → 3권"]
+    api --> apiEvents["events/route.ts<br/>클라이언트 전용 이벤트 수집"]
+
+    components --> cUpload["upload/<br/>사진 선택·촬영·썸네일"]
+    components --> cBooklist["booklist/<br/>확인된 책 카드 · 미확인 섹션"]
+    components --> cMood["mood/<br/>자유 입력 · 문답"]
+    components --> cRecommend["recommend/<br/>추천 3권 카드"]
+    components --> cCommon["common/<br/>스켈레톤 · 에러 배너 · 배지"]
+
+    lib --> libImage["image.ts<br/>파일 검증 · 1568px 리사이즈"]
+    lib --> libSchemas["schemas.ts<br/>zod 스키마 (외부 응답 검증 경계)"]
+    lib --> libMatch["match.ts<br/>제목 유사도 · 확인/미확인 판정"]
+    lib --> libMerge["merge.ts<br/>ISBN 중복 제거 · 50권 상한"]
+    lib --> libPrompts["prompts.ts<br/>추출 · 한줄평 · 추천 · 문답 프롬프트"]
+    lib --> libAnalytics["analytics.ts<br/>구조화 이벤트 로그"]
+    lib --> libBudget["budget.ts<br/>단계별 시간 예산 · 데드라인 전파"]
+    lib --> libProof["proof.ts<br/>확인된 책 HMAC 서명 발급 · 검증"]
+    lib --> libEnv["env.ts<br/>환경변수 부팅 시 검증"]
+
+    services --> svcAnthropic["anthropic.ts<br/>Claude API 래퍼"]
+    services --> svcAladin["aladin.ts<br/>알라딘 OpenAPI 래퍼"]
+
+    types --> tBook["book.ts<br/>ExtractedCandidate · IdentifiedBook · UnidentifiedBook"]
+    types --> tApi["api.ts<br/>요청 · 응답 · 에러 코드"]
 ```
 
 세부 디렉토리가 늘어나면 위 그래프에 노드를 추가한다. 새 최상위 디렉토리를 만들 때는 ADR에 근거를 남긴다.
@@ -60,7 +86,7 @@ flowchart LR
 
     C --> A
     A --> S
-    S --> E["외부 API"]
+    S --> E["외부 API<br/>Anthropic · 알라딘"]
 
     C --> L
     A --> L
@@ -70,36 +96,174 @@ flowchart LR
     S --> T
 ```
 
-- {금지 방향 1 (예: components/ → services/ 직접 호출 금지. 반드시 app/api/ 경유)}
-- {금지 방향 2}
+- `components/` → `services/` 직접 호출 금지. 반드시 `app/api/`를 경유한다. 클라이언트 번들에 `ANTHROPIC_API_KEY`·`ALADIN_TTB_KEY`가 새어 나가는 것을 구조적으로 차단하기 위함이다.
+- `services/` → `components/` 역방향 import 금지. 서버 전용 모듈이 React 컴포넌트를 참조하면 서버 코드가 클라이언트 번들로 끌려 들어간다.
+- `lib/` → `services/` 금지. `lib/`는 외부 호출을 하지 않는 순수 함수만 담는다. 이 경계 덕분에 `lib/`는 모킹 없이 단위 테스트할 수 있다.
+- `lib/image.ts`만 브라우저 API(Canvas)에 의존한다. 서버 코드에서 import하지 않는다.
 
 ---
 
 ## 패턴
 
-{사용하는 디자인 패턴 (예: Server Components 기본, 인터랙션이 필요한 곳만 Client Component)}
+- **Server Components 기본, 인터랙션이 있는 곳만 Client Component.** 이 앱은 사진 선택부터 추천까지 전 구간이 인터랙션이므로 `app/page.tsx`가 얇은 셸이고 실제 화면은 대부분 Client Component다. 서버에서 미리 렌더할 데이터가 없다(무상태).
+- **검증 경계 패턴.** 외부에서 들어오는 모든 값 — HTTP 요청 본문, Claude 응답, 알라딘 응답 — 은 `lib/schemas.ts`의 zod 스키마를 통과한 뒤에만 도메인 타입으로 취급한다. `safeParse` 실패는 예외가 아니라 판별 가능한 실패 값으로 다룬다.
+- **강등 패턴 (fail-soft).** 개별 책의 검증·조회가 실패해도 요청 전체를 실패시키지 않고 그 책만 미확인으로 강등한다. 사진 단위 실패도 마찬가지로 `failedPhotoCount`만 올리고 성공분은 반환한다.
+- **출처 분리.** `IdentifiedBook`은 알라딘 원본 필드와 Claude 생성 필드(`claudeNote`)를 한 객체에 담되, 렌더 단계에서 서로 다른 시각 층위로 표시한다. 타입 수준에서 어느 필드가 어디서 왔는지 주석으로 명시한다.
+- **화이트리스트 검증.** 추천 응답의 `bookId`는 요청에 담아 보낸 확인된 책 목록 안에 있어야만 사용자에게 도달한다. 모델 출력을 신뢰하지 않는다.
+- **증명 동반 (proof-carrying).** 화이트리스트 검증은 *모델 출력*을 입력과 대조할 뿐, 그 입력이 사실인지는 묻지 않는다. 무상태 설계에서 확인 판정은 응답과 함께 클라이언트로 나갔다가 다음 요청에 다시 들어오므로, 서버는 그것이 자기가 내준 값인지 알 수 없다. 그래서 확인된 책은 **자기 증명(`proof` 서명)을 들고 다닌다.** 검증 실패는 요청 전체가 아니라 그 책만 폐기하는 강등으로 처리해 fail-soft 패턴과 일관되게 둔다 (ADR-006).
+- **시간 예산 패턴.** 요청 진입점에서 총 예산(`/api/analyze`는 55s)을 잡고, 각 단계는 `남은 예산 = 총 예산 − 경과 시간`을 계산해 자기 몫과 비교한 뒤 **작은 쪽**을 데드라인으로 삼는다. 예산을 넘긴 단계는 요청을 실패시키지 않고 그 단계의 산출물만 강등한다(`lookup_failed`, 빈 `claudeNote`). 단계별 타임아웃을 따로 두면 합이 함수 상한을 넘겨 플랫폼이 연결을 끊고, 그러면 정해진 504조차 돌려주지 못한다 (ADR-005, `/docs/TRD.md` 7번).
+- **사유 보존.** 강등할 때 *왜* 강등했는지를 잃지 않는다. 알라딘 조회 실패(`lookup_failed`)와 알라딘에 없음(`no_match`)은 사용자에게 완전히 다른 문장으로 보여야 하므로, 코드에서도 끝까지 다른 값으로 나른다.
+- **어댑터 없는 단일 공급자.** provider 추상화 레이어를 만들지 않는다. `services/anthropic.ts`가 곧 경계이고, 공급자를 바꿔야 할 일이 생기면 이 파일 하나를 교체한다 (ADR-001).
 
 ---
 
 ## 데이터 흐름
 
+### 흐름 1 — 사진 분석 (US-001, TR-006)
+
 ```mermaid
 sequenceDiagram
     actor U as 사용자
     participant C as Client Component
-    participant R as app/api 라우트 핸들러
-    participant S as services 래퍼
-    participant E as 외부 API
+    participant R as app/api/analyze
+    participant SA as services/anthropic
+    participant SL as services/aladin
+    participant EA as Claude API
+    participant EL as 알라딘 OpenAPI
 
-    U->>C: {사용자 입력}
-    C->>R: {요청}
-    R->>R: {입력 검증}
-    R->>S: {호출}
-    S->>E: {외부 호출}
-    E-->>S: {원본 응답}
-    S-->>R: {정규화된 데이터}
-    R-->>C: {JSON 응답}
-    C-->>U: {UI 업데이트}
+    U->>C: 책장 사진 1~5장 선택
+    C->>C: lib/image — 검증 + 1568px 리사이즈
+    C->>R: POST /api/analyze (base64 이미지 배열)
+    R->>R: zod 스키마 검증 (장수·MIME·크기 재확인)
+
+    R->>R: lib/budget — 총 예산 55s 시작
+
+    loop 사진마다 병렬 (예산 30s)
+        R->>SA: 책등 추출 요청
+        SA->>EA: messages.create (Vision + 구조화 출력)
+        EA-->>SA: 책 후보 목록
+        SA-->>R: ExtractedCandidate[] (스키마 통과분만)
+    end
+    Note over R: 예산 초과분은 failedPhotoIndexes에 기록
+
+    R->>R: lib/merge — confidence 0.3 미만 강등 · 사전 병합 · 상위 80건으로 절단
+
+    loop 후보마다 (동시성 12, 예산 12s)
+        R->>SL: 제목·저자로 ItemSearch
+        SL->>EL: GET ItemSearch
+        EL-->>SL: 검색 결과
+        SL-->>R: 후보 목록
+        R->>R: lib/match — 유사도 0.8 + 저자 tie-break → 확인 또는 강등
+    end
+    Note over R: 연속 5회 실패 시 요청 스코프 브레이커 Open<br/>잔여 후보는 조회 없이 lookup_failed로 강등<br/>(no_match와 섞지 않는다 — ADR-005)
+
+    R->>R: lib/merge — ISBN13 중복 제거 + 50권 결정적 절단
+
+    alt 남은 예산 8s 이상
+        R->>SA: 확인된 책 전체 한줄평 배치 요청 (1회)
+        SA->>EA: messages.create
+        EA-->>SA: 한줄평 목록
+        SA-->>R: claudeNote 병합
+    else 예산 부족
+        R->>R: 호출 생략 — claudeNote 전원 빈 문자열
+    end
+
+    R->>R: lib/proof — 확인된 책마다 HMAC 서명 발급 (TTL 2h)
+    R->>R: lib/analytics — analyze_completed 기록
+    R-->>C: AnalyzeResult (identified · unidentified · overflowCount · failedPhotoCount · failedPhotoIndexes)
+
+    alt 확인된 책 1권 이상
+        C-->>U: 확인된 책 카드 + 미확인 섹션 렌더
+    else 확인 0건 · 미확인만 존재
+        C-->>U: unidentifiedOnly 화면 — 미확인 목록과 사유, 재촬영·직접 수정 안내
+    end
+```
+
+### 흐름 2 — 추천 생성 (US-003·US-004, TR-009·TR-010)
+
+```mermaid
+sequenceDiagram
+    actor U as 사용자
+    participant C as Client Component
+    participant RQ as app/api/mood/questions
+    participant RR as app/api/recommend
+    participant RE as app/api/events
+    participant SA as services/anthropic
+    participant EA as Claude API
+
+    alt 기분을 비워 둔 경우
+        U->>C: 입력 없이 추천 요청
+        C->>RQ: POST /api/mood/questions (확인된 책 목록)
+        RQ->>SA: 서재 구성 기반 질문 생성
+        SA->>EA: messages.create
+        EA-->>SA: 질문 2~3개
+        SA-->>RQ: MoodQuestion[]
+        RQ-->>C: 질문 목록 (생성 실패 시 빈 배열)
+        C-->>U: 문답 화면 (빈 배열이면 자유 입력으로 폴백)
+        U->>C: 선택지 응답
+        C->>C: 답변을 기분 텍스트로 합성
+    else 기분을 직접 입력한 경우
+        U->>C: 기분 한 줄 입력
+    end
+
+    C->>RR: POST /api/recommend (책 목록 + 기분 텍스트)
+    RR->>RR: zod 검증 + isbn13 형식·개수 상한 재확인
+    RR->>RR: lib/proof — 책마다 서명 검증, 실패분만 폐기<br/>(0권이면 400 UNVERIFIED_BOOKS)
+    RR->>SA: 추천 3권 생성 요청
+    SA->>EA: messages.create (구조화 출력)
+    EA-->>SA: Recommendation[]
+    SA-->>RR: 스키마 통과분
+
+    RR->>RR: bookId 화이트리스트 검증 (입력 목록에 있는가)
+    alt 목록 밖 bookId 포함
+        RR->>SA: 1회 재요청 (위반한 bookId 명시 + 허용 목록 재제시)
+        SA->>EA: messages.create
+        EA-->>SA: Recommendation[]
+        SA-->>RR: 재검증
+    end
+
+    RR->>RR: lib/analytics — 서버 관측 이벤트 기록 (mood_submitted 등)
+    RR-->>C: 추천 3권 + 이유 (재검증도 실패하면 502)
+    C-->>U: 추천 카드 렌더
+    C->>RE: POST /api/events (recommend_viewed)
+    U->>C: "이거 읽을래요" 클릭
+    C->>RE: POST /api/events (recommend_accepted) — North Star 분자
+```
+
+### 흐름 3 — 미확인 책 재검색 (US-002, TR-008)
+
+```mermaid
+sequenceDiagram
+    actor U as 사용자
+    participant C as Client Component
+    participant R as app/api/books/resolve
+    participant SL as services/aladin
+    participant EL as 알라딘 OpenAPI
+    participant RB as app/api/events
+
+    alt reason이 ambiguous (후보가 이미 있음)
+        U->>C: 제시된 후보 중 하나를 바로 선택
+        C-->>U: 재검색 없이 확인된 책으로 이동
+    end
+
+    U->>C: 미확인 책의 제목을 수정
+    C->>R: POST /api/books/resolve (수정된 제목)
+    R->>R: zod 검증 (1~200자)
+    R->>SL: ItemSearch 조회
+    SL->>EL: GET ItemSearch
+    EL-->>SL: 검색 결과
+    SL-->>R: 후보 최대 5건
+    alt 결과 0건
+        R-->>C: NOT_FOUND_IN_ALADIN
+        C-->>U: "찾을 수 없는 책이에요 (원서·절판일 수 있어요)"
+    else 알라딘 장애·타임아웃
+        R-->>C: UPSTREAM_UNAVAILABLE
+        C-->>U: "지금 확인할 수 없었어요" + 재시도 — 절판 안내를 쓰지 않는다
+    else 후보 있음
+        R-->>C: AladinCandidate[]
+        C-->>U: 후보 목록 → 선택 시 확인된 책으로 이동
+        C->>RB: POST /api/events (book_resolved)
+    end
 ```
 
 흐름이 여러 개면 흐름마다 `sequenceDiagram`을 하나씩 추가한다.
@@ -108,14 +272,33 @@ sequenceDiagram
 
 ## 상태 관리
 
-{상태 관리 방식 (예: 서버 상태는 Server Components, 클라이언트 상태는 useState/useReducer)}
+서버 상태가 없으므로 전역 상태 라이브러리를 쓰지 않는다. 세션 전체를 `app/page.tsx`의 `useReducer` 하나로 관리하고, 각 화면 컴포넌트는 상태와 dispatch를 props로 받는다. 새로고침하면 상태가 사라지며, 이는 무상태 설계의 의도된 결과다 (ADR-003).
+
+다만 **의도된 소실과 사고로 인한 소실은 다르다.** 분석에 30초를 기다린 사용자가 실수로 새로고침하면 사진과 결과가 함께 사라지고 API 비용도 다시 든다. `reviewing` 이후 상태에서는 `beforeunload` 경고를 걸어 이탈을 한 번 되묻는다. 선택한 원본 파일은 `error` 상태에서도 메모리에 유지해, 재시도가 재업로드를 요구하지 않게 한다.
 
 ```mermaid
 stateDiagram-v2
     [*] --> idle
-    idle --> loading: {트리거}
-    loading --> success: {성공 조건}
-    loading --> error: {실패 조건}
-    success --> idle: {초기화}
-    error --> loading: {재시도}
+    idle --> analyzing: 사진 선택 후 분석 시작
+    analyzing --> reviewing: 확인된 책 1권 이상
+    analyzing --> unidentifiedOnly: 후보는 있으나 확인 0건
+    analyzing --> emptyShelf: 추출된 후보 0건
+    analyzing --> error: 전 사진 실패 또는 네트워크 오류
+    emptyShelf --> idle: 다시 찍기
+    unidentifiedOnly --> reviewing: 직접 수정으로 1권 이상 확인
+    unidentifiedOnly --> analyzing: 실패한 사진만 재시도
+    unidentifiedOnly --> idle: 다시 찍기
+    reviewing --> reviewing: 미확인 책 수정·재검색
+    reviewing --> moodInput: 추천 단계로 이동
+    moodInput --> guidedQuestions: 기분을 비운 채 진행
+    guidedQuestions --> moodInput: 문답 건너뛰기 또는 생성 실패
+    guidedQuestions --> recommending: 답변 제출
+    moodInput --> recommending: 기분 텍스트 제출
+    recommending --> result: 추천 3권 수신
+    recommending --> moodInput: 무관한 입력 또는 검증 실패
+    recommending --> error: 외부 API 오류
+    result --> moodInput: 다시 추천받기
+    result --> idle: 새 사진으로 시작
+    error --> analyzing: 재시도 (실패한 사진만)
+    error --> idle: 처음으로
 ```

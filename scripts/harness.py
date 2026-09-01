@@ -772,12 +772,14 @@ def _check_calibration(root, config, adapter, report):
     derived = calibration.get("derived", {})
     report.add("캘리브레이션 상태", "PASS",
                "%s 기준 실측 — 측정 %d종(%s) · 미측정 %d종(%s)\n"
-               "정책: 백그라운드 전체 회귀 %s · full 타임아웃 %ss · 테스트 수 하한 %s"
+               "정책: 백그라운드 전체 회귀 %s · full 타임아웃 %ss · 테스트 수 하한 %s · "
+               "재시도 상한 %s"
                % (calibration.get("measured_at", "?"), len(measured), ", ".join(sorted(measured)),
                   len(skipped), ", ".join(sorted(skipped)) or "없음",
                   "ON" if derived.get("background_full_regression") else "OFF",
                   derived.get("full_timeout_sec", "?"),
-                  derived.get("tests_ran_floor", "미측정")))
+                  derived.get("tests_ran_floor", "미측정"),
+                  derived.get("retry_budget") or "미측정(MAX_RETRIES 바닥값)"))
 
 
 def _load_calibration(root, config):
@@ -805,6 +807,13 @@ STAGE_ORDER = ["compile", "lint", "check", "scoped", "full", "e2e", "build", "do
 DEFAULT_FULL_TIMEOUT_FLOOR = 300
 FULL_TIMEOUT_FACTOR = 4
 TESTS_FLOOR_RATIO = 0.9
+
+# 재시도 상한을 실측에서 유도하기 위한 상수 (ADR-H007).
+# 이만큼의 step 이 attempts 를 남기기 전에는 retry_budget 을 내지 않는다 —
+# 표본 3개로 상한을 정하는 것은 상수를 박는 것과 다르지 않다.
+RETRY_RECORD_MIN = 10
+# 유도된 상한의 바닥. 1이면 자가 교정 장치 자체가 없어진다.
+RETRY_BUDGET_FLOOR = 2
 
 
 def _subprocess_runner(stage, cmd, cwd, timeout_sec):
@@ -879,7 +888,41 @@ def _parse_junit(root, adapter):
     return tests, suites, failures, True
 
 
-def _derive_policy(stages, config):
+def _collect_retry(root):
+    """phases/*/index.json 에서 step 별 attempts 를 모은다.
+
+    execute.py 가 attempts 를 남기기 전에 끝난 step 은 **미기록**이다.
+    "재시도 0회"라고 적지 않는다 — 파일럿 20 step 이 실제로 재시도 없이
+    통과했다는 것은 콘솔을 지켜본 사람의 기억이고 데이터가 아니었다.
+    """
+    recorded, unrecorded, retried, observed = 0, 0, 0, None
+    phases_dir = Path(root) / "phases"
+    for index_file in sorted(phases_dir.glob("*/index.json")):
+        try:
+            steps = _read_json(index_file).get("steps") or []
+        except (OSError, ValueError):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            attempts = step.get("attempts")
+            if isinstance(attempts, int) and attempts >= 1:
+                recorded += 1
+                observed = attempts if observed is None else max(observed, attempts)
+                if attempts > 1:
+                    retried += 1
+            elif step.get("status") in ("completed", "error"):
+                # 끝났는데 attempts 가 없다 = 기록 이전에 돈 step.
+                unrecorded += 1
+    return {
+        "steps_recorded": recorded,
+        "steps_unrecorded": unrecorded,
+        "steps_retried": retried,
+        "max_attempts_observed": observed,
+    }
+
+
+def _derive_policy(stages, config, retry=None):
     """상수를 함수로 바꾸는 지점. 입력이 없으면 정책도 '미측정'이다."""
     full = stages.get("full", {})
     sec = full.get("sec")
@@ -891,6 +934,7 @@ def _derive_policy(stages, config):
         "background_full_regression": None,
         "full_timeout_sec": None,
         "tests_ran_floor": None,
+        "retry_budget": None,
     }
     if sec is not None:
         derived["background_full_regression"] = sec > threshold
@@ -898,6 +942,12 @@ def _derive_policy(stages, config):
                                           int(math.ceil(sec * FULL_TIMEOUT_FACTOR)))
     if tests_ran:
         derived["tests_ran_floor"] = int(math.floor(tests_ran * TESTS_FLOOR_RATIO))
+
+    # 표본이 충분할 때만 상한을 낸다. 그전에는 실행기가 MAX_RETRIES 를
+    # 바닥값으로 쓴다 — 실측이 없으면 정책도 없다.
+    if retry and retry["steps_recorded"] >= RETRY_RECORD_MIN:
+        observed = retry["max_attempts_observed"] or 1
+        derived["retry_budget"] = max(RETRY_BUDGET_FLOOR, observed + 1)
     return derived
 
 
@@ -988,15 +1038,17 @@ def run_calibrate(root, stage=None, select=None, runner=None, now=None, replace=
             merged.update(stages)
             stages = merged
 
+    retry = _collect_retry(root)
     payload = {
         "measured_at": stamp,
         "adapter": adapter["id"],
         "adapter_verified": bool(adapter.get("verified")),
         "partial": any(name not in stages for name in STAGE_ORDER),
         "stages": stages,
+        "retry": retry,
         "report_glob_matched": report_matched,
         "infra": _probe_infra(adapter),
-        "derived": _derive_policy(stages, config),
+        "derived": _derive_policy(stages, config, retry),
     }
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1013,6 +1065,15 @@ def run_calibrate(root, stage=None, select=None, runner=None, now=None, replace=
               % ("ON" if d["background_full_regression"] else "OFF",
                  full_sec, d["background_threshold_sec"],
                  d["full_timeout_sec"], d["tests_ran_floor"] or "미측정"))
+
+    if d["retry_budget"] is None:
+        print("  재시도 상한 — 미측정 (attempts 기록 %d step · 미기록 %d step, "
+              "%d 이상이어야 유도한다). 실행기가 MAX_RETRIES 를 바닥값으로 쓴다."
+              % (retry["steps_recorded"], retry["steps_unrecorded"], RETRY_RECORD_MIN))
+    else:
+        print("  재시도 상한 — %d회 (기록 %d step 중 재시도 %d건 · 최대 시도 %d회)"
+              % (d["retry_budget"], retry["steps_recorded"], retry["steps_retried"],
+                 retry["max_attempts_observed"] or 1))
     return 0
 
 

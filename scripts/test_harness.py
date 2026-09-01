@@ -357,6 +357,17 @@ class CalibrateTest(DoctorTestBase):
         self.assertEqual(4.7, data["stages"]["full"]["sec"])
         self.assertTrue(data["stages"]["full"]["ok"])
 
+    def test_carries_the_retry_ledger(self):
+        """attempts 원장이 calibration 에 실려야 상한을 유도할 수 있다 (ADR-H007)."""
+        _write(self.root / "phases" / "p" / "index.json",
+               json.dumps({"steps": [{"step": 0, "name": "a",
+                                      "status": "completed", "attempts": 2}]}))
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        data = self.load()
+        self.assertEqual(1, data["retry"]["steps_recorded"])
+        self.assertEqual(2, data["retry"]["max_attempts_observed"])
+        self.assertIn("retry_budget", data["derived"])
+
     def test_null_cmd_stage_is_skipped_not_measured(self):
         runner = self.fake_runner()
         harness.run_calibrate(self.root, runner=runner)
@@ -561,6 +572,82 @@ class CalibrateTest(DoctorTestBase):
         # 어댑터 검증과 캘리브레이션은 다른 것이다 — verified:false 경고는 남는다
         warns = "\n".join(c.message for c in report.checks if c.status == "WARN")
         self.assertIn("verified", warns)
+
+
+class RetryBudgetTest(unittest.TestCase):
+    """재시도 상한을 실측에서 유도한다 (ROADMAP 17 · ADR-H007).
+
+    MAX_RETRIES = 3 은 파일럿 20 step 동안 한 번도 발동하지 않은 상수였다.
+    더 나쁜 것은 그 20 step 이 attempts 를 **어디에도 남기지 않았다**는 점이다 —
+    "재시도 0회"는 콘솔을 지켜본 사람의 기억이지 데이터가 아니었다.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _phase(self, name, steps):
+        _write(self.tmp / "phases" / name / "index.json",
+               json.dumps({"steps": steps}, ensure_ascii=False))
+
+    def test_no_phases_at_all(self):
+        got = harness._collect_retry(self.tmp)
+        self.assertEqual(0, got["steps_recorded"])
+        self.assertIsNone(got["max_attempts_observed"])
+
+    def test_finished_steps_without_attempts_are_unrecorded_not_zero(self):
+        """미측정과 0을 같은 칸에 쓰지 않는다 — 이 파일 전체의 규율이다."""
+        self._phase("lib-core", [{"step": 0, "name": "a", "status": "completed"},
+                                 {"step": 1, "name": "b", "status": "completed"}])
+        got = harness._collect_retry(self.tmp)
+        self.assertEqual(0, got["steps_recorded"])
+        self.assertEqual(2, got["steps_unrecorded"])
+        self.assertEqual(0, got["steps_retried"])
+
+    def test_pending_steps_are_neither(self):
+        self._phase("x", [{"step": 0, "name": "a", "status": "pending"}])
+        got = harness._collect_retry(self.tmp)
+        self.assertEqual(0, got["steps_recorded"])
+        self.assertEqual(0, got["steps_unrecorded"])
+
+    def test_counts_attempts_across_phases(self):
+        self._phase("one", [{"step": 0, "name": "a", "status": "completed", "attempts": 1},
+                            {"step": 1, "name": "b", "status": "completed", "attempts": 3}])
+        self._phase("two", [{"step": 0, "name": "c", "status": "error", "attempts": 2},
+                            {"step": 1, "name": "d", "status": "completed"}])
+        got = harness._collect_retry(self.tmp)
+        self.assertEqual(3, got["steps_recorded"])
+        self.assertEqual(1, got["steps_unrecorded"])
+        self.assertEqual(2, got["steps_retried"])
+        self.assertEqual(3, got["max_attempts_observed"])
+
+    def test_broken_index_is_skipped_not_fatal(self):
+        _write(self.tmp / "phases" / "bad" / "index.json", "{ not json")
+        self._phase("good", [{"step": 0, "name": "a", "status": "completed", "attempts": 1}])
+        self.assertEqual(1, harness._collect_retry(self.tmp)["steps_recorded"])
+
+    # --- 유도 ---
+
+    def test_budget_is_none_below_the_sample_floor(self):
+        retry = {"steps_recorded": harness.RETRY_RECORD_MIN - 1, "steps_unrecorded": 0,
+                 "steps_retried": 0, "max_attempts_observed": 1}
+        derived = harness._derive_policy({}, {}, retry)
+        self.assertIsNone(derived["retry_budget"],
+                          "표본이 모자라면 상한을 내지 않는다 — 상수를 박는 것과 같아진다")
+
+    def test_budget_derived_once_the_sample_is_enough(self):
+        retry = {"steps_recorded": harness.RETRY_RECORD_MIN, "steps_unrecorded": 0,
+                 "steps_retried": 0, "max_attempts_observed": 1}
+        self.assertEqual(harness.RETRY_BUDGET_FLOOR,
+                         harness._derive_policy({}, {}, retry)["retry_budget"])
+
+    def test_budget_leaves_headroom_above_what_was_observed(self):
+        retry = {"steps_recorded": 20, "steps_unrecorded": 0,
+                 "steps_retried": 4, "max_attempts_observed": 3}
+        self.assertEqual(4, harness._derive_policy({}, {}, retry)["retry_budget"])
+
+    def test_derive_without_retry_input_keeps_the_key_null(self):
+        self.assertIsNone(harness._derive_policy({}, {})["retry_budget"])
 
 
 class RealRepoTest(unittest.TestCase):

@@ -15,7 +15,8 @@
       "name": "questions-route",
       "status": "completed",
       "started_at": "2026-09-01T21:52:16+0900",
-      "summary": "app/api/mood/questions/route.ts 신설(runtime=nodejs, maxDuration=30, 자체 예산 28s — lib/budget의 STAGE_BUDGET_MS는 analyze 55s 전용이라 넓히지 않았다). 규약: ① filterVerified로 proof를 모델 호출보다 먼저 검증하고 위조·만료 책은 그 책만 버린다(fail-soft, TR-015) ② 통과 0권이면 400 UNVERIFIED_BOOKS — API_SPEC이 mood/questions에 대해 명시하지 않은 경우라 recommend와 같은 규약을 택했고 근거를 라우트 주석에 남겼다(문서는 고치지 않았다). step 2도 같은 규약을 쓴다 ③ 생성 실패(schema·refusal·upstream·max_tokens)는 502가 아니라 200+빈 배열, 응답이 moodQuestionsResponseSchema를 어기면(질문 1개·4개) 502 대신 빈 배열로 강등 ④ reason==='timeout'만 504 TIMEOUT ⑤ SERVICE_ENABLED는 해석 실패 시 차단 쪽으로 넘어져 503 ⑥ questions_generated를 모델 호출 후 모든 분기(200·504)에 남기고 실패 분기의 usage까지 합산, usage 없으면 0, 서명 0권으로 끊긴 요청은 호출이 없었으므로 이벤트도 없다. logEvent는 try/catch로 감쌌다. 테스트 35건 추가(전체 564건 통과). lib/·services/ 결함 없음."
+      "summary": "app/api/mood/questions/route.ts 신설(runtime=nodejs, maxDuration=30, 자체 예산 28s — lib/budget의 STAGE_BUDGET_MS는 analyze 55s 전용이라 넓히지 않았다). 규약: ① filterVerified로 proof를 모델 호출보다 먼저 검증하고 위조·만료 책은 그 책만 버린다(fail-soft, TR-015) ② 통과 0권이면 400 UNVERIFIED_BOOKS — API_SPEC이 mood/questions에 대해 명시하지 않은 경우라 recommend와 같은 규약을 택했고 근거를 라우트 주석에 남겼다(문서는 고치지 않았다). step 2도 같은 규약을 쓴다 ③ 생성 실패(schema·refusal·upstream·max_tokens)는 502가 아니라 200+빈 배열, 응답이 moodQuestionsResponseSchema를 어기면(질문 1개·4개) 502 대신 빈 배열로 강등 ④ reason==='timeout'만 504 TIMEOUT ⑤ SERVICE_ENABLED는 해석 실패 시 차단 쪽으로 넘어져 503 ⑥ questions_generated를 모델 호출 후 모든 분기(200·504)에 남기고 실패 분기의 usage까지 합산, usage 없으면 0, 서명 0권으로 끊긴 요청은 호출이 없었으므로 이벤트도 없다. logEvent는 try/catch로 감쌌다. 테스트 35건 추가(전체 564건 통과). lib/·services/ 결함 없음.",
+      "completed_at": "2026-09-01T22:00:13+0900"
     },
     {
       "step": 2,

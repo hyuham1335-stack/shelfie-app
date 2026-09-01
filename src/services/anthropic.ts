@@ -1,12 +1,12 @@
 /**
- * Claude API 래퍼 — 책등 추출 (TR-003).
+ * Claude API 래퍼 — 책등 추출 (TR-003)과 한줄평 배치 (TR-007).
  *
  * ## 이 파일이 곧 경계다 (ADR-001)
  * provider 어댑터 레이어를 만들지 않는다. 공급자를 바꿔야 할 일이 생기면 이 파일
  * 하나를 통째로 교체한다. 그 비용이 추상화를 미리 만드는 비용보다 작다고 판단한
  * 결정이므로, 여기에 "언젠가 다른 공급자도"를 위한 간접층을 넣는 순간 그 판단이
  * 무의미해진다. 그래서 SDK 타입도 밖으로 새어 나가지 않는다 — 이 모듈이 내보내는
- * 것은 `ExtractOutcome` 하나뿐이다.
+ * 것은 `ExtractOutcome`·`NoteOutcome` 두 결과 타입뿐이다.
  *
  * ## 실패는 예외가 아니라 값이다
  * 사진 한 장의 실패로 요청 전체가 죽으면 fail-soft가 성립하지 않는다. 호출부는
@@ -39,8 +39,15 @@ import Anthropic, {
 } from "@anthropic-ai/sdk";
 import { z } from "zod";
 
-import { getAnthropicApiKey, getExtractModel } from "@/lib/env";
-import { buildExtractPrompt, extractionJsonSchema } from "@/lib/prompts";
+import { STAGE_BUDGET_MS } from "@/lib/budget";
+import { getAnthropicApiKey, getExtractModel, getRecommendModel } from "@/lib/env";
+import {
+  buildExtractPrompt,
+  buildNotePrompt,
+  extractionJsonSchema,
+  noteBatchSchema,
+  noteJsonSchema,
+} from "@/lib/prompts";
 import {
   extractedCandidateSchema,
   extractionResultSchema,
@@ -101,7 +108,50 @@ export interface ExtractOptions {
 
 export type ExtractOutcome =
   | { status: "ok"; candidates: ExtractedCandidate[]; usage: ExtractUsage }
-  | { status: "failed"; reason: ExtractFailureReason };
+  /**
+   * `usage`가 **선택적인** 이유는 실패 사유마다 토큰을 썼는지가 다르기 때문이다.
+   *
+   * 응답을 받고 나서 실패한 경우(refusal·max_tokens·응답 스키마 위반)는 토큰이
+   * 이미 과금됐다. 그 값을 버리면 `analyze_completed`의 토큰 합계가 실제보다 낮게
+   * 나오고, "세션당 300원" 가드레일이 통과할 수 없는 조건에서 통과한다 (PRD 7번).
+   * 반대로 호출 자체가 없었던 경우(예산 소진·데이터 URI 위반)와 응답을 받지 못한
+   * 경우(timeout·연결 오류)는 쓴 토큰이 없으므로 `usage`가 없는 것이 맞다 —
+   * 0을 지어내면 "호출했는데 공짜였다"로 읽힌다.
+   */
+  | { status: "failed"; reason: ExtractFailureReason; usage?: ExtractUsage };
+
+/** 한줄평 배치가 실패한 사유. 추출과 같은 5종을 쓴다 — 사유 어휘를 둘로 나누지 않는다 */
+export type NoteFailureReason = ExtractFailureReason;
+
+/**
+ * 한줄평 배치의 결과 (TR-007, FR-008).
+ *
+ * `skipped`와 `failed`를 나누는 것은 **사유 보존**이다 (ADR-005). "예산이 없어서
+ * 안 불렀다"와 "불렀는데 거절당했다"는 다른 사실이고 로그에서 구분돼야 한다.
+ * 화면에 보이는 결과는 둘 다 `claudeNote: ""`로 같지만, 뭉개 두면 한줄평이 왜
+ * 비었는지 나중에 알 수 없다.
+ */
+export type NoteOutcome =
+  /** `notes`의 키는 `isbn13`이다. 요청한 책이 전부 들어 있지는 않다 — 없는 책은 호출부가 빈 문자열로 둔다 */
+  | { status: "ok"; notes: Map<string, string>; usage: ExtractUsage }
+  | { status: "skipped"; reason: "budget" | "no_books" }
+  | { status: "failed"; reason: NoteFailureReason; usage?: ExtractUsage };
+
+export interface NoteOptions {
+  /** 이 단계에 쓸 수 있는 시간(ms). `budget.deadlineFor("note")`를 그대로 넘긴다 */
+  deadlineMs: number;
+  /** 테스트 주입점. SDK를 갈아 끼운다 */
+  clientImpl?: unknown;
+  /** 재시도 백오프 대기 주입점 */
+  sleepImpl?: (ms: number) => Promise<void>;
+}
+
+/** 한줄평 프롬프트에 싣는 책. 사실 필드는 필요 없다 — 모델은 해석만 쓴다 (ADR-002) */
+export interface NoteBook {
+  isbn13: string;
+  title: string;
+  author: string;
+}
 
 /**
  * 이 모듈이 SDK에서 실제로 쓰는 표면 전부.
@@ -115,13 +165,16 @@ export type ExtractOutcome =
 interface MessagesClient {
   beta: {
     messages: {
-      create(body: ExtractRequestBody, options?: { timeout?: number }): Promise<unknown>;
+      create(body: MessageRequestBody, options?: { timeout?: number }): Promise<unknown>;
     };
   };
 }
 
-/** 우리가 만들어 보내는 요청 본문. TRD 7번 호출 규약이 그대로 형태로 드러난다 */
-interface ExtractRequestBody {
+/**
+ * 우리가 만들어 보내는 요청 본문. TRD 7번 호출 규약이 그대로 형태로 드러난다.
+ * 추출과 한줄평이 같은 형태를 공유한다 — 규약이 두 벌이 되면 한쪽만 고쳐진다.
+ */
+interface MessageRequestBody {
   model: string;
   max_tokens: number;
   /** `budget_tokens`를 쓰지 않는다 — `claude-opus-5`에서 400을 반환한다 (TRD 7번) */
@@ -201,25 +254,186 @@ export async function extractFromPhoto(
 
   const deadlineAt = Date.now() + deadlineMs;
   const client = resolveClient(clientImpl, apiKey);
-  const body = buildRequestBody(image);
+  const body = buildExtractBody(image);
 
-  let attempt = await callOnce(client, body, remainingMs(deadlineAt));
-
-  // 재시도는 **429·5xx·연결 오류에만** 1회다. refusal·max_tokens·4xx·schema는
-  // 다시 걸어도 같은 결과이고, 호출 한 번은 그대로 비용이 된다 (TRD 7번).
-  if (attempt.kind === "failed" && attempt.retryable) {
-    await sleepImpl(Math.min(RETRY_BACKOFF_MS, remainingMs(deadlineAt)));
-    const remaining = remainingMs(deadlineAt);
-    if (remaining > 0) {
-      attempt = await callOnce(client, body, remaining);
-    }
-  }
+  const attempt = await callWithRetry(client, body, deadlineAt, sleepImpl);
 
   if (attempt.kind === "failed") {
-    return { status: "failed", reason: attempt.reason };
+    return failedExtract(attempt.reason, attempt.usage);
   }
 
   return toOutcome(attempt.result, photoIndex);
+}
+
+/* ------------------------------------------------------------------ *
+ * 공개 API — 한줄평 배치 (TR-007, FR-008)
+ * ------------------------------------------------------------------ */
+
+/**
+ * 확인된 책 **전체**의 한줄평을 1회 호출로 생성한다 (TR-007).
+ *
+ * 책마다 부르지 않는 이유는 비용과 시간 둘 다다. 50권이면 50회 호출이 되고,
+ * 한줄평 예산 8s 안에 끝날 수가 없다. 배치 1회가 그 예산 안에서 사는 유일한 형태다.
+ *
+ * 호출하지 않고 바로 돌아가는 경우가 둘이다.
+ * ① 책이 0권 → `skipped: no_books` (부를 이유가 없다)
+ * ② 남은 예산이 단계 예산(8s)보다 적음 → `skipped: budget`
+ *
+ * ②의 판정이 추출과 다른 것은 의도다. 추출·대조는 도중에 끊겨도 거기까지를 살릴 수
+ * 있지만 한줄평은 배치 1회라 절반만 받아 쓸 수 없다. 그래서 TRD 7번은 "남은 예산이
+ * 8s 미만이면 **호출을 생략**"이라고 정했고, `budget.deadlineFor("note")`가 주는
+ * 값(= min(8s, 남은 예산))을 여기서 그대로 8s와 비교한다. 정각 8s는 생략하지 않는다.
+ *
+ * 실패는 전부 값으로 돌아간다. 한줄평은 사실이 아니라 해석이므로(ADR-002) 없어도
+ * 책은 그대로 반환된다 — 호출부는 `claudeNote: ""`로 두고 요청을 성공시킨다.
+ */
+export async function generateNotes(
+  books: readonly NoteBook[],
+  options: NoteOptions,
+): Promise<NoteOutcome> {
+  const { deadlineMs, clientImpl, sleepImpl = defaultSleep } = options;
+
+  if (books.length === 0) {
+    return { status: "skipped", reason: "no_books" };
+  }
+
+  if (deadlineMs < STAGE_BUDGET_MS.note) {
+    warn("남은 한줄평 예산이 단계 예산보다 적어 호출을 생략합니다 (claudeNote는 빈 문자열로 남습니다)");
+    return { status: "skipped", reason: "budget" };
+  }
+
+  const apiKey = getAnthropicApiKey();
+  if (apiKey === null) return mockNoteOutcome(books);
+
+  const deadlineAt = Date.now() + deadlineMs;
+  const client = resolveClient(clientImpl, apiKey);
+
+  const first = await runNoteBatch(client, books, deadlineAt, sleepImpl);
+  if (first.kind === "ok") {
+    return { status: "ok", notes: first.notes, usage: first.usage };
+  }
+
+  // **배치는 단건과 다르게 max_tokens를 다룬다** (TRD 7번). 단건(추출·추천·문답)은
+  // 재시도 없이 그 항목만 실패시키지만, 배치는 입력이 크다는 것 자체가 절단의
+  // 원인이므로 **입력을 절반으로 쪼개 1회 재시도**한다. 잘린 JSON을 부분 파싱해
+  // 살려 쓰는 길은 여기서도 막혀 있다 — 그것은 검증 경계를 우회하는 것이다.
+  if (first.reason !== "max_tokens" || books.length < 2) {
+    return failedNotes(first.reason, first.usage);
+  }
+
+  return retryHalved(client, books, deadlineAt, sleepImpl, first.usage);
+}
+
+/**
+ * 절반으로 쪼갠 재시도 1회. **다시 쪼개지 않는다** — 재귀로 나누면 호출 수가
+ * 입력에 따라 예측 불가능해지고, 그 비용은 TRD 6.1의 최악값 표 밖으로 나간다.
+ *
+ * 한쪽이라도 실패하면 전체를 실패로 돌려준다. 절반만 성공한 결과를 돌려주면
+ * 어떤 책에 한줄평이 붙는지가 절단 위치에 따라 달라져 같은 입력에 다른 화면이
+ * 나온다. 그때까지 쓴 토큰은 `usage`로 합산해 나른다.
+ */
+async function retryHalved(
+  client: MessagesClient,
+  books: readonly NoteBook[],
+  deadlineAt: number,
+  sleepImpl: (ms: number) => Promise<void>,
+  spent: ExtractUsage | undefined,
+): Promise<NoteOutcome> {
+  warn("한줄평 응답이 max_tokens로 잘렸습니다 — 입력을 절반으로 쪼개 1회만 재시도합니다");
+
+  const middle = Math.ceil(books.length / 2);
+  const halves = [books.slice(0, middle), books.slice(middle)];
+
+  let usage = spent;
+  const notes = new Map<string, string>();
+
+  for (const half of halves) {
+    const attempt = await runNoteBatch(client, half, deadlineAt, sleepImpl);
+    usage = addUsage(usage, attempt.usage);
+
+    if (attempt.kind === "failed") {
+      return failedNotes(attempt.reason, usage);
+    }
+    for (const [isbn13, note] of attempt.notes) notes.set(isbn13, note);
+  }
+
+  return { status: "ok", notes, usage: usage ?? EMPTY_USAGE };
+}
+
+/** 배치 1회 — 요청 조립부터 스키마 통과까지. 재시도 정책은 추출과 같다 */
+async function runNoteBatch(
+  client: MessagesClient,
+  books: readonly NoteBook[],
+  deadlineAt: number,
+  sleepImpl: (ms: number) => Promise<void>,
+): Promise<NoteBatchResult> {
+  const attempt = await callWithRetry(client, buildNoteBody(books), deadlineAt, sleepImpl);
+
+  if (attempt.kind === "failed") {
+    return { kind: "failed", reason: attempt.reason, usage: attempt.usage };
+  }
+
+  return toNoteResult(attempt.result, books);
+}
+
+/**
+ * 봉투를 한줄평 Map으로 옮긴다.
+ *
+ * **스키마 위반은 배치 전체를 실패시킨다.** 60자를 넘긴 한줄평을 잘라 내거나 그
+ * 책만 빼고 나머지를 살리는 길을 택하지 않았고, 그 이유는 둘이다. ① `noteBatchSchema`는
+ * `lib/prompts.ts`가 `identifiedBookSchema.claudeNote`에서 파생시킨 계약이라,
+ * 항목을 하나씩 다시 파싱하려면 60자 상한을 이 파일에서 다시 조립해야 한다 —
+ * 상한이 두 곳에 생기면 한쪽만 고쳐진다. ② 실패의 대가가 작다. 한줄평은 해석이라
+ * 전원 빈 문자열이어도 책 목록과 추천은 그대로 나간다 (ADR-002·FR-008). 후보 하나의
+ * 위반이 사진 전체를 `schema`로 만드는 추출 쪽 판단과 같은 결이다.
+ */
+function toNoteResult(
+  envelope: z.infer<typeof messageEnvelopeSchema>,
+  books: readonly NoteBook[],
+): NoteBatchResult {
+  const usage = toUsage(envelope);
+
+  const text = findStructuredOutput(envelope.content);
+  if (text === null) {
+    warn("한줄평 응답에 구조화 출력 텍스트 블록이 없습니다");
+    return { kind: "failed", reason: "schema", usage };
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    warn("한줄평 구조화 출력이 JSON이 아닙니다 — 문자열에서 건져 내지 않고 실패 처리합니다");
+    return { kind: "failed", reason: "schema", usage };
+  }
+
+  const batch = noteBatchSchema.safeParse(payload);
+  if (!batch.success) {
+    // 모델이 만든 문자열을 로그에 넣지 않는다. 60자 초과·isbn13 형식 위반이 여기 걸린다.
+    warn("한줄평 응답이 스키마를 통과하지 못했습니다 (60자 초과 또는 필드 위반)");
+    return { kind: "failed", reason: "schema", usage };
+  }
+
+  // **화이트리스트 검증은 추천만의 것이 아니다.** 요청에 없던 `isbn13`이 섞여 오면
+  // 그 책은 우리가 확인한 책이 아니므로 버린다 — 남겨 두면 확인되지 않은 책에
+  // 해석이 붙어 화면까지 갈 길이 열린다 (ADR-002).
+  const allowed = new Set(books.map((book) => book.isbn13));
+  const notes = new Map<string, string>();
+  let dropped = 0;
+
+  for (const item of batch.data.notes) {
+    if (!allowed.has(item.isbn13)) {
+      dropped += 1;
+      continue;
+    }
+    if (!notes.has(item.isbn13)) notes.set(item.isbn13, item.note);
+  }
+
+  if (dropped > 0) {
+    warn(`요청 목록에 없는 책의 한줄평 ${dropped}건을 버렸습니다`);
+  }
+
+  return { kind: "ok", notes, usage };
 }
 
 /* ------------------------------------------------------------------ *
@@ -228,10 +442,82 @@ export async function extractFromPhoto(
 
 type Attempt =
   | { kind: "ok"; result: z.infer<typeof messageEnvelopeSchema> }
-  | { kind: "failed"; reason: ExtractFailureReason; retryable: boolean };
+  /** `usage`는 응답을 받고 나서 실패했을 때만 있다 — 던져진 오류에는 토큰 수가 없다 */
+  | { kind: "failed"; reason: ExtractFailureReason; retryable: boolean; usage?: ExtractUsage };
 
-function failed(reason: ExtractFailureReason, retryable: boolean): Attempt {
-  return { kind: "failed", reason, retryable };
+/** 한줄평 배치 1회의 내부 결과. 공개 타입(`NoteOutcome`)과 달리 `skipped`가 없다 */
+type NoteBatchResult =
+  | { kind: "ok"; notes: Map<string, string>; usage: ExtractUsage }
+  | { kind: "failed"; reason: NoteFailureReason; usage?: ExtractUsage };
+
+function failed(
+  reason: ExtractFailureReason,
+  retryable: boolean,
+  usage?: ExtractUsage,
+): Attempt {
+  return { kind: "failed", reason, retryable, usage };
+}
+
+/** 토큰을 쓰지 않았을 때의 값. 목업 모드에서만 쓴다 */
+const EMPTY_USAGE: ExtractUsage = { input_tokens: 0, output_tokens: 0 };
+
+function toUsage(envelope: z.infer<typeof messageEnvelopeSchema>): ExtractUsage {
+  return {
+    input_tokens: envelope.usage.input_tokens,
+    output_tokens: envelope.usage.output_tokens,
+  };
+}
+
+/**
+ * 여러 호출에 걸친 토큰을 합산한다 (배치 절반 재시도).
+ * 둘 다 없으면 `undefined`다 — 쓰지 않은 토큰을 0으로 지어내지 않는다.
+ */
+function addUsage(
+  left: ExtractUsage | undefined,
+  right: ExtractUsage | undefined,
+): ExtractUsage | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return {
+    input_tokens: left.input_tokens + right.input_tokens,
+    output_tokens: left.output_tokens + right.output_tokens,
+  };
+}
+
+/** `usage`가 없을 때 키 자체를 만들지 않는다 — `usage: undefined`는 "0을 썼다"로 오독된다 */
+function failedExtract(reason: ExtractFailureReason, usage?: ExtractUsage): ExtractOutcome {
+  return usage === undefined
+    ? { status: "failed", reason }
+    : { status: "failed", reason, usage };
+}
+
+function failedNotes(reason: NoteFailureReason, usage?: ExtractUsage): NoteOutcome {
+  return usage === undefined
+    ? { status: "failed", reason }
+    : { status: "failed", reason, usage };
+}
+
+/**
+ * 호출 1회 + 재시도 1회. 추출과 한줄평이 같은 정책을 쓴다 (TRD 7번).
+ *
+ * 재시도는 **429·5xx·연결 오류에만** 1회다. refusal·max_tokens·4xx·schema는
+ * 다시 걸어도 같은 결과이고, 호출 한 번은 그대로 비용이 된다.
+ */
+async function callWithRetry(
+  client: MessagesClient,
+  body: MessageRequestBody,
+  deadlineAt: number,
+  sleepImpl: (ms: number) => Promise<void>,
+): Promise<Attempt> {
+  const attempt = await callOnce(client, body, remainingMs(deadlineAt));
+  if (attempt.kind !== "failed" || !attempt.retryable) return attempt;
+
+  await sleepImpl(Math.min(RETRY_BACKOFF_MS, remainingMs(deadlineAt)));
+
+  const remaining = remainingMs(deadlineAt);
+  if (remaining <= 0) return attempt;
+
+  return callOnce(client, body, remaining);
 }
 
 /**
@@ -243,7 +529,7 @@ function failed(reason: ExtractFailureReason, retryable: boolean): Attempt {
  */
 async function callOnce(
   client: MessagesClient,
-  body: ExtractRequestBody,
+  body: MessageRequestBody,
   timeoutMs: number,
 ): Promise<Attempt> {
   let raw: unknown;
@@ -261,16 +547,21 @@ async function callOnce(
 
   const stopReason = envelope.data.stop_reason;
 
+  // 아래 두 실패에는 **토큰 수를 함께 나른다.** 거절도 절단도 응답이 돌아온
+  // 것이므로 이미 과금됐고, 여기서 버리면 세션당 비용이 실제보다 낮게 집계된다
+  // (PRD 7번 가드레일).
   if (stopReason === "refusal") {
     // 재시도하지 않는다. 같은 입력은 같은 분류기 판정을 받는다 (TR-003).
-    warn("모델이 이 사진을 거절했습니다 (stop_reason=refusal) — 재시도하지 않습니다");
-    return failed("refusal", false);
+    warn("모델이 요청을 거절했습니다 (stop_reason=refusal) — 재시도하지 않습니다");
+    return failed("refusal", false, toUsage(envelope.data));
   }
 
   if (stopReason === "max_tokens") {
     // 잘린 JSON을 부분 파싱해 살려 쓰지 않는다. 그것은 검증 경계를 우회하는 것이다.
-    warn("응답이 max_tokens로 잘렸습니다 — 부분 파싱하지 않고 이 사진만 실패 처리합니다");
-    return failed("max_tokens", false);
+    // 절단 이후의 처리는 호출부가 정한다 — 단건은 그대로 실패, 배치는 절반으로
+    // 쪼개 1회 재시도다 (TRD 7번).
+    warn("응답이 max_tokens로 잘렸습니다 — 부분 파싱하지 않습니다");
+    return failed("max_tokens", false, toUsage(envelope.data));
   }
 
   return { kind: "ok", result: envelope.data };
@@ -287,10 +578,14 @@ function toOutcome(
   envelope: z.infer<typeof messageEnvelopeSchema>,
   photoIndex: number,
 ): ExtractOutcome {
+  // 여기까지 왔다면 응답이 돌아온 것이고 토큰은 이미 과금됐다. 아래 어떤
+  // 실패로 끝나든 `usage`를 함께 나른다 (PRD 7번 세션당 비용 가드레일).
+  const usage = toUsage(envelope);
+
   const text = findStructuredOutput(envelope.content);
   if (text === null) {
     warn("응답에 구조화 출력 텍스트 블록이 없습니다");
-    return { status: "failed", reason: "schema" };
+    return failedExtract("schema", usage);
   }
 
   let payload: unknown;
@@ -299,14 +594,14 @@ function toOutcome(
     payload = JSON.parse(text);
   } catch {
     warn("구조화 출력이 JSON이 아닙니다 — 문자열에서 건져 내지 않고 실패 처리합니다");
-    return { status: "failed", reason: "schema" };
+    return failedExtract("schema", usage);
   }
 
   const extraction = extractionResultSchema.safeParse(payload);
   if (!extraction.success) {
     // **원문을 로그에 넣지 않는다** (PRD 7번). 사유는 상위 계층이 미확인 카운트로 센다.
     warn("추출 응답이 스키마를 통과하지 못했습니다 (상한 초과 또는 필드 위반)");
-    return { status: "failed", reason: "schema" };
+    return failedExtract("schema", usage);
   }
 
   const candidates: ExtractedCandidate[] = [];
@@ -315,19 +610,12 @@ function toOutcome(
     if (!withIndex.success) {
       // photoIndex가 장수 상한을 벗어난 경우다 — 모델이 아니라 **호출부의 버그**다.
       warn("photoIndex가 스키마 범위를 벗어났습니다 — 호출부를 확인하세요");
-      return { status: "failed", reason: "schema" };
+      return failedExtract("schema", usage);
     }
     candidates.push(withIndex.data);
   }
 
-  return {
-    status: "ok",
-    candidates,
-    usage: {
-      input_tokens: envelope.usage.input_tokens,
-      output_tokens: envelope.usage.output_tokens,
-    },
-  };
+  return { status: "ok", candidates, usage };
 }
 
 /** 첫 번째 텍스트 블록. adaptive thinking을 쓰면 thinking 블록이 앞에 온다 */
@@ -389,27 +677,46 @@ function fromStatus(status: number | undefined): Attempt {
  * 내부 — 요청 조립
  * ------------------------------------------------------------------ */
 
-function buildRequestBody(image: { mediaType: string; data: string }): ExtractRequestBody {
+/**
+ * 두 호출이 공유하는 봉투. **호출 규약은 여기 한 곳에서만 조립된다** (TRD 7번)
+ * — `thinking: adaptive`(budget_tokens 없음), `output_config.format`, betas +
+ * `fallbacks`, `max_tokens` 16000. 규약이 두 곳에 적히면 한쪽만 낡는다.
+ */
+function buildBody(
+  model: string,
+  jsonSchema: unknown,
+  content: MessageRequestBody["messages"][number]["content"],
+): MessageRequestBody {
   return {
-    model: getExtractModel(),
+    model,
     max_tokens: MAX_OUTPUT_TOKENS,
     thinking: { type: "adaptive" },
-    output_config: { format: { type: "json_schema", schema: extractionJsonSchema } },
+    output_config: { format: { type: "json_schema", schema: jsonSchema } },
     betas: [...EXTRACT_BETAS],
     fallbacks: "default",
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: { type: "base64", media_type: image.mediaType, data: image.data },
-          },
-          { type: "text", text: buildExtractPrompt() },
-        ],
-      },
-    ],
+    messages: [{ role: "user", content }],
   };
+}
+
+function buildExtractBody(image: { mediaType: string; data: string }): MessageRequestBody {
+  return buildBody(getExtractModel(), extractionJsonSchema, [
+    { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
+    { type: "text", text: buildExtractPrompt() },
+  ]);
+}
+
+/**
+ * 한줄평 요청. 모델은 `getRecommendModel()`이다 — 한줄평은 판독이 아니라 생성이라
+ * `MODEL_RECOMMEND` 쪽에 묶인다 (TRD 7번 환경변수 표). 추출 모델을 강등해도
+ * 한줄평 품질은 그대로 두는 운영 스위치가 이 구분에서 나온다.
+ *
+ * 프롬프트와 스키마는 `lib/prompts.ts`의 것을 그대로 쓴다. 여기서 다시 만들면
+ * 60자 규칙이 두 벌이 되어 소리 없이 갈린다.
+ */
+function buildNoteBody(books: readonly NoteBook[]): MessageRequestBody {
+  return buildBody(getRecommendModel(), noteJsonSchema, [
+    { type: "text", text: buildNotePrompt(books) },
+  ]);
 }
 
 /**
@@ -460,6 +767,9 @@ const MOCK_CANDIDATES = [
   { rawText: "[목업] 책등 2", title: "[목업] 책등 2", author: null, confidence: 0.5 },
 ] as const;
 
+/** 목업 한줄평. 60자 이내여야 `noteBatchSchema`를 통과한다 */
+const MOCK_NOTE = "[목업] 한줄평 — Claude를 호출하지 않았습니다";
+
 /**
  * `ANTHROPIC_API_KEY`가 없을 때의 로컬 개발 응답.
  *
@@ -482,7 +792,33 @@ function mockOutcome(photoIndex: number): ExtractOutcome {
     if (parsed.success) candidates.push(parsed.data);
   }
 
-  return { status: "ok", candidates, usage: { input_tokens: 0, output_tokens: 0 } };
+  return { status: "ok", candidates, usage: EMPTY_USAGE };
+}
+
+/**
+ * 키가 없을 때의 한줄평. 목업임을 문구로 드러내고 `usage`는 0이다.
+ *
+ * 목업 값도 `noteBatchSchema`를 통과시킨다 — 픽스처만 검증을 건너뛰면 스키마가
+ * 바뀌었을 때 로컬에서만 통과하는 코드가 생긴다 (TRD 9번).
+ */
+function mockNoteOutcome(books: readonly NoteBook[]): NoteOutcome {
+  warn(
+    "ANTHROPIC_API_KEY가 없어 Claude를 호출하지 않고 목업 한줄평을 돌려줍니다 (로컬 개발 모드, TRD 9번). 이 문구는 책을 읽고 쓴 것이 아닙니다.",
+  );
+
+  const payload = {
+    notes: books.map((book) => ({ isbn13: book.isbn13, note: MOCK_NOTE })),
+  };
+
+  const batch = noteBatchSchema.safeParse(payload);
+  if (!batch.success) {
+    // 책이 상한(50권)을 넘겼거나 isbn13 형식이 어긋난 경우다 — 호출부의 버그다.
+    warn("목업 한줄평이 스키마를 통과하지 못했습니다 — 호출부의 책 목록을 확인하세요");
+    return { status: "failed", reason: "schema" };
+  }
+
+  const notes = new Map(batch.data.notes.map((item) => [item.isbn13, item.note]));
+  return { status: "ok", notes, usage: EMPTY_USAGE };
 }
 
 /**

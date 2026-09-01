@@ -13,7 +13,9 @@
     {
       "step": 1,
       "name": "anthropic-notes",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-01T16:50:34+0900",
+      "summary": "services/anthropic.ts에 한줄평 배치 추가 — export: generateNotes(books, NoteOptions) / type NoteOutcome({status:'ok',notes:Map<isbn13,note>,usage} | {status:'skipped',reason:'budget'|'no_books'} | {status:'failed',reason:NoteFailureReason,usage?}) / NoteOptions / NoteBook / NoteFailureReason. 프롬프트·스키마는 lib/prompts.ts의 buildNotePrompt·noteJsonSchema·noteBatchSchema를 그대로 쓰고 새로 만들지 않았다. 모델은 getRecommendModel()(추출 모델과 분리), 호출 규약(adaptive thinking·budget_tokens 없음·output_config.format·betas+fallbacks·max_tokens 16000·stop_reason 먼저 읽기)은 buildBody/callWithRetry로 추출과 한 벌을 공유한다. 예산은 deadlineMs < STAGE_BUDGET_MS.note(8s)면 SDK를 부르지 않고 skipped:budget, 0권이면 skipped:no_books — 사유 보존을 위해 failed와 나눴다. **배치는 단건과 다르게** max_tokens에서 입력을 절반으로 쪼개 1회만 재시도한다(전체 1회+절반 1회=2회, 다시 쪼개지 않음. 한쪽이라도 실패하면 전체 failed이고 그때까지의 usage는 합산). refusal은 재시도 없음, 429·5xx·연결 오류만 1회 재시도. 응답의 isbn13은 요청 목록으로 화이트리스트 검증해 목록 밖은 버린다. 설계 선택: 60자 초과 등 noteBatchSchema 위반은 **배치 전체를 failed(schema)**로 처리했다(그 책만 빈 문자열로 두지 않음) — 항목별 재파싱은 60자 상한을 이 파일에서 다시 조립해야 해 상한이 두 곳에 생기고, 한줄평은 해석이라 전원 빈 문자열이어도 책 목록·추천은 그대로 나가기 때문. 라우트는 skipped·failed 모두 claudeNote:\"\"로 강등하고 요청은 200으로 끝낼 것. ② 이전 런 보고 해소: ExtractOutcome.failed에 usage?를 추가해 refusal·max_tokens·응답 스키마 위반(=응답이 돌아와 과금된 경우)의 토큰을 비용 집계로 나른다. 호출 자체가 없거나(예산 소진·데이터 URI 위반) 응답을 못 받은 경우(timeout·연결 오류·봉투 파싱 실패)는 usage 키 자체를 만들지 않는다 — 0을 지어내면 '호출했는데 공짜'로 집계된다. 기존 39건 중 8건의 toEqual 단언을 usage 포함으로 갱신했다(동작 회귀 아님). 테스트 68건(기존 39 + 신규 29, 전부 SDK 스텁·실제 API 호출 없음), 전체 389건 통과. 보고: 라우트(step 2)는 analyze_completed의 토큰 합계에 실패 분기의 usage도 더해야 가드레일이 정확해진다."
     },
     {
       "step": 2,

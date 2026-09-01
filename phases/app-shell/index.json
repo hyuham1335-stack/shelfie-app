@@ -65,7 +65,11 @@
     {
       "step": 3,
       "name": "ui-upload",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-02T00:50:43+0900",
+      "summary": "src/components/upload/ 4종 신설 (fetch 0건 · services/lib.proof/lib.prompts/api-client import 0건 · UI_GUIDE 안티패턴 0건). export: PhotoPicker({onSelect:(files:File[])=>void, disabled?:boolean}) — accept 는 SUPPORTED_MIME_TYPES.join(\",\") 에서 만들고 촬영(capture=\"environment\")·선택(multiple) 두 입력을 sr-only + label 로 분리해 카메라 권한이 거부돼도 선택 경로가 남는다(PRD 5번), 선택 후 input.value 를 비워 같은 파일 재선택이 된다. PhotoThumbnails({photos: readonly UploadPhoto[], onRemove:(id:string)=>void, disabled?:boolean}) + export type UploadPhoto={id;name;previewUrl:string|null;tooSmall:boolean} — previewUrl 이 null 이면 표지 폴백과 같은 첫 글자 블록으로 흡수하고, tooSmall 은 차단이 아니라 표시다. RejectedNotice({reasons: readonly RejectReason[]}) — 5종을 사유별로 집계해 Notice 로 한 줄씩. decode_failed(브라우저가 못 열었다 → 사진 앱에서 JPG 로 내보내기)와 unsupported_type(우리가 안 받는다 → 허용 형식 목록)은 서로 다른 문장이다. UploadScreen({onAnalyze:(dataUris:string[], photoCount:number)=>void, isAnalyzing?:boolean}) — step 5 가 배선할 유일한 콜백이다. photoCount 는 analyze 응답에 없고 부분 실패 배너의 분모라 여기서 나온다. 판정은 전부 lib/image.ts 것을 쓴다: validateSelection(기존 선택분을 앞에 세워 중복·장수 상한이 새로 고른 쪽에 걸리게 한다) · hashBytes(FileReader.readAsArrayBuffer, jsdom 에 Blob.arrayBuffer 가 없다) · isTooSmallAfterResize(선택 시점에 createImageBitmap 으로 치수만 재고, 잴 수 없는 환경에서는 경고하지 않는다) · checkOutputBudget(초과 시 onAnalyze 를 부르지 않는다 — 413 은 마지막 방어선이지 설계가 아니다). 판단 두 가지: ① resizeToDataUri 가 실패한 사진은 decode_failed 로 말하고 목록에서 빼되 그 회차는 전송하지 않는다(보낸 장수가 사용자가 본 장수와 달라지면 분모가 거짓말이 된다) ② 진행 표시는 role=\"status\" aria-live=\"polite\" + 정적 Skeleton 이고 준비(리사이즈)와 분석 중 문구를 나눈다. 테스트 49개(전체 870개 통과). 이월: UploadScreen 은 촬영 가이드 예시 이미지(PRD 7번 1단계)를 넣지 않았다 — 자산이 없고 Could have 다.",
+      "completed_at": "2026-09-02T01:01:51+0900",
+      "attempts": 1
     },
     {
       "step": 4,

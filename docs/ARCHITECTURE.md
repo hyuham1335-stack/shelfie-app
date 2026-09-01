@@ -52,6 +52,8 @@ flowchart TD
     lib --> libBudget["budget.ts<br/>단계별 시간 예산 · 데드라인 전파"]
     lib --> libProof["proof.ts<br/>확인된 책 HMAC 서명 발급 · 검증"]
     lib --> libEnv["env.ts<br/>환경변수 부팅 시 검증"]
+    lib --> libSession["session.ts<br/>세션 상태 리듀서 (순수)"]
+    lib --> libApiClient["api-client.ts<br/>app/api 호출 래퍼 · 에러 정규화"]
 
     services --> svcAnthropic["anthropic.ts<br/>Claude API 래퍼"]
     services --> svcAladin["aladin.ts<br/>알라딘 OpenAPI 래퍼"]
@@ -278,7 +280,9 @@ sequenceDiagram
 
 ## 상태 관리
 
-서버 상태가 없으므로 전역 상태 라이브러리를 쓰지 않는다. 세션 전체를 `app/page.tsx`의 `useReducer` 하나로 관리하고, 각 화면 컴포넌트는 상태와 dispatch를 props로 받는다. 새로고침하면 상태가 사라지며, 이는 무상태 설계의 의도된 결과다 (ADR-003).
+서버 상태가 없으므로 전역 상태 라이브러리를 쓰지 않는다. 세션 전체를 `app/page.tsx`의 `useReducer` 하나로 관리하고, 각 화면 컴포넌트는 상태와 dispatch를 props로 받는다. 리듀서 자체는 `lib/session.ts`에 **순수 함수로** 두어 jsdom 없이 검증한다 — 화면 전이 규칙은 React와 무관한 규칙이고, React 안에 있으면 렌더링을 통해서만 검사할 수 있다. 새로고침하면 상태가 사라지며, 이는 무상태 설계의 의도된 결과다 (ADR-003).
+
+**`/api/books/resolve`로 승격된 책은 `photoIndex`를 갖지 않는다.** 그 책은 사진이 아니라 사용자의 재검색에서 왔기 때문이다. 승격된 책을 확인된 책으로 다루되(알라딘 대조와 `proof`를 똑같이 통과했다) 사진 출처가 있는 척하지 않는다 — 없는 값을 `0`으로 지어내는 것은 출처를 위조하는 것이다. 요청 경계를 넘을 때 쓰는 `bookReferenceSchema`·`recommendBookSchema`가 `photoIndex`를 요구하지 않으므로 계약을 바꿀 이유도 없다.
 
 다만 **의도된 소실과 사고로 인한 소실은 다르다.** 분석에 30초를 기다린 사용자가 실수로 새로고침하면 사진과 결과가 함께 사라지고 API 비용도 다시 든다. `reviewing` 이후 상태에서는 `beforeunload` 경고를 걸어 이탈을 한 번 되묻는다. 선택한 원본 파일은 `error` 상태에서도 메모리에 유지해, 재시도가 재업로드를 요구하지 않게 한다.
 

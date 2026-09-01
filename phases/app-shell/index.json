@@ -1,0 +1,41 @@
+{
+  "project": "shelfie",
+  "phase": "app-shell",
+  "carried_reports": {
+    "note": "이전 런의 미해소 보고를 어느 step이 받는지 명시한다. 배정하지 않으면 이월된다 — 네 건이 세 런을 그렇게 살아남았다 (ROADMAP 15).",
+    "resolved_by_main_before_run": [
+      "알라딘 호출 상한 160 → 260회 (docs/TRD.md)",
+      "errorCodeSchema 500대 공백의 계약 쪽 (docs/API_SPEC.md — INTERNAL_ERROR)",
+      "unidentifiedOverflowCount 승인 문구 (docs/UI_GUIDE.md)",
+      "vitest.config.ts setupFiles — jest-dom 매처 · RTL 자동 cleanup"
+    ],
+    "assigned_to_steps": {
+      "0": [
+        "NEXT_PUBLIC_MAX_PHOTOS 를 env.ts 가 읽지 않음 (런 #2)",
+        "2MB·4MB 이미지 상수 이중화 (런 #3)",
+        "errorCodeSchema 에 INTERNAL_ERROR 추가 + 소비처 (런 #3)",
+        "'50권까지만' 하드코딩 · unidentifiedOverflowCount 무표시 (런 #4)",
+        "컴포넌트 테스트 9개의 중복 afterEach(cleanup) 제거"
+      ],
+      "1": ["photoCount 를 세션 상태가 보관 (런 #4)"],
+      "2": ["recommend_viewed 이중 계상 — 클라이언트는 보내지 않는다 (런 #4)"],
+      "5": [
+        "ambiguous 후보에 proof 가 없음 — resolve 재호출로 승격 (런 #4)",
+        "photoCount 를 BookList 에 전달 (런 #4)"
+      ]
+    },
+    "not_assigned_this_run": [
+      "recommend_failed 이벤트 부재 (런 #4) — PRD 7번 이벤트 표 신설이 선행이다. console.warn 을 유지하고 런 #6으로 넘긴다",
+      "@anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡음 (런 #2·#3) — 이번 런은 SDK 를 건드리지 않는다",
+      "무상태에서 relevant:false 2회 연속 무시 · mood_submitted.retry_index (런 #4) — 요청 스키마에 세션 진행 상태를 넣을 것인가는 계약 결정이라 API_SPEC 갱신이 선행이다. 런 #5는 클라이언트 책임으로 두고 서버 판정을 바꾸지 않는다"
+    ]
+  },
+  "steps": [
+    { "step": 0, "name": "contracts-debt", "status": "pending" },
+    { "step": 1, "name": "session-machine", "status": "pending" },
+    { "step": 2, "name": "api-client", "status": "pending" },
+    { "step": 3, "name": "ui-upload", "status": "pending" },
+    { "step": 4, "name": "ui-mood-recommend", "status": "pending" },
+    { "step": 5, "name": "page-shell", "status": "pending" }
+  ]
+}

@@ -8,7 +8,7 @@
       "status": "completed",
       "started_at": "2026-09-01T15:46:21+0900",
       "summary": "src/lib/env.ts에 zod 기반 서버 환경변수 검증 추가 — getAnthropicApiKey()/getAladinTtbKey()(부재는 null=목업 모드, 공백만 있는 값은 예외), isServiceEnabled()(미설정 true, true/false 외 값은 예외), assertServerEnv()(프로덕션에서 ANTHROPIC_API_KEY·ALADIN_TTB_KEY·BOOK_PROOF_SECRET 부재 시 throw, 그 외 환경은 console.warn). 기존 상수 export와 getExtractModel/getRecommendModel은 전부 유지했고 검증은 최상위 부수효과가 아니라 함수 안에서 평가한다. env.test.ts 8건 → 23건. 보고: .env.example의 NEXT_PUBLIC_MAX_PHOTOS는 TRD 7번이 클라이언트 상한 값으로 정의했지만 env.ts의 MAX_PHOTOS는 이 변수를 읽지 않는 상수다(기존 계약이라 이번 step에서 건드리지 않음).",
-      "completed_at": "2026-09-01T15:50:02+09:00"
+      "completed_at": "2026-09-01T15:50:41+0900"
     },
     {
       "step": 1,

@@ -16,7 +16,7 @@
       "status": "completed",
       "started_at": "2026-09-01T15:50:41+0900",
       "summary": "src/lib/budget.ts 신설 — 상수 FUNCTION_MAX_DURATION_MS(60s)·RESPONSE_RESERVE_MS(5s)·TOTAL_BUDGET_MS(파생 55s)·STAGE_BUDGET_MS(extract 30s/lookup 12s/note 8s), 타입 Budget·BudgetStage, 팩토리 createBudget(totalMs?, now?)가 remainingMs()/elapsedMs()/deadlineFor(stage)=max(0,min(단계예산,남은예산))/isExhaustedFor(stage)=남은<단계예산 을 제공한다. 시계 주입으로 가짜 타이머 검증이 가능하고(TRD 8번), 예산 초과는 예외가 아니라 판별 가능한 값이며(deadlineFor는 0으로 클램프) 어떤 경로에서도 throw하지 않는다. 외부 import 0건(services/ 미참조), 예산 숫자는 이 파일에만 존재. budget.test.ts 17건 신설 → 전체 235건 통과.",
-      "completed_at": "2026-09-01 06:53:17"
+      "completed_at": "2026-09-01T15:53:25+0900"
     },
     {
       "step": 2,

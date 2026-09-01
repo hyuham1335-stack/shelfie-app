@@ -40,7 +40,9 @@
       "name": "contracts-debt",
       "status": "completed",
       "started_at": "2026-09-01T23:33:40+0900",
-      "summary": "세 런째 이월된 계약 부채 정리: ① src/lib/env.ts 가 NEXT_PUBLIC_MAX_PHOTOS 를 정적 참조로 읽어 MAX_PHOTOS_CEILING(5, 비공개)으로 [1,5] 클램프 — MAX_PHOTOS 는 계속 env.ts export ② 이미지 전송 상한을 src/lib/env.ts 로 이관: MAX_OUTPUT_BYTES_PER_IMAGE(2MB)·MAX_OUTPUT_BYTES_TOTAL(4MB) — 이름 그대로 src/lib/image.ts 가 재수출하고, analyze 라우트는 @/lib/env 에서 직접 import(로컬 MAX_IMAGE_BYTES·MAX_REQUEST_IMAGE_BYTES 삭제) ③ errorCodeSchema 에 INTERNAL_ERROR(500) 추가 + analyze·resolve·recommend·events 의 '우리 응답이 우리 스키마를 어김' 분기를 502/400 → 500 INTERNAL_ERROR 로 이동(외부 장애 502 는 전부 유지), ERROR_MESSAGES 4곳·ErrorBanner MESSAGE 맵 채움 ④ BookList 가 MAX_IDENTIFIED_BOOKS 를 import 하고 unidentifiedOverflowCount Notice 추가 ⑤ 컴포넌트 테스트 9개의 파일 상단 afterEach(cleanup) 과 미사용 import 제거."
+      "summary": "세 런째 이월된 계약 부채 정리: ① src/lib/env.ts 가 NEXT_PUBLIC_MAX_PHOTOS 를 정적 참조로 읽어 MAX_PHOTOS_CEILING(5, 비공개)으로 [1,5] 클램프 — MAX_PHOTOS 는 계속 env.ts export ② 이미지 전송 상한을 src/lib/env.ts 로 이관: MAX_OUTPUT_BYTES_PER_IMAGE(2MB)·MAX_OUTPUT_BYTES_TOTAL(4MB) — 이름 그대로 src/lib/image.ts 가 재수출하고, analyze 라우트는 @/lib/env 에서 직접 import(로컬 MAX_IMAGE_BYTES·MAX_REQUEST_IMAGE_BYTES 삭제) ③ errorCodeSchema 에 INTERNAL_ERROR(500) 추가 + analyze·resolve·recommend·events 의 '우리 응답이 우리 스키마를 어김' 분기를 502/400 → 500 INTERNAL_ERROR 로 이동(외부 장애 502 는 전부 유지), ERROR_MESSAGES 4곳·ErrorBanner MESSAGE 맵 채움 ④ BookList 가 MAX_IDENTIFIED_BOOKS 를 import 하고 unidentifiedOverflowCount Notice 추가 ⑤ 컴포넌트 테스트 9개의 파일 상단 afterEach(cleanup) 과 미사용 import 제거.",
+      "completed_at": "2026-09-01T23:43:15+0900",
+      "attempts": 1
     },
     {
       "step": 1,

@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -261,6 +262,10 @@ class StepExecutor:
     """Phase 디렉토리 안의 step들을 순차 실행하는 하네스."""
 
     MAX_RETRIES = 3
+    # step 파일의 '읽어야 할 파일' 절과 그 안의 docs/*.md 참조 (M15 교차검증)
+    _READ_SECTION_RE = re.compile(r"^##[^\n]*읽어야 할 파일[^\n]*$(.*?)(?=^##\s|\Z)",
+                                  re.M | re.S)
+    _DOC_REF_RE = re.compile(r"docs/([A-Za-z0-9_.\-]+)\.md")
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
     TZ = timezone(timedelta(hours=9))
@@ -298,9 +303,8 @@ class StepExecutor:
         self._claim_running()
         try:
             self._checkout_branch()
-            guardrails = self._load_guardrails()
             self._ensure_created_at()
-            self._execute_all_steps(guardrails)
+            self._execute_all_steps()
             self._finalize()
         finally:
             # blocked·error 의 sys.exit 도 SystemExit 로 여기를 지난다.
@@ -444,16 +448,82 @@ class StepExecutor:
 
     # --- guardrails & context ---
 
-    def _load_guardrails(self) -> str:
+    def _load_guardrails(self, docs: Optional[list] = None) -> str:
+        """프롬프트 접두부. docs 가 None 이면 docs/*.md 전량, 리스트면 그것만.
+
+        CLAUDE.md 는 언제나 넣는다 — CRITICAL 규칙의 원본이라 뺄 수 없다.
+
+        전량 주입은 다섯 런 동안 청구 토큰의 대부분을 썼다: cache_read 는
+        turn 마다 접두부를 다시 읽은 양이고 그 접두부의 86.9%가 이 문서들이었다.
+        step 이 쓰지 않는 문서를 750 turn 내내 재독하는 것이 비용의 정체다 (M15).
+        """
         sections = []
         claude_md = ROOT / "CLAUDE.md"
         if claude_md.exists():
             sections.append(f"## 프로젝트 규칙 (CLAUDE.md)\n\n{claude_md.read_text(encoding='utf-8')}")
         docs_dir = ROOT / "docs"
         if docs_dir.is_dir():
-            for doc in sorted(docs_dir.glob("*.md")):
+            available = {d.stem: d for d in sorted(docs_dir.glob("*.md"))}
+            if docs is None:
+                chosen = [available[k] for k in sorted(available)]
+            else:
+                unknown = sorted(set(docs) - set(available))
+                if unknown:
+                    print(f"\n  ERROR: docs/ 에 없는 문서를 지정했다: {', '.join(unknown)}")
+                    print(f"    있는 것: {', '.join(sorted(available))}")
+                    print(f"    없는 문서를 조용히 건너뛰면 규칙이 소리 없이 빠진다.")
+                    sys.exit(2)
+                chosen = [available[k] for k in sorted(set(docs))]
+            for doc in chosen:
                 sections.append(f"## {doc.stem}\n\n{doc.read_text(encoding='utf-8')}")
         return "\n\n---\n\n".join(sections) if sections else ""
+
+    def _resolve_step_docs(self, step: dict) -> Optional[list]:
+        """이 step 에 주입할 docs/ 문서 이름(확장자 없이). None 이면 전량이다.
+
+        우선순위는 step 의 docs 필드 → config 의 project.guardrail_docs 다.
+        어느 쪽도 없으면 None 을 돌려주고, 호출부가 그것을 '미선택'으로 드러낸다.
+        """
+        docs = step.get("docs")
+        if isinstance(docs, list):
+            return [str(d) for d in docs]
+        try:
+            config = self._read_json(ROOT / "harness" / "config.json")
+        except (OSError, ValueError):
+            return None
+        default = (config.get("project") or {}).get("guardrail_docs")
+        if isinstance(default, list):
+            return [str(d) for d in default]
+        return None
+
+    def _docs_declared_in_step_file(self, step_num: int) -> set:
+        """step 파일의 '읽어야 할 파일' 절에 적힌 docs/*.md 이름."""
+        step_file = self._phase_dir / f"step{step_num}.md"
+        if not step_file.exists():
+            return set()
+        m = self._READ_SECTION_RE.search(step_file.read_text(encoding="utf-8"))
+        if not m:
+            return set()
+        return set(self._DOC_REF_RE.findall(m.group(1)))
+
+    def _verify_doc_selection(self, step_num: int, docs: Optional[list]):
+        """선언과 주입이 어긋난 채로 시작하지 않는다.
+
+        프로즈를 **주입 목록으로 쓰지 않고 검증에만** 쓴다. 파싱이 빗나가도
+        문서가 조용히 빠지지 않게 하려는 것이다 — 설계자가 step 파일에는
+        적고 index.json 필드에는 빠뜨리면 그 step 은 필요한 규칙을 못 본다.
+        """
+        if docs is None:
+            return
+        missing = sorted(self._docs_declared_in_step_file(step_num) - set(docs))
+        if not missing:
+            return
+        print(f"\n  ERROR: step {step_num} 의 '읽어야 할 파일'에 있는 문서가 주입 목록에 없다.")
+        print(f"    빠진 것: {', '.join(missing)}")
+        print(f"    주입 목록: {docs}")
+        print(f"    phases/{self._phase_dir_name}/index.json 의 steps[].docs 를 맞추거나")
+        print(f"    step 파일에서 그 문서를 빼라.")
+        sys.exit(2)
 
     @staticmethod
     def _build_step_context(index: dict) -> str:
@@ -561,6 +631,7 @@ class StepExecutor:
         output = {
             "step": step_num, "name": step_name,
             "exitCode": result.returncode,
+            "prompt_chars": len(prompt),
             "stdout": result.stdout, "stderr": result.stderr,
         }
         out_path = self._phase_dir / f"step{step_num}-output.json"
@@ -568,6 +639,59 @@ class StepExecutor:
             json.dump(output, f, indent=2, ensure_ascii=False)
 
         return output
+
+    @staticmethod
+    def _extract_usage(output: dict) -> dict:
+        """claude -p 의 JSON 에서 과금 지표를 뽑는다. 모르는 값은 키를 만들지 않는다.
+
+        0 으로 채우면 '재지 않았다'와 '0 이었다'가 같은 칸에 들어가 실측이
+        오염된다 — attempts 에서 이미 겪은 실패다 (ADR-H007).
+        """
+        try:
+            payload = json.loads(output.get("stdout") or "{}")
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        rec = {}
+        cost = payload.get("total_cost_usd")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            rec["cost_usd"] = round(float(cost), 4)
+        turns = payload.get("num_turns")
+        if isinstance(turns, int) and not isinstance(turns, bool):
+            rec["turns"] = turns
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            for src_key, dst_key in (("cache_read_input_tokens", "cache_read"),
+                                     ("cache_creation_input_tokens", "cache_write"),
+                                     ("output_tokens", "output_tokens")):
+                val = usage.get(src_key)
+                if isinstance(val, int) and not isinstance(val, bool):
+                    rec[dst_key] = val
+        return rec
+
+    def _record_run(self, index: dict, step_num: int, *, attempt: int, outcome: str,
+                    elapsed: float, out: dict, guard_info: dict):
+        """시도 하나의 실측을 남긴다 (M12).
+
+        실행기는 소요와 비용을 알면서 화면에 찍고 버렸다. 재개된 step 은
+        started_at 이 첫 시도 것이라 completed_at 과의 차가 대기 시간을
+        포함한다 — 런 #5 step 2 는 유도값 3573s, 실제 520s 였다.
+
+        시도마다 한 항목이어야 하는 이유도 그 런에 있다: 재개 실행이
+        step{N}-output.json 을 덮어써 한도 중단분의 비용이 사라졌다.
+        성공한 시도만 적으면 차단·실패의 비용이 장부에서 증발한다.
+        """
+        entry = {"attempt": attempt, "outcome": outcome,
+                 "elapsed_sec": int(elapsed), "at": self._stamp()}
+        entry.update(guard_info)
+        if isinstance(out.get("prompt_chars"), int):
+            entry["prompt_chars"] = out["prompt_chars"]
+        entry.update(self._extract_usage(out))
+        for s in index["steps"]:
+            if s["step"] == step_num:
+                s.setdefault("runs", []).append(entry)
+                break
 
     @staticmethod
     def _usage_limit_reason(output: dict) -> Optional[str]:
@@ -623,11 +747,28 @@ class StepExecutor:
 
     # --- 실행 루프 ---
 
-    def _execute_single_step(self, step: dict, guardrails: str) -> bool:
-        """단일 step 실행 (재시도 포함). 완료되면 True, 실패/차단이면 False."""
+    def _execute_single_step(self, step: dict, guardrails: Optional[str] = None) -> bool:
+        """단일 step 실행 (재시도 포함). 완료되면 True, 실패/차단이면 False.
+
+        guardrails 를 주면 그대로 쓴다(오버라이드). 주지 않으면 이 step 이
+        고른 문서만 주입한다 (M15).
+        """
         step_num, step_name = step["step"], step["name"]
         done = sum(1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed")
         prev_error = None
+
+        docs = None
+        if guardrails is None:
+            docs = self._resolve_step_docs(step)
+            self._verify_doc_selection(step_num, docs)
+            guardrails = self._load_guardrails(docs)
+            if docs is None:
+                print(f"  ⚠ 문서 미선택 — 전량 주입 ({len(guardrails):,}자). "
+                      f"step 이 쓰는 것만 고르면 접두부가 줄어든다.", flush=True)
+            else:
+                print(f"  문서 {len(docs)}종 주입 ({len(guardrails):,}자)", flush=True)
+        guard_info = {"guardrail_docs": "all" if docs is None else sorted(docs),
+                      "guardrail_chars": len(guardrails)}
         # 같은 런의 재시도는 재개가 아니다 — 그쪽에는 retry_section 이 따로 붙는다.
         prior_attempt = self._prior_attempt_exists(step_num)
         if prior_attempt:
@@ -660,6 +801,17 @@ class StepExecutor:
                         s.pop("error_message", None)
                 self._write_json(self._index_file, index)
                 status = "blocked"
+
+            if status == "completed":
+                outcome = "completed"
+            elif status == "blocked":
+                outcome = "blocked"
+            elif attempt < self._retry_limit:
+                outcome = "retry"
+            else:
+                outcome = "error"
+            self._record_run(index, step_num, attempt=attempt, outcome=outcome,
+                             elapsed=elapsed, out=out, guard_info=guard_info)
 
             if status == "completed":
                 for s in index["steps"]:
@@ -713,7 +865,7 @@ class StepExecutor:
 
         return False  # unreachable
 
-    def _execute_all_steps(self, guardrails: str):
+    def _execute_all_steps(self):
         while True:
             index = self._read_json(self._index_file)
             pending = next((s for s in index["steps"] if s["status"] == "pending"), None)
@@ -731,7 +883,7 @@ class StepExecutor:
                     self._write_json(self._index_file, index)
                     break
 
-            self._execute_single_step(pending, guardrails)
+            self._execute_single_step(pending)
 
     def _finalize(self):
         index = self._read_json(self._index_file)

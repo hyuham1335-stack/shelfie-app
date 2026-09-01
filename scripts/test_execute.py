@@ -1009,7 +1009,7 @@ class TestRunningFile:
         """blocked 는 sys.exit(2) 로 빠진다 — finally 가 없으면 유령 파일이 남는다."""
         path = executor._phase_dir / ex.RUNNING_FILENAME
 
-        def blow_up(_guardrails):
+        def blow_up():
             assert path.exists(), "step 실행 중에는 RUNNING 이 있어야 한다"
             sys.exit(2)
 
@@ -1109,3 +1109,206 @@ class TestRetryLimitFromCalibration:
         text = executor._build_preamble("G", "")
         assert "attempts" in text
         assert "RUNNING" in text
+
+
+# ---------------------------------------------------------------------------
+# 가드레일 문서 선택 (M15)
+# ---------------------------------------------------------------------------
+
+USAGE_STDOUT = json.dumps({
+    "total_cost_usd": 1.5094965,
+    "num_turns": 32,
+    "usage": {
+        "cache_read_input_tokens": 375915,
+        "cache_creation_input_tokens": 121798,
+        "output_tokens": 896,
+    },
+})
+
+
+class TestGuardrailDocSelection:
+    """step 이 쓰지 않는 문서를 turn 마다 다시 읽는 것이 청구 토큰의 대부분이었다.
+
+    다섯 런 실측: cache_read 110.3M(청구의 95.4%) · turn 당 접두부 147k ·
+    그 접두부의 86.9%가 CLAUDE.md + docs/*.md 전량 주입이다 (M15).
+    """
+
+    def test_selected_docs_only(self, executor, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails(["arch"])
+        assert "# Architecture" in result
+        assert "# Guide" not in result
+
+    def test_claude_md_is_always_injected(self, executor, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails([])
+        assert "# Rules" in result, "CRITICAL 규칙 원본은 뺄 수 없다"
+        assert "# Architecture" not in result
+
+    def test_none_injects_everything(self, executor, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails(None)
+        assert "# Architecture" in result and "# Guide" in result
+
+    def test_unknown_doc_name_is_refused(self, executor, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project), pytest.raises(SystemExit) as e:
+            executor._load_guardrails(["arch", "nope"])
+        assert e.value.code == 2, "없는 문서를 조용히 건너뛰면 규칙이 소리 없이 빠진다"
+
+    # --- 선택 출처의 우선순위 ---
+
+    def _with_config(self, tmp_project, project_block):
+        (tmp_project / "harness").mkdir(exist_ok=True)
+        (tmp_project / "harness" / "config.json").write_text(
+            json.dumps({"project": project_block}, ensure_ascii=False), encoding="utf-8")
+
+    def test_step_field_wins_over_config_default(self, executor, tmp_project):
+        self._with_config(tmp_project, {"guardrail_docs": ["guide"]})
+        with patch.object(ex, "ROOT", tmp_project):
+            assert executor._resolve_step_docs({"step": 2, "docs": ["arch"]}) == ["arch"]
+
+    def test_config_default_applies_when_step_is_silent(self, executor, tmp_project):
+        self._with_config(tmp_project, {"guardrail_docs": ["guide"]})
+        with patch.object(ex, "ROOT", tmp_project):
+            assert executor._resolve_step_docs({"step": 2}) == ["guide"]
+
+    def test_no_source_means_inject_everything(self, executor, tmp_project):
+        self._with_config(tmp_project, {"name": "t"})
+        with patch.object(ex, "ROOT", tmp_project):
+            assert executor._resolve_step_docs({"step": 2}) is None
+
+    def test_empty_list_is_a_choice_not_a_silence(self, executor, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            assert executor._resolve_step_docs({"step": 2, "docs": []}) == []
+
+
+class TestGuardrailDocCrossCheck:
+    """step 파일의 '읽어야 할 파일'을 주입 목록으로 쓰지 않고 검증에만 쓴다.
+
+    프로즈 파싱이 빗나가도 문서가 조용히 빠지지 않게 하는 것이 요점이다.
+    설계자가 프로즈에는 적고 index.json 필드에는 빠뜨리는 경우를 잡는다.
+    """
+
+    def _step_file(self, phase_dir, body):
+        (phase_dir / "step2.md").write_text(body, encoding="utf-8")
+
+    def test_declared_doc_missing_from_docs_is_refused(self, executor, phase_dir):
+        self._step_file(phase_dir, "# Step 2\n\n## 읽어야 할 파일\n\n- `/docs/guide.md`\n")
+        with pytest.raises(SystemExit) as e:
+            executor._verify_doc_selection(2, ["arch"])
+        assert e.value.code == 2
+
+    def test_declared_subset_passes(self, executor, phase_dir):
+        self._step_file(phase_dir, "# Step 2\n\n## 읽어야 할 파일\n\n- `/docs/arch.md`\n")
+        executor._verify_doc_selection(2, ["arch", "guide"])
+
+    def test_step_file_without_the_section_passes(self, executor, phase_dir):
+        self._step_file(phase_dir, "# Step 2\n\n## 작업\n\n- `/docs/guide.md` 를 본문에서 언급")
+        executor._verify_doc_selection(2, ["arch"])
+
+    def test_only_that_section_is_scanned(self, executor, phase_dir):
+        self._step_file(
+            phase_dir,
+            "# Step 2\n\n## 읽어야 할 파일\n\n- `/docs/arch.md`\n\n## 작업\n\n- `/docs/guide.md` 갱신\n")
+        executor._verify_doc_selection(2, ["arch"])
+
+    def test_none_skips_the_check(self, executor, phase_dir):
+        self._step_file(phase_dir, "# Step 2\n\n## 읽어야 할 파일\n\n- `/docs/guide.md`\n")
+        executor._verify_doc_selection(2, None)
+
+
+# ---------------------------------------------------------------------------
+# step 별 실측 기록 (M12)
+# ---------------------------------------------------------------------------
+
+class TestExtractUsage:
+    def test_pulls_cost_turns_and_tokens(self):
+        u = ex.StepExecutor._extract_usage({"stdout": USAGE_STDOUT})
+        assert u["cost_usd"] == 1.5095
+        assert u["turns"] == 32
+        assert u["cache_read"] == 375915
+        assert u["cache_write"] == 121798
+        assert u["output_tokens"] == 896
+
+    def test_unparsable_output_yields_nothing(self):
+        assert ex.StepExecutor._extract_usage({"stdout": "not json"}) == {}
+
+    def test_missing_fields_are_not_invented(self):
+        u = ex.StepExecutor._extract_usage({"stdout": json.dumps({"usage": {}})})
+        assert u == {}, "모르는 값을 0 으로 적으면 실측이 오염된다"
+
+
+class TestRunsRecorded:
+    """실행기는 소요·비용을 알면서 화면에 찍고 버렸다.
+
+    재개된 step 은 started_at 이 첫 시도 것이라 completed_at 과의 차가
+    대기 시간을 포함한다 — 런 #5 step 2 는 유도값 3573s, 실제 520s 였다 (M12).
+    """
+
+    def _run(self, executor, *, fail_times=0, stdout=USAGE_STDOUT, exit_code=0):
+        calls = []
+
+        def fake_invoke(step_arg, preamble):
+            calls.append(preamble)
+            index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+            for s in index["steps"]:
+                if s["step"] == 2:
+                    if len(calls) > fail_times:
+                        s["status"] = "completed"
+                        s["summary"] = "done"
+                    else:
+                        s["status"] = "error"
+                        s["error_message"] = "boom"
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False),
+                                            encoding="utf-8")
+            return {"exitCode": exit_code, "stdout": stdout, "stderr": "",
+                    "prompt_chars": 113377}
+
+        with patch.object(executor, "_invoke_claude", side_effect=fake_invoke), \
+             patch.object(executor, "_commit_step"):
+            executor._execute_single_step({"step": 2, "name": "ui", "status": "pending"},
+                                          "guardrails")
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        return next(s for s in index["steps"] if s["step"] == 2)
+
+    def test_success_records_one_run(self, executor):
+        step = self._run(executor)
+        assert len(step["runs"]) == 1
+        run = step["runs"][0]
+        assert run["attempt"] == 1
+        assert run["outcome"] == "completed"
+        assert run["cost_usd"] == 1.5095
+        assert run["turns"] == 32
+        assert run["prompt_chars"] == 113377
+        assert isinstance(run["elapsed_sec"], int)
+
+    def test_retry_keeps_the_failed_attempt(self, executor):
+        step = self._run(executor, fail_times=1)
+        assert [r["outcome"] for r in step["runs"]] == ["retry", "completed"]
+        assert [r["attempt"] for r in step["runs"]] == [1, 2]
+
+    def test_final_failure_is_recorded(self, executor):
+        with pytest.raises(SystemExit):
+            self._run(executor, fail_times=99)
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        step = next(s for s in index["steps"] if s["step"] == 2)
+        assert step["runs"][-1]["outcome"] == "error"
+        assert len(step["runs"]) == executor._retry_limit
+
+    def test_usage_limit_attempt_keeps_its_cost(self, executor):
+        """재개가 step{N}-output.json 을 덮어써 차단분의 비용이 사라졌다 (런 #5)."""
+        limit = json.dumps({"is_error": True, "api_error_status": 429,
+                            "result": "session limit", "total_cost_usd": 1.51,
+                            "num_turns": 3})
+        with pytest.raises(SystemExit) as e:
+            self._run(executor, fail_times=99, stdout=limit, exit_code=1)
+        assert e.value.code == 2
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        step = next(s for s in index["steps"] if s["step"] == 2)
+        assert len(step["runs"]) == 1
+        assert step["runs"][0]["outcome"] == "blocked"
+        assert step["runs"][0]["cost_usd"] == 1.51
+
+    def test_records_which_docs_were_injected(self, executor):
+        step = self._run(executor)
+        assert step["runs"][0]["guardrail_chars"] == len("guardrails")

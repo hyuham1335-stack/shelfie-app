@@ -77,9 +77,12 @@ step들이 `summary`로 올린 보고는 **다음 런 설계에서 명시적으�
   "project": "<프로젝트명>",
   "phase": "<task-name>",
   "steps": [
-    { "step": 0, "name": "project-setup", "status": "pending" },
-    { "step": 1, "name": "core-types", "status": "pending" },
-    { "step": 2, "name": "api-layer", "status": "pending" }
+    { "step": 0, "name": "project-setup", "status": "pending",
+      "docs": ["ARCHITECTURE", "ADR"] },
+    { "step": 1, "name": "core-types", "status": "pending",
+      "docs": ["ARCHITECTURE", "ADR", "TRD"] },
+    { "step": 2, "name": "api-layer", "status": "pending",
+      "docs": ["API_SPEC", "TRD", "ADR"] }
   ]
 }
 ```
@@ -91,6 +94,7 @@ step들이 `summary`로 올린 보고는 **다음 런 설계에서 명시적으�
 - `steps[].step`: 0부터 시작하는 순번.
 - `steps[].name`: kebab-case slug.
 - `steps[].status`: 초기값은 모두 `"pending"`.
+- `steps[].docs`: **이 step 프롬프트에 주입할 `docs/` 문서**(확장자 없는 파일명). 아래 절을 본다.
 
 상태 전이와 자동 기록 필드:
 
@@ -106,7 +110,21 @@ step들이 `summary`로 올린 보고는 **다음 런 설계에서 명시적으�
 
 `attempts`(그 step을 몇 번 태웠는가)도 execute.py가 쓴다. 1회에 통과해도 `1`을 남긴다 — **"기록 없음"과 "재시도 0회"는 다른 것**이고, 재시도 상한(`calibrate`의 `retry_budget`)이 이 값에서 유도된다. 생성 시 넣지 말고, step 세션도 건드리지 않는다.
 
-#### D-3. `phases/{task-name}/step{N}.md` (각 step마다 1개)
+##### 어느 문서를 주입할 것인가 — `steps[].docs`
+
+가드레일은 **step이 고른다** ([ADR-H008](../../../docs/harness/DECISIONS.md)). 지정하지 않으면 `docs/` 전량이 들어가고, 실행기가 매 step `⚠ 문서 미선택 — 전량 주입 (N자)`으로 드러낸다.
+
+왜 고르는가는 실측이다. 파일럿 다섯 런의 청구 토큰 115.6M 중 **cache read가 110.3M(95.4%)** 이고, 그것은 **매 turn 프롬프트 접두부를 다시 읽은 양**이다. 그 접두부의 **86.9%가 가드레일**이었다 — UI step이 배포 인프라 절을, 순수 함수 step이 GTM 이벤트 표를 750 turn 내내 재독했다. 런 #5의 step 파일들은 이미 각각 3~5종만 필요하다고 적어 두었고, 그대로 주입했다면 문자 기준 **41% 절감**이었다.
+
+규칙 셋:
+
+1. **step 파일의 `## 읽어야 할 파일`에 적은 `docs/*.md`는 전부 `docs` 배열에 있어야 한다.** 어긋나면 실행기가 step 시작 전에 `exit 2`로 막는다. 선언은 필드가 하고 프로즈는 검증만 한다 — 프로즈를 주입 목록으로 쓰면 파싱이 빗나가는 순간 규칙이 소리 없이 빠진다
+2. `CLAUDE.md`는 언제나 들어간다. 뺄 수 없고 뺄 필요도 없다(3천 자, CRITICAL 규칙 원본)
+3. **줄이는 것이 목적이라고 필요한 문서를 빼지 마라.** 워커가 규칙을 못 본 채 지켰다고 보고하는 것이 이 리포에서 가장 나쁜 실패다. 확신이 없으면 넣는다 — 롤백은 `docs`를 지우는 것으로 끝난다
+
+계층별 출발점(이 리포 기준): UI step → `UI_GUIDE`·`ARCHITECTURE`(+화면이 계약을 만나면 `API_SPEC`) · 라우트 step → `API_SPEC`·`TRD`·`ADR` · 순수 로직 step → `ARCHITECTURE`·`ADR` · 계약/부채 정리 step → 손대는 문서 전부.
+
+### D-3. `phases/{task-name}/step{N}.md` (각 step마다 1개)
 
 ```markdown
 # Step {N}: {이름}
@@ -154,6 +172,8 @@ npm test        # 테스트 통과
 - 기존 테스트를 깨뜨리지 마라
 ```
 
+`## 읽어야 할 파일`에 적은 `/docs/*.md`는 `index.json`의 `steps[].docs`와 일치해야 한다. 어긋난 채로는 실행기가 시작하지 않는다.
+
 금지사항을 쓰기 전에 위의 **소유 분류**를 다시 본다. 워커가 소유한 경로를 습관적으로 금지하면 그 step이 받기로 한 보고가 설계 단계에서 이미 불가능해진다 — 실제로 그 방식으로 네 건이 세 런을 살아남았다.
 
 ### E. 실행
@@ -180,6 +200,8 @@ execute.py가 자동으로 처리하는 것:
 - 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋
 - 타임스탬프와 `attempts` — started_at, completed_at, failed_at, blocked_at 자동 기록
 - **실행 중 상태** — `phases/{task-name}/RUNNING`에 pid·step·heartbeat를 남기고, 끝나면(성공·실패·차단 모두) 지운다
+- **문서 주입** — `steps[].docs`가 고른 문서만 넣고, 미지정이면 전량 주입 + 경고를 찍는다
+- **시도별 실측** — `steps[].runs[]`에 시도마다 `elapsed_sec`·`prompt_chars`·`guardrail_chars`·`cost_usd`·`turns`·`cache_read`를 남긴다. 소요는 여기서 읽는다 — `completed_at - started_at`은 **재개 대기 시간을 포함해** 런 #5에서 실제의 7배로 나왔다
 
 ### 실행 중인 런을 오독하지 않기
 

@@ -17,11 +17,11 @@
 | 워크플로우 | `.claude/skills/harness/SKILL.md` (doctor → step 설계 → `phases/` 생성 → 실행), `.claude/skills/review/SKILL.md` |
 | **계약 계층** | `harness/config.json` · `config.schema.json` · `adapters/{nextjs-ts,_template}.json` + `adapter.schema.json` · `profiles/nextjs-ts/` · `templates/contract.md` |
 | 실행기 | `scripts/harness.py` — `init` · `doctor` · `calibrate`. `scripts/execute.py` — 순차 step 실행기, CLI는 `{task-name}` + `--push` |
-| 테스트 | `scripts/test_harness.py` (65건) · `scripts/test_execute.py` (92건) |
+| 테스트 | `scripts/test_harness.py` (65건) · `scripts/test_execute.py` (113건) |
 | 파일럿 | `phases/lib-core/` · `phases/services-core/` · `phases/routes-core/` · `phases/app-core/` 각 5 step · `phases/app-shell/` 6 step — **다섯 런 26 step 완주.** 기록은 [PILOT-LOG.md](PILOT-LOG.md) |
 | 실측 | `harness/calibration.json` — `calibrate` 산출. 정책 4종이 여기서 유도된다 |
 
-`scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md + docs/\*.md) · summary 컨텍스트 누적 · 자가 교정(상한은 `calibrate`가 유도, 미측정이면 `MAX_RETRIES`가 바닥값) · 2단계 커밋 · 타임스탬프와 `attempts` 기록 · **실행 중 상태(`phases/{phase}/RUNNING`) 관리**.
+`scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md 상시 + `steps[].docs`가 고른 docs/\*.md, 미지정이면 전량 + 경고 — [ADR-H008](DECISIONS.md)) · summary 컨텍스트 누적 · 자가 교정(상한은 `calibrate`가 유도, 미측정이면 `MAX_RETRIES`가 바닥값) · 2단계 커밋 · 타임스탬프와 `attempts` 기록 · **시도별 실측(`steps[].runs[]`) 기록** · **실행 중 상태(`phases/{phase}/RUNNING`) 관리**.
 
 `RUNNING`은 관찰자를 위한 계약이다 — `started_at`만으로는 "돌고 있다"와 "죽었다"가 갈리지 않아 감독 세션이 살아 있는 step의 산출물을 지운 적이 있다 ([ADR-H006](DECISIONS.md)).
 
@@ -81,7 +81,7 @@ flowchart LR
 
 **2단계가 회수한 것**: 네 런 모두 자가 교정 재시도 0회로 완주했고 테스트가 64 → **731건**이 됐다. step당 평균은 런 #1(순수 함수) 352초 · 런 #2(외부 API 모킹) 422초 · 런 #3(라우트 통합) 700초 · 런 #4(UI) **606초**로, **소요의 단조 증가는 런 #4에서 멈췄다** — "통합적일수록 비싸다"는 런 #3의 해석은 계층의 깊이가 아니라 한 step이 만나는 계약의 수를 재고 있었다. 대신 step당 산출 테스트가 27~29건대에서 **49.8건**으로 뛰었다 — **테스트 수는 계층 간 비교에 쓸 수 있는 눈금이 아니다.** 재시도율은 **20 step 내내 0**이었다 — `MAX_RETRIES = 3`은 네 런 동안 한 번도 발동하지 않은 장치다. `calibrate`가 정책 3종(백그라운드 회귀 OFF · `full` 타임아웃 300s · 테스트 수 하한 **657**)을 실측에서 유도했고, **`scoped`의 답이 런 #4에서 확정됐다** — 런 #3의 83%가 jsdom이 들어오자 **101%**가 됐다(731건 중 1건 실행, 소요 21.81s vs `full` 21.64s). vitest가 테스트를 건너뛰어도 그 파일의 환경은 세우기 때문이다. `loop_stage`는 이 스택에서 **켜면 손해다.** 하네스 결함은 누적 **11건**이 드러났고 **10건을 고쳤다**(M11은 부분 해결). M10·M11은 런 #4 직후에 닫혔고, M11은 **M10을 실물로 검증하다** 드러났다 — 완주한 phase에 실행기를 다시 돌리자 `_finalize`의 `git add -A`가 미커밋 소스와 상태 파일을 한 커밋에 담고 런 #4의 실측 타임스탬프를 덮었다. 네 런 동안 숨어 있었던 이유는 M6과 같다: step 세션이 매번 스스로 커밋해 그 경로가 no-op이었다. 런 #4의 M10은 `started_at`은 있고 출력 파일은 없는 상태가 "진행 중"과 "죽었음" 양쪽을 뜻해 **관찰자가 둘을 구분할 수 없다**는 것으로, 이번에 감독 세션이 실제로 오독해 살아 있는 step의 산출물을 지운 일이 있다(복구됨). 런 #3의 결론이 한 번 더 확인됐다 — **실행기의 취약점은 작업 품질이 아니라 운영 견고성과 관측 가능성에 있다.** 상세는 [PILOT-LOG.md](PILOT-LOG.md).
 
-**런 #5가 더한 것**: `app-shell` 6 step이 `src/app/page.tsx` 상태 머신과 화면 5종을 얹어 **앱이 처음 업로드에서 추천까지 이어졌고**, 테스트가 731 → **922건**이 됐다. 이 런의 값어치는 코드보다 **런 #4 직후 고친 네 장치가 전부 실물에서 통과했다**는 데 있다 — M7(사용량 한도를 자가 교정으로 오인하지 않는다), M10 `RUNNING`([ADR-H006](DECISIONS.md)), `attempts` 기록([ADR-H007](DECISIONS.md)), 이월 보고 라우팅. 특히 **step 2가 실제로 한도에 걸렸는데 재시도를 한 번도 태우지 않고 `blocked`로 끝났다** — 런 #3에서 같은 일이 재시도 통계를 오염시켰던 바로 그 경로다. 이월 5건은 step 0이 전부 해소했다(세 런째였다). `calibrate` 4회차는 `tests_ran_floor`를 **829**로 올렸고 `scoped`/`full`이 191건 늘어난 뒤에도 **100.2%** — `loop_stage`가 이 스택에서 손해라는 판정이 재확인됐다. `retry_budget`은 여전히 `null`이지만 이유가 바뀌었다: "기록 0 step"이 **"기록 6 step · 미기록 20 step"**이 됐고 `RETRY_RECORD_MIN`(10)까지 4 step 남았다. 새 결함 **3건(M12·M13·M14)**이 드러났고 **전부 미해결**이다 — 셋 다 작업 품질이 아니라 **실측을 기록·보존하는 쪽**이다. M14는 M9의 형제였다(`--stage`가 전체를 덮는 것은 고쳤는데 **전체가 부분을 덮는 것**은 남아 있었다). 상세는 [PILOT-LOG.md](PILOT-LOG.md).
+**런 #5가 더한 것**: `app-shell` 6 step이 `src/app/page.tsx` 상태 머신과 화면 5종을 얹어 **앱이 처음 업로드에서 추천까지 이어졌고**, 테스트가 731 → **922건**이 됐다. 이 런의 값어치는 코드보다 **런 #4 직후 고친 네 장치가 전부 실물에서 통과했다**는 데 있다 — M7(사용량 한도를 자가 교정으로 오인하지 않는다), M10 `RUNNING`([ADR-H006](DECISIONS.md)), `attempts` 기록([ADR-H007](DECISIONS.md)), 이월 보고 라우팅. 특히 **step 2가 실제로 한도에 걸렸는데 재시도를 한 번도 태우지 않고 `blocked`로 끝났다** — 런 #3에서 같은 일이 재시도 통계를 오염시켰던 바로 그 경로다. 이월 5건은 step 0이 전부 해소했다(세 런째였다). `calibrate` 4회차는 `tests_ran_floor`를 **829**로 올렸고 `scoped`/`full`이 191건 늘어난 뒤에도 **100.2%** — `loop_stage`가 이 스택에서 손해라는 판정이 재확인됐다. `retry_budget`은 여전히 `null`이지만 이유가 바뀌었다: "기록 0 step"이 **"기록 6 step · 미기록 20 step"**이 됐고 `RETRY_RECORD_MIN`(10)까지 4 step 남았다. 새 결함 **3건(M12·M13·M14)**이 드러났고 **M12는 닫혔다**(M13·M14는 남았다) — 셋 다 작업 품질이 아니라 **실측을 기록·보존하는 쪽**이다. 런 직후 26 step 전체를 처음 집계해 **M15**도 드러났다: 청구 토큰의 95.4%가 cache read이고 그 접두부의 86.9%가 가드레일 전량 주입이었다 ([ADR-H008](DECISIONS.md)에서 해결). M14는 M9의 형제였다(`--stage`가 전체를 덮는 것은 고쳤는데 **전체가 부분을 덮는 것**은 남아 있었다). 상세는 [PILOT-LOG.md](PILOT-LOG.md).
 
 **어댑터 `verified` 승격은 아직 아니다.** 다섯 런 모두 `execute.py`(순차 실행기)로 돌았고 어댑터의 스테이지 체인·귀속 규칙을 소비하지 않았다. 다만 `calibrate`가 `test_report` 파싱과 스테이지 명령에 이어 런 #3에서 `scoped`의 `select` 문법까지 **실제로 소비했다** — 어댑터에서 검증된 부분이 계속 늘고 있고, 나머지(스테이지 체인·`attribution`)는 04-gate가 생겨야 검증된다.
 
@@ -131,7 +131,7 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 ## 6. 다음 행동
 
-1~11과 13·15·16·17·19가 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#5가 `lib/`·`services/`·`app/api/`·`components/`·`app/` 계층을 완주해 **앱이 업로드에서 추천까지 이어졌다.** **남은 것은 12·14·18과 런 #5가 새로 연 20~23이다.** 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
+1~11과 13·15·16·17·19가 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#5가 `lib/`·`services/`·`app/api/`·`components/`·`app/` 계층을 완주해 **앱이 업로드에서 추천까지 이어졌다.** **남은 것은 12·14·18·21·22·23이다.** 20과 24는 런 #5 직후에 닫혔다. 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
 
 **런 #4가 11번에서 하지 못한 것**: 런 #3의 보고 3건(알라딘 호출 상한 260회 · 이미지 상수 이중화 · `errorCodeSchema`의 500대 공백)을 "여기서 정리한다"고 적었으나 **하나도 정리되지 않았다.** step 파일 5개가 전부 `src/lib/`·`docs/` 수정을 금지해 **설계 단계에서 이미 불가능해져 있었다.** 아래 15번으로 옮긴다.
 
@@ -145,9 +145,11 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 18. **M11의 남은 절반** — `_finalize`가 `git add -A`로 커밋한다. 실행기가 커밋할 경로는 소유 glob에서 유도되어야 한다. **다섯 런째 드러나지 않았다** — step 세션이 매번 스스로 커밋해 작업 트리가 깨끗했기 때문이다. 드러나지 않는다는 것이 안전하다는 뜻은 아니다
 19. ~~**파일럿 런 #5 `app-shell` 실행**~~ — **완주**(6/6 · 무재시도 · 한도로 1회 `blocked` 후 재개). `page.tsx` 상태 머신과 화면 5종이 붙어 앱이 처음 끝까지 이어졌고, 세 런째 이월되던 계약 부채 5건도 step 0이 닫았다. 새 결함 M12·M13·M14는 아래 20~22로 옮긴다
 
-20. **M12 — step별 `elapsed_sec`를 `index.json`에 남긴다.** 재개된 step의 `started_at`은 첫 시도 것이라 `completed_at`과의 차가 **대기 시간을 포함한다**(런 #5 step 2: 유도값 3573s vs 실제 520s). [PILOT-LOG](PILOT-LOG.md)의 앞선 네 런 소요는 전부 그 유도값이다 — 재개가 한 번이라도 섞이면 그 방법이 깨진다. **실행기는 맞는 값을 콘솔에 찍고 버린다.** [ADR-H007](DECISIONS.md)이 `attempts`에 한 것과 같은 조치다
+20. ~~**M12 — step별 `elapsed_sec`를 `index.json`에 남긴다.**~~ — **해결.** `steps[].runs[]`에 시도마다 `elapsed_sec`·`prompt_chars`·`guardrail_chars`·`cost_usd`·`turns`·`cache_read`를 남긴다. 배열인 것이 요점이다 — 런 #5에서 재개 실행이 `step2-output.json`을 덮어써 한도 중단분의 비용이 사라졌다. 원래 서술을 남겨 둔다: 재개된 step의 `started_at`은 첫 시도 것이라 `completed_at`과의 차가 **대기 시간을 포함한다**(런 #5 step 2: 유도값 3573s vs 실제 520s). [PILOT-LOG](PILOT-LOG.md)의 앞선 네 런 소요는 전부 그 유도값이다 — 재개가 한 번이라도 섞이면 그 방법이 깨진다. **실행기는 맞는 값을 콘솔에 찍고 버린다.** [ADR-H007](DECISIONS.md)이 `attempts`에 한 것과 같은 조치다
 21. **M13 — 재개 신호가 "출력 파일 존재"가 아니라 "산출물 존재"를 봐야 한다.** 25초 만에 한도로 잘려 소스를 한 줄도 못 쓴 step이 다음 실행에서 재개로 판정됐다. 무해했지만 8페이즈 파이프라인은 이 신호로 페이즈 재개를 판정한다. `exitCode != 0`인 출력 파일을 빼는 것이 최소 수정이다
 22. **M14 — 전체 `calibrate`가 `scoped`의 기존 실측을 지운다.** `--select` 없이 돌면 런 #4의 21.81s가 `skipped`로 덮이고, 그런데도 `partial: false`로 적혀 `doctor`가 통과시킨다. **M9의 형제다** — 그때는 부분이 전체를 덮었고 이번은 전체가 부분을 덮는다. 고칠 때 `cmd:null`(없는 것)·"이번에 못 쟀다"(모르는 것)·옛 값(stale) 셋을 구분하는 어휘가 필요하다
+24. ~~**M15 — 가드레일 전량 주입**~~ — **해결** ([ADR-H008](DECISIONS.md)). 다섯 런 26 step을 처음 집계하니 청구 토큰 115.6M 중 **cache read가 110.3M(95.4%)** 이고, 그 접두부의 **86.9%가 `CLAUDE.md` + `docs/*.md` 전량 주입**이었다. UI step이 배포 인프라 절을 750 turn 내내 재독한 셈이다. 이제 `steps[].docs`가 문서를 고르고, 미지정이면 전량 주입하되 경고로 드러난다. 런 #5의 step 파일들이 이미 선언한 대로만 넣었다면 문자 기준 **41% 절감**이었다 — **정보는 있었고 실행기가 쓰지 않았다.** 효과는 런 #6이 A/B로 답한다(대조군: turn당 145,491 · step당 $5.61)
+
 23. **런 #6 전에 사람이 고쳐야 하는 계약 4건** — 상태도의 `error → moodInput/recommending` 회복 전이(`docs/ARCHITECTURE.md`) · `recommendRequestSchema`의 세션 진행 상태(`docs/API_SPEC.md`) · `recommend_failed`와 `book_resolved.matched`(PRD 7번 이벤트 표). **문서가 비어 있으면 워커는 코드를 소유해도 아무것도 할 수 없다** — 코드 step에 주면 세 런째 이월이 반복된다(15번의 교훈)
 
 결정 기록은 [DECISIONS.md](DECISIONS.md)를 본다.

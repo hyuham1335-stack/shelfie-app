@@ -1,0 +1,11 @@
+{
+  "project": "shelfie",
+  "phase": "services-core",
+  "steps": [
+    { "step": 0, "name": "env-zod", "status": "pending" },
+    { "step": 1, "name": "budget", "status": "pending" },
+    { "step": 2, "name": "prompts", "status": "pending" },
+    { "step": 3, "name": "aladin", "status": "pending" },
+    { "step": 4, "name": "anthropic", "status": "pending" }
+  ]
+}

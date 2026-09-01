@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+/* /docs/UI_GUIDE.md 색상 토큰 — 종이 톤 라이트 테마 */
+@theme {
+  --color-page: #faf9f7;
+  --color-card: #ffffff;
+  --color-muted-surface: #f5f2ed;
+  --color-line: #e5e1da;
+
+  --color-ink: #1a1a1a;
+  --color-body: #3d3a36;
+  --color-subtle: #6b6560;
+  --color-disabled: #8c8681;
+
+  --color-accent: #2f5d50;
+  --color-accent-strong: #264a40;
+  --color-unverified: #b45309;
+  --color-danger: #b3261e;
+}
+
+body {
+  background-color: var(--color-page);
+  color: var(--color-ink);
+}

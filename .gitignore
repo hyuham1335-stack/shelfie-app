@@ -7,3 +7,7 @@ tsconfig.tsbuildinfo
 # phase execution outputs
 phases/**/phase*-output.json
 phases/**/step*-output.json
+
+# 로컬 시크릿 — 절대 커밋하지 않는다 (TRD 6.5 시크릿 관리)
+.env.local
+.env*.local

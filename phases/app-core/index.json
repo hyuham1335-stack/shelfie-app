@@ -2,10 +2,33 @@
   "project": "shelfie",
   "phase": "app-core",
   "steps": [
-    { "step": 0, "name": "anthropic-recommend", "status": "pending" },
-    { "step": 1, "name": "questions-route", "status": "pending" },
-    { "step": 2, "name": "recommend-route", "status": "pending" },
-    { "step": 3, "name": "ui-common", "status": "pending" },
-    { "step": 4, "name": "ui-booklist", "status": "pending" }
-  ]
+    {
+      "step": 0,
+      "name": "anthropic-recommend",
+      "status": "completed",
+      "started_at": "2026-09-01T21:37:42+0900",
+      "summary": "services/anthropic.ts에 generateRecommendations(books, mood, opts)와 generateQuestions(books, opts)를 추가. export 타입: RecommendPick(=recommendationSchema 추론, bookId·reason·position 전부 보존) · RecommendFailureReason(=ExtractFailureReason 5종) · RecommendOptions{deadlineMs, correction?:{violatingBookIds}, clientImpl?, sleepImpl?} · RecommendOutcome{ok: relevant·picks·usage | failed: reason·usage?} · QuestionsOptions{deadlineMs, clientImpl?, sleepImpl?} · QuestionsOutcome{ok: questions(MoodQuestion[])·usage | failed}. 재요청 교정: correction을 넘기면 buildRecommendPrompt 결과 뒤에 별도 text 블록(<violations>+<allowed>)을 붙인다 — mood 데이터 블록은 건드리지 않고, 위반 ID는 isbn13Schema로 걸러 중복 제거 후 최대 3건만 싣는다(모델 출력이 지시문 자리에 앉는 경로 차단). correction 없으면 블록 자체가 없다. 라우트가 지켜야 할 규약: ① proof 검증을 통과한 목록으로 bookId 화이트리스트를 걸고, 위반 시 violatingBookIds를 담아 1회만 재호출(2회째 실패는 502 RECOMMENDATION_VALIDATION_FAILED) ② relevant:false는 서비스가 해석하지 않으므로 422 IRRELEVANT_MOOD 판정과 '2회 연속이면 무시'는 라우트가 한다 ③ shortfall(FR-006) 판정도 라우트 몫 ④ 문답은 실패를 200+빈 배열로 흡수하는 것이 라우트의 일이다 — 서비스는 질문 0·1·4개를 전부 schema 실패로 돌려준다(모델 허용값은 2~3개뿐) ⑤ usage는 과금된 호출(refusal·max_tokens·schema)에만 실리고 호출이 없었거나 응답을 못 받은 경우(deadline 0·timeout·연결 오류)에는 키 자체가 없으므로, 이벤트 로그의 input/output_tokens는 usage가 있을 때만 더한다. 호출 규약(buildBody·callWithRetry·stop_reason 우선 판독·모델은 getRecommendModel())은 추출·한줄평과 공유하며 새 SDK 래퍼를 만들지 않았다. ANTHROPIC_API_KEY가 없으면 목업(추천 3권·질문 2개, usage 0, 경고 로그)을 돌려준다. 테스트 47건 추가(anthropic.test.ts 68→115, 전체 529건 통과). lib/에서 발견한 결함 없음."
+    },
+    {
+      "step": 1,
+      "name": "questions-route",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "recommend-route",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "ui-common",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "ui-booklist",
+      "status": "pending"
+    }
+  ],
+  "created_at": "2026-09-01T21:37:42+0900"
 }

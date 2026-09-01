@@ -40,20 +40,35 @@ import Anthropic, {
 import { z } from "zod";
 
 import { STAGE_BUDGET_MS } from "@/lib/budget";
-import { getAnthropicApiKey, getExtractModel, getRecommendModel } from "@/lib/env";
+import {
+  MAX_RECOMMENDATIONS,
+  getAnthropicApiKey,
+  getExtractModel,
+  getRecommendModel,
+} from "@/lib/env";
 import {
   buildExtractPrompt,
   buildNotePrompt,
+  buildQuestionsPrompt,
+  buildRecommendPrompt,
   extractionJsonSchema,
   noteBatchSchema,
   noteJsonSchema,
+  questionsJsonSchema,
+  questionsOutputSchema,
+  recommendJsonSchema,
+  recommendOutputSchema,
 } from "@/lib/prompts";
+import type { PromptBook, RecommendPromptBook } from "@/lib/prompts";
 import {
   extractedCandidateSchema,
   extractionResultSchema,
   imageDataUriSchema,
+  isbn13Schema,
+  recommendationSchema,
 } from "@/lib/schemas";
 import type { ExtractedCandidate } from "@/types/book";
+import type { MoodQuestion } from "@/types/api";
 
 /**
  * 비스트리밍 호출의 출력 상한 (TRD 7번 호출 규약).
@@ -831,4 +846,390 @@ function mockNoteOutcome(books: readonly NoteBook[]): NoteOutcome {
  */
 function warn(message: string): void {
   console.warn(`[anthropic] ${message}`);
+}
+
+/* ------------------------------------------------------------------ *
+ * 공개 API — 추천 (TR-010, FR-006·FR-009)
+ * ------------------------------------------------------------------ */
+
+/**
+ * 추천 한 번의 결과. `bookId`·`reason`뿐 아니라 `position`도 그대로 나른다.
+ *
+ * 순위를 버리고 라우트가 배열 순서로 다시 매기지 않는 이유는, 그것이 **모델의
+ * 판단을 서비스가 덮어쓰는 것**이기 때문이다. `recommendationSchema`가 이미
+ * `position`을 API 계약의 일부로 정해 두었고(1|2|3), 그 값은 "가장 권하고 싶은
+ * 순서"라는 의미를 갖는다. 여기서 떨어뜨리면 라우트가 그 의미를 복원할 방법이 없다.
+ */
+export type RecommendPick = z.infer<typeof recommendationSchema>;
+
+/** 추천·문답이 실패한 사유. 추출과 같은 5종을 쓴다 — 사유 어휘를 셋으로 나누지 않는다 */
+export type RecommendFailureReason = ExtractFailureReason;
+
+export interface RecommendOptions {
+  /** 이 호출에 쓸 수 있는 시간(ms). 0 이하면 호출조차 하지 않는다 */
+  deadlineMs: number;
+  /**
+   * 직전 시도가 목록 밖 책을 반환했을 때 라우트가 넘기는 교정 정보 (FR-009).
+   * 첫 시도에는 없다. 이 값이 있으면 프롬프트에 **위반한 `bookId`와 허용 목록을
+   * 다시** 싣는다 — 같은 프롬프트를 그대로 반복하면 같은 실패를 부른다 (API_SPEC).
+   */
+  correction?: { violatingBookIds: readonly string[] };
+  /** 테스트 주입점. SDK를 갈아 끼운다 */
+  clientImpl?: unknown;
+  /** 재시도 백오프 대기 주입점 */
+  sleepImpl?: (ms: number) => Promise<void>;
+}
+
+/**
+ * 추천 결과.
+ *
+ * **`relevant`를 여기서 해석하지 않는다.** 모델이 준 값을 그대로 실어 올릴 뿐이고,
+ * 422(`IRRELEVANT_MOOD`)로 만들지 아니면 무시하고 진행할지는 라우트가 정한다 —
+ * "같은 세션에서 2회 연속이면 판정을 무시한다"는 규칙은 세션을 아는 쪽만 적용할
+ * 수 있기 때문이다 (API_SPEC `/api/recommend`).
+ *
+ * **화이트리스트 검증도 여기서 하지 않는다.** 서명 검증을 통과한 목록을 아는 쪽은
+ * 라우트다 (ADR-006). 이 함수는 목록 밖 `bookId`도 그대로 올려 보내고, 라우트가
+ * 걸러 낸 뒤 `correction`을 들고 다시 부른다.
+ */
+export type RecommendOutcome =
+  | { status: "ok"; relevant: boolean; picks: readonly RecommendPick[]; usage: ExtractUsage }
+  | { status: "failed"; reason: RecommendFailureReason; usage?: ExtractUsage };
+
+/**
+ * 확인된 책 목록과 기분 텍스트로 추천을 받는다 (TR-010).
+ *
+ * `mood`는 사용자가 쓴 자유 텍스트라 **데이터로만** 다룬다. 시스템 프롬프트에
+ * 이어 붙이지 않고 `buildRecommendPrompt`가 잡아 둔 `<mood>` 블록 안에 넣는다
+ * (TRD 6.5). 이 함수는 그 규약을 깨지 않으려고 프롬프트를 직접 조립하지 않는다 —
+ * 유일하게 덧붙이는 것은 재요청 교정 블록이고, 그것은 우리가 쓴 문장이다.
+ */
+export async function generateRecommendations(
+  books: readonly RecommendPromptBook[],
+  mood: string,
+  options: RecommendOptions,
+): Promise<RecommendOutcome> {
+  const { deadlineMs, correction, clientImpl, sleepImpl = defaultSleep } = options;
+
+  if (deadlineMs <= 0) {
+    warn("남은 추천 예산이 없어 호출을 생략합니다");
+    return { status: "failed", reason: "timeout" };
+  }
+
+  const apiKey = getAnthropicApiKey();
+  if (apiKey === null) return mockRecommendOutcome(books);
+
+  const deadlineAt = Date.now() + deadlineMs;
+  const client = resolveClient(clientImpl, apiKey);
+
+  const attempt = await callWithRetry(
+    client,
+    buildRecommendBody(books, mood, correction),
+    deadlineAt,
+    sleepImpl,
+  );
+
+  if (attempt.kind === "failed") {
+    return failedRecommend(attempt.reason, attempt.usage);
+  }
+
+  return toRecommendOutcome(attempt.result);
+}
+
+/* ------------------------------------------------------------------ *
+ * 공개 API — 문답 생성 (TR-009, FR-007)
+ * ------------------------------------------------------------------ */
+
+export interface QuestionsOptions {
+  /** 이 호출에 쓸 수 있는 시간(ms). 0 이하면 호출조차 하지 않는다 */
+  deadlineMs: number;
+  /** 테스트 주입점. SDK를 갈아 끼운다 */
+  clientImpl?: unknown;
+  /** 재시도 백오프 대기 주입점 */
+  sleepImpl?: (ms: number) => Promise<void>;
+}
+
+/**
+ * 문답 결과.
+ *
+ * **빈 배열은 이 타입에 없다.** API_SPEC이 "생성 실패든 모델 장애든 200과 빈
+ * 배열"이라고 정했지만, 그 흡수는 라우트의 일이다. 서비스가 실패를 빈 배열로
+ * 바꿔 버리면 `questions_generated` 이벤트가 "질문 0개 생성 성공"으로 남고,
+ * 모델 장애와 정상 폴백이 로그에서 구분되지 않는다 (ADR-005 사유 보존).
+ */
+export type QuestionsOutcome =
+  | { status: "ok"; questions: readonly MoodQuestion[]; usage: ExtractUsage }
+  | { status: "failed"; reason: RecommendFailureReason; usage?: ExtractUsage };
+
+/**
+ * 확인된 책 목록의 구성을 근거로 유도 질문을 만든다 (TR-009).
+ *
+ * 질문 수의 허용값은 **2~3개뿐**이다. 1개짜리 응답은 문답 화면을 성립시키지
+ * 못하므로 `questionsOutputSchema`가 하한 2를 강제하고, 이 함수는 그것을
+ * `schema` 실패로 다룬다. 0개는 라우트가 폴백으로 만들어 내는 값이지 모델이
+ * 줄 수 있는 값이 아니다.
+ */
+export async function generateQuestions(
+  books: readonly PromptBook[],
+  options: QuestionsOptions,
+): Promise<QuestionsOutcome> {
+  const { deadlineMs, clientImpl, sleepImpl = defaultSleep } = options;
+
+  if (deadlineMs <= 0) {
+    warn("남은 문답 예산이 없어 호출을 생략합니다");
+    return { status: "failed", reason: "timeout" };
+  }
+
+  const apiKey = getAnthropicApiKey();
+  if (apiKey === null) return mockQuestionsOutcome();
+
+  const deadlineAt = Date.now() + deadlineMs;
+  const client = resolveClient(clientImpl, apiKey);
+
+  const attempt = await callWithRetry(client, buildQuestionsBody(books), deadlineAt, sleepImpl);
+
+  if (attempt.kind === "failed") {
+    return failedQuestions(attempt.reason, attempt.usage);
+  }
+
+  return toQuestionsOutcome(attempt.result);
+}
+
+/* ------------------------------------------------------------------ *
+ * 내부 — 추천·문답 응답 해석
+ * ------------------------------------------------------------------ */
+
+/** `usage`가 없을 때 키 자체를 만들지 않는다 — `usage: undefined`는 "0을 썼다"로 오독된다 */
+function failedRecommend(
+  reason: RecommendFailureReason,
+  usage?: ExtractUsage,
+): RecommendOutcome {
+  return usage === undefined
+    ? { status: "failed", reason }
+    : { status: "failed", reason, usage };
+}
+
+function failedQuestions(
+  reason: RecommendFailureReason,
+  usage?: ExtractUsage,
+): QuestionsOutcome {
+  return usage === undefined
+    ? { status: "failed", reason }
+    : { status: "failed", reason, usage };
+}
+
+/**
+ * 봉투에서 구조화 출력 JSON을 꺼낸다. 추출·한줄평과 같은 순서를 쓴다.
+ * 실패는 전부 `schema`이며 **`usage`를 함께 나른다** — 응답이 돌아온 이상 과금됐다.
+ */
+function parseStructuredPayload(
+  envelope: z.infer<typeof messageEnvelopeSchema>,
+  what: string,
+): { ok: true; payload: unknown } | { ok: false } {
+  const text = findStructuredOutput(envelope.content);
+  if (text === null) {
+    warn(`${what} 응답에 구조화 출력 텍스트 블록이 없습니다`);
+    return { ok: false };
+  }
+
+  try {
+    return { ok: true, payload: JSON.parse(text) };
+  } catch {
+    warn(`${what} 구조화 출력이 JSON이 아닙니다 — 문자열에서 건져 내지 않고 실패 처리합니다`);
+    return { ok: false };
+  }
+}
+
+function toRecommendOutcome(envelope: z.infer<typeof messageEnvelopeSchema>): RecommendOutcome {
+  const usage = toUsage(envelope);
+
+  const parsed = parseStructuredPayload(envelope, "추천");
+  if (!parsed.ok) return failedRecommend("schema", usage);
+
+  const output = recommendOutputSchema.safeParse(parsed.payload);
+  if (!output.success) {
+    // 모델이 만든 문장을 로그에 넣지 않는다. reason 길이 위반·3권 초과·relevant
+    // 누락이 여기 걸린다.
+    warn("추천 응답이 스키마를 통과하지 못했습니다 (권수 초과 또는 필드 위반)");
+    return failedRecommend("schema", usage);
+  }
+
+  // 목록 밖 `bookId`를 여기서 거르지 않는다 — 그것을 판정할 수 있는 목록(서명을
+  // 통과한 책)을 아는 쪽은 라우트다 (ADR-006, FR-009).
+  return {
+    status: "ok",
+    relevant: output.data.relevant,
+    picks: output.data.recommendations,
+    usage,
+  };
+}
+
+function toQuestionsOutcome(envelope: z.infer<typeof messageEnvelopeSchema>): QuestionsOutcome {
+  const usage = toUsage(envelope);
+
+  const parsed = parseStructuredPayload(envelope, "문답");
+  if (!parsed.ok) return failedQuestions("schema", usage);
+
+  const output = questionsOutputSchema.safeParse(parsed.payload);
+  if (!output.success) {
+    warn("문답 응답이 스키마를 통과하지 못했습니다 (질문 수 2~3개 밖 또는 필드 위반)");
+    return failedQuestions("schema", usage);
+  }
+
+  return { status: "ok", questions: output.data.questions, usage };
+}
+
+/* ------------------------------------------------------------------ *
+ * 내부 — 추천·문답 요청 조립
+ * ------------------------------------------------------------------ */
+
+/**
+ * 추천 요청. 프롬프트는 `lib/prompts.ts`의 것을 그대로 쓰고 여기서 다시 만들지
+ * 않는다 — `<mood>` 데이터 블록 규약(TRD 6.5)이 두 곳에 적히면 한쪽만 낡는다.
+ *
+ * 교정은 **별도 텍스트 블록**으로 덧붙인다. 사용자 데이터 블록 안에 섞지 않는
+ * 이유는 그 블록이 "지시가 아니다"라고 선언된 영역이기 때문이다.
+ */
+function buildRecommendBody(
+  books: readonly RecommendPromptBook[],
+  mood: string,
+  correction: RecommendOptions["correction"],
+): MessageRequestBody {
+  const content: MessageRequestBody["messages"][number]["content"] = [
+    { type: "text", text: buildRecommendPrompt(books, mood) },
+  ];
+
+  const correctionText = buildCorrectionBlock(books, correction);
+  if (correctionText !== null) {
+    content.push({ type: "text", text: correctionText });
+  }
+
+  return buildBody(getRecommendModel(), recommendJsonSchema, content);
+}
+
+/**
+ * 재요청 교정 블록 (FR-009, API_SPEC `/api/recommend`).
+ *
+ * 위반한 `bookId`를 명시하고 허용 목록을 다시 제시한다. 동일 프롬프트를 그대로
+ * 다시 보내면 같은 실패를 반복할 가능성이 높기 때문이다.
+ *
+ * **위반 ID를 `isbn13` 형식으로 거르고 들어간다.** 이 값은 직전 *모델 응답*에서
+ * 온 것이라 우리 프롬프트로 되돌아오는 경로이고, 형식 검사 없이 그대로 붙이면
+ * 모델이 만든 문자열이 지시문 자리에 앉는다 (TRD 6.5). 스키마를 통과한 응답의
+ * `bookId`는 이미 13자리 숫자이므로 이 필터가 정상 경로를 막지 않는다.
+ */
+function buildCorrectionBlock(
+  books: readonly RecommendPromptBook[],
+  correction: RecommendOptions["correction"],
+): string | null {
+  if (correction === undefined) return null;
+
+  const violations = [...new Set(correction.violatingBookIds)]
+    .filter((bookId) => isbn13Schema.safeParse(bookId).success)
+    .slice(0, MAX_RECOMMENDATIONS);
+
+  if (violations.length === 0) {
+    warn("교정할 위반 bookId가 없어 재요청 교정 블록을 싣지 않습니다");
+    return null;
+  }
+
+  const violated = violations.map((bookId) => `- ${bookId}`).join("\n");
+  const allowList = books.map((book) => `- ${book.isbn13}`).join("\n");
+
+  return `## 직전 응답이 규칙을 어겼다 (이번에는 반드시 고친다)
+직전 시도에서 아래 bookId는 고를 수 있는 목록에 없는 값이었다. 그 응답은 폐기됐다.
+<violations>
+${violated}
+</violations>
+
+아래가 이번에 쓸 수 있는 bookId 전부다. 이 목록 밖의 값을 하나라도 넣으면 응답이 다시 폐기된다.
+<allowed>
+${allowList}
+</allowed>`;
+}
+
+/**
+ * 문답 요청. 모델은 `getRecommendModel()`이다 — 문답은 판독이 아니라 생성이라
+ * `MODEL_RECOMMEND` 쪽에 묶인다 (TRD 7번 환경변수 표).
+ */
+function buildQuestionsBody(books: readonly PromptBook[]): MessageRequestBody {
+  return buildBody(getRecommendModel(), questionsJsonSchema, [
+    { type: "text", text: buildQuestionsPrompt(books) },
+  ]);
+}
+
+/* ------------------------------------------------------------------ *
+ * 목업 모드 — 추천·문답 (TRD 9번)
+ * ------------------------------------------------------------------ */
+
+/** 20~200자를 만족하는 목업 추천 이유. 짧으면 `recommendationSchema`가 거부한다 */
+const MOCK_REASON = "[목업] Claude를 호출하지 않고 만든 문장입니다. 실제 추천 판단이 아닙니다";
+
+/** 목업 유도 질문. 10~60자·선택지 3~4개를 만족해야 스키마를 통과한다 */
+const MOCK_QUESTIONS = [
+  {
+    id: "mock_pace",
+    question: "[목업] 지금은 어떤 호흡의 책이 좋으세요?",
+    options: ["빠르게 넘어가는", "천천히 곱씹는", "상관없어요"],
+  },
+  {
+    id: "mock_weight",
+    question: "[목업] 머리를 쓰는 쪽과 쉬어 가는 쪽 중 어디인가요?",
+    options: ["머리 쓰기", "쉬어 가기", "중간쯤"],
+  },
+] as const;
+
+/**
+ * 키가 없을 때의 추천. 목업임을 문구로 드러내고 `usage`는 0이다.
+ *
+ * **요청 목록 안에서만 고른다.** 목업이라도 화이트리스트를 깨는 값을 만들면
+ * 라우트의 FR-009 검증이 로컬에서만 실패하는 코드가 생긴다. 목업 값도 검증
+ * 경계를 그대로 통과시키는 것은 같은 이유다 (TRD 9번).
+ */
+function mockRecommendOutcome(books: readonly RecommendPromptBook[]): RecommendOutcome {
+  warn(
+    "ANTHROPIC_API_KEY가 없어 Claude를 호출하지 않고 목업 추천을 돌려줍니다 (로컬 개발 모드, TRD 9번). 이 추천은 책을 읽고 고른 것이 아닙니다.",
+  );
+
+  const payload = {
+    relevant: true,
+    recommendations: books.slice(0, MAX_RECOMMENDATIONS).map((book, index) => ({
+      bookId: book.isbn13,
+      reason: MOCK_REASON,
+      position: index + 1,
+    })),
+  };
+
+  const output = recommendOutputSchema.safeParse(payload);
+  if (!output.success) {
+    // isbn13 형식이 어긋난 책이 들어온 경우다 — 호출부의 버그다.
+    warn("목업 추천이 스키마를 통과하지 못했습니다 — 호출부의 책 목록을 확인하세요");
+    return { status: "failed", reason: "schema" };
+  }
+
+  return {
+    status: "ok",
+    relevant: output.data.relevant,
+    picks: output.data.recommendations,
+    usage: EMPTY_USAGE,
+  };
+}
+
+/**
+ * 키가 없을 때의 문답. 질문 2개를 돌려줘 문답 화면과 상태 전이를 로컬에서
+ * 전부 확인할 수 있게 한다 (TRD 9번). 빈 배열을 주면 자유 입력 폴백만
+ * 검증되고 문답 화면은 한 번도 열리지 않는다.
+ */
+function mockQuestionsOutcome(): QuestionsOutcome {
+  warn(
+    "ANTHROPIC_API_KEY가 없어 Claude를 호출하지 않고 목업 질문을 돌려줍니다 (로컬 개발 모드, TRD 9번). 이 질문은 서재를 보고 만든 것이 아닙니다.",
+  );
+
+  const output = questionsOutputSchema.safeParse({ questions: MOCK_QUESTIONS });
+  if (!output.success) {
+    warn("목업 질문이 스키마를 통과하지 못했습니다 — 픽스처를 확인하세요");
+    return { status: "failed", reason: "schema" };
+  }
+
+  return { status: "ok", questions: output.data.questions, usage: EMPTY_USAGE };
 }

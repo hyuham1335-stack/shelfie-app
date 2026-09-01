@@ -8,7 +8,7 @@
 
 ---
 
-## 1. 현재 상태 (1단계 — 계약 계층 구축 완료)
+## 1. 현재 상태 (2단계 — 파일럿 런 #1 완주)
 
 | 계층 | 내용 |
 |------|------|
@@ -17,7 +17,8 @@
 | 워크플로우 | `.claude/skills/harness/SKILL.md` (doctor → step 설계 → `phases/` 생성 → 실행), `.claude/skills/review/SKILL.md` |
 | **계약 계층** | `harness/config.json` · `config.schema.json` · `adapters/{nextjs-ts,_template}.json` + `adapter.schema.json` · `profiles/nextjs-ts/` · `templates/contract.md` |
 | 실행기 | `scripts/harness.py` — `init` · `doctor`. `scripts/execute.py` — 순차 step 실행기 417줄, CLI는 `{task-name}` + `--push` |
-| 테스트 | `scripts/test_harness.py` (34건) · `scripts/test_execute.py` 559줄 |
+| 테스트 | `scripts/test_harness.py` (34건) · `scripts/test_execute.py` (52건) |
+| 파일럿 | `phases/lib-core/` 5 step · 기록은 [PILOT-LOG.md](PILOT-LOG.md) |
 
 `scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md + docs/\*.md) · summary 컨텍스트 누적 · 실패 시 3회 자가 교정 · 2단계 커밋 · 타임스탬프 기록.
 
@@ -49,8 +50,8 @@
 flowchart LR
     S0["0단계 · 완료<br/>docs 골격 + 순차 실행기"]
     S1["1단계 · 완료<br/>config · adapter · init · doctor"]
-    S2["2단계 · 현재<br/>Shelfie 파일럿 완주"]
-    S3["3단계 · 8페이즈 승격<br/>파이프라인 이식"]
+    S2["2단계 · 런 #1 완주<br/>Shelfie lib/ 계층"]
+    S3["3단계 · 현재 검토<br/>8페이즈 이식"]
 
     S0 --> G1{"doctor가 깨진 config를<br/>전부 거부하는가"}
     G1 -->|통과| S1
@@ -68,12 +69,16 @@ flowchart LR
 |------|------|-----------|------|
 | **0. 골격** | docs 골격 + 단순 순차 실행기 | — | 완료 |
 | **1. 계약 계층** | `harness/config.json` · `config.schema.json` · 어댑터 스키마 · `init` · `doctor` | 일부러 깨뜨린 config(역할 소유 겹침 · 계약 절 불일치 · 화이트리스트 밖 러너 등)를 `doctor`가 **전부 거부**하고, 정상 config는 통과 | **완료** — `scripts/test_harness.py`의 거부 8종 + 오탐 검사가 게이트다 |
-| **2. 파일럿** | 첫 실제 프로젝트(**Shelfie**)를 **현재 실행기로** 완주. 부족한 지점을 기록 | 스테이지별 실측 시간 · 테스트 개수 · 린트 위반 기준선 확보 → `calibrate`가 `harness/calibration.json`을 쓰고 어댑터를 `verified: true`로 승격 | 진행 중 |
+| **2. 파일럿** | 첫 실제 프로젝트(**Shelfie**)를 **현재 실행기로** 완주. 부족한 지점을 기록 | 스테이지별 실측 시간 · 테스트 개수 · 린트 위반 기준선 확보 | **런 #1 완주** — `lib/` 계층 5개 모듈, 5/5 무재시도. 실측은 [PILOT-LOG.md](PILOT-LOG.md) |
 | **3. 8페이즈 승격** | 파일럿 실측을 근거로 목표 파이프라인을 이식 | 두 스택에서 완주 + 코어 파일에 스택 고유명사 grep **0건** | ~5.5일 |
 
 **1단계에서 실제로 회수한 것**: 첫 `doctor` 실행이 어댑터의 `compile` 스테이지가 참조하는 `npm run typecheck`가 `package.json`에 없다는 것을 잡았다(G5). 게이트가 없었다면 첫 파일럿 런이 25분 돌고 나서 드러났을 불일치다.
 
 **1단계가 아직 못 하는 것**: `calibrate`가 없어 타임아웃·백그라운드 회귀 여부·테스트 수 하한이 전부 보수적 기본값이다. 어댑터의 `attribution` 블록은 형태만 있고 소비자가 없다. 역할 에이전트 정의(`.claude/agents/*.md`)도 없다 — `doctor`가 이 셋을 매번 경고로 드러낸다.
+
+**2단계 런 #1이 회수한 것**: step당 230~425초(평균 352초)·재시도 0회, 테스트 64 → 203건, 어댑터 스테이지 5종 실측(`full` 4.7s → 백그라운드 회귀 **불필요**로 판정, 타임아웃 1800 → 300 근거 확보). 하네스 결함 3건이 드러났고 2건을 고쳤다. 상세와 미해결 항목은 [PILOT-LOG.md](PILOT-LOG.md).
+
+**어댑터 `verified` 승격은 아직 아니다.** 런 #1은 `execute.py`(순차 실행기)로 돌았고 어댑터의 스테이지 체인·귀속 규칙·`test_report` 파싱을 하나도 소비하지 않았다. 어댑터가 검증된 것이 아니라 그 안의 명령들이 손으로 확인된 것뿐이다.
 
 각 단계의 게이트를 통과하지 못하면 **다음 단계로 넘어가지 않는다.** "일단 넣고 나중에 고친다"는 이 로드맵이 막으려는 실패 자체다.
 
@@ -121,10 +126,11 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 ## 6. 다음 행동
 
-1~2는 완료됐다 — 파일럿 대상은 **Shelfie**이고 `CLAUDE.md`와 `docs/` 6종은 채워져 있다.
+1~4는 완료됐다. 파일럿 런 #1이 `lib/` 계층 5개 모듈을 완주했고 실측은 [PILOT-LOG.md](PILOT-LOG.md)에 있다.
 
-3. `python scripts/harness.py doctor`가 통과하는 것을 확인한 뒤 현재 실행기로 기능을 완주시키고, **막힌 지점·수동 개입이 필요했던 지점을 기록**한다
-4. 스테이지별 실측 시간·테스트 개수·린트 위반 기준선을 모은다. 이것이 `calibrate`와 `harness/calibration.json`의 입력이다 — 추측이 아니라 실측으로
-5. 어댑터 `nextjs-ts`를 `verified: true`로 올릴 수 있는지 판단한다. 완주 전에는 올리지 않는다
+5. **`calibrate` 구현** — 런 #1의 수동 실측(`compile` 2.5s · `lint` 5.7s · `check` 2.2s · `full` 4.7s · `build` 7.1s)이 그대로 `harness/calibration.json`의 첫 내용이다. 이제 근거가 있으므로 상수를 함수로 바꿀 수 있다
+6. **파일럿 런 #2** — `services/`·`app/api/` 계층(TR-003·TR-004·TR-006). 외부 API 모킹이 들어갈 때 step 소요와 재시도율이 어떻게 변하는지가 미지수다. `scoped` 스테이지도 그때 실측한다
+7. **3단계 게이트 재검토** — "두 스택에서 완주"의 두 번째 스택(`gradle-java`) 대상 리포가 이 머신에 없다. 게이트를 바꿀지, 대상을 구할지 먼저 정한다
+8. 어댑터 `verified: true` 승격은 **04-gate가 어댑터를 실제로 소비한 뒤**다 (런 #1은 소비하지 않았다)
 
 결정 기록은 [DECISIONS.md](DECISIONS.md)를 본다.

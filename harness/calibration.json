@@ -1,71 +1,69 @@
 {
-  "measured_at": "2026-09-02T13:07:46+0900",
+  "measured_at": "2026-09-02T14:09:59+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": false,
   "stages": {
     "compile": {
-      "sec": 4.39,
+      "sec": 5.28,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T13:07:30+0900"
+      "measured_at": "2026-09-02T14:09:59+0900"
     },
     "lint": {
-      "sec": 9.11,
+      "sec": 11.3,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T13:07:30+0900"
+      "measured_at": "2026-09-02T14:09:59+0900"
     },
     "check": {
-      "sec": 1.8,
+      "sec": 2.19,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T13:07:30+0900"
+      "measured_at": "2026-09-02T14:09:59+0900"
     },
     "scoped": {
-      "sec": 2.75,
+      "sec": 4.33,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T13:07:46+0900"
+      "measured_at": "2026-09-02T14:09:59+0900"
     },
     "full": {
-      "sec": 22.06,
+      "sec": 39.67,
       "ok": true,
       "exit_code": 0,
-      "tests_ran": 1091,
-      "suites": 37,
+      "tests_ran": 1183,
+      "suites": 41,
       "failures": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T13:07:30+0900"
+      "measured_at": "2026-09-02T14:09:59+0900"
     },
     "e2e": {
       "sec": null,
       "skipped": true,
       "state": "absent",
-      "reason": "cmd:null — 이 스택에 없는 스테이지",
-      "measured_at": "2026-09-02T13:07:30+0900"
+      "reason": "cmd:null — 이 스택에 없는 스테이지"
     },
     "build": {
-      "sec": 8.55,
+      "sec": 10.89,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T13:07:30+0900"
+      "measured_at": "2026-09-02T14:09:59+0900"
     },
     "docs": {
       "sec": null,
       "skipped": true,
       "state": "absent",
-      "reason": "cmd:null — 이 스택에 없는 스테이지",
-      "measured_at": "2026-09-02T13:07:30+0900"
+      "reason": "cmd:null — 이 스택에 없는 스테이지"
     }
   },
   "retry": {
-    "steps_recorded": 16,
+    "steps_recorded": 21,
     "steps_unrecorded": 20,
     "steps_retried": 0,
     "max_attempts_observed": 1
@@ -79,7 +77,7 @@
     "background_threshold_sec": 180,
     "background_full_regression": false,
     "full_timeout_sec": 300,
-    "tests_ran_floor": 981,
+    "tests_ran_floor": 1064,
     "retry_budget": 2
   }
 }

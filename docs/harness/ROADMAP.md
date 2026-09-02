@@ -8,7 +8,7 @@
 
 ---
 
-## 1. 현재 상태 (2단계 — 파일럿 런 #5 완주)
+## 1. 현재 상태 (2단계 — 파일럿 런 #6 완주)
 
 | 계층 | 내용 |
 |------|------|
@@ -18,7 +18,7 @@
 | **계약 계층** | `harness/config.json` · `config.schema.json` · `adapters/{nextjs-ts,_template}.json` + `adapter.schema.json` · `profiles/nextjs-ts/` · `templates/contract.md` |
 | 실행기 | `scripts/harness.py` — `init` · `doctor` · `calibrate`. `scripts/execute.py` — 순차 step 실행기, CLI는 `{task-name}` + `--push` |
 | 테스트 | `scripts/test_harness.py` (65건) · `scripts/test_execute.py` (128건) |
-| 파일럿 | `phases/lib-core/` · `phases/services-core/` · `phases/routes-core/` · `phases/app-core/` 각 5 step · `phases/app-shell/` 6 step — **다섯 런 26 step 완주.** 기록은 [PILOT-LOG.md](PILOT-LOG.md) |
+| 파일럿 | `phases/lib-core/` · `phases/services-core/` · `phases/routes-core/` · `phases/app-core/` 각 5 step · `phases/app-shell/` 6 step · `phases/contract-wiring/` 5 step — **여섯 런 31 step 완주.** 기록은 [PILOT-LOG.md](PILOT-LOG.md) |
 | 실측 | `harness/calibration.json` — `calibrate` 산출. 정책 4종이 여기서 유도된다 |
 
 `scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md 상시 + `steps[].docs`가 고른 docs/\*.md, 미지정이면 전량 + 경고 — [ADR-H008](DECISIONS.md)) · 소스 첨부(`steps[].sources` — [ADR-H009](DECISIONS.md)) · summary 컨텍스트 누적 · 자가 교정(상한은 `calibrate`가 유도, 미측정이면 `MAX_RETRIES`가 바닥값) · 2단계 커밋 · 타임스탬프와 `attempts` 기록 · **시도별 실측(`steps[].runs[]`) 기록** · **실행 중 상태(`phases/{phase}/RUNNING`) 관리**.
@@ -53,7 +53,7 @@
 flowchart LR
     S0["0단계 · 완료<br/>docs 골격 + 순차 실행기"]
     S1["1단계 · 완료<br/>config · adapter · init · doctor"]
-    S2["2단계 · 런 #1~#5 완주<br/>Shelfie lib/ · services/ · app/api/ · components/ · app/"]
+    S2["2단계 · 런 #1~#6 완주<br/>Shelfie lib/ · services/ · app/api/ · components/ · app/ · 계약 배선"]
     S3["3단계 · 현재 검토<br/>8페이즈 이식"]
 
     S0 --> G1{"doctor가 깨진 config를<br/>전부 거부하는가"}
@@ -72,7 +72,7 @@ flowchart LR
 |------|------|-----------|------|
 | **0. 골격** | docs 골격 + 단순 순차 실행기 | — | 완료 |
 | **1. 계약 계층** | `harness/config.json` · `config.schema.json` · 어댑터 스키마 · `init` · `doctor` | 일부러 깨뜨린 config(역할 소유 겹침 · 계약 절 불일치 · 화이트리스트 밖 러너 등)를 `doctor`가 **전부 거부**하고, 정상 config는 통과 | **완료** — `scripts/test_harness.py`의 거부 8종 + 오탐 검사가 게이트다 |
-| **2. 파일럿** | 첫 실제 프로젝트(**Shelfie**)를 **현재 실행기로** 완주. 부족한 지점을 기록 | 스테이지별 실측 시간 · 테스트 개수 · 린트 위반 기준선 확보 | **런 #1~#5 완주** — `lib/`·`services/`·`app/api/`·`components/`·`app/` 26 step, 26/26 무재시도. 실측은 [PILOT-LOG.md](PILOT-LOG.md) |
+| **2. 파일럿** | 첫 실제 프로젝트(**Shelfie**)를 **현재 실행기로** 완주. 부족한 지점을 기록 | 스테이지별 실측 시간 · 테스트 개수 · 린트 위반 기준선 확보 | **런 #1~#6 완주** — `lib/`·`services/`·`app/api/`·`components/`·`app/`·계약 배선 31 step, 31/31 무재시도. 실측은 [PILOT-LOG.md](PILOT-LOG.md) |
 | **3. 8페이즈 승격** | 파일럿 실측을 근거로 목표 파이프라인을 이식 | 두 스택에서 완주 + 코어 파일에 스택 고유명사 grep **0건** | ~5.5일 |
 
 **1단계에서 실제로 회수한 것**: 첫 `doctor` 실행이 어댑터의 `compile` 스테이지가 참조하는 `npm run typecheck`가 `package.json`에 없다는 것을 잡았다(G5). 게이트가 없었다면 첫 파일럿 런이 25분 돌고 나서 드러났을 불일치다.
@@ -83,7 +83,9 @@ flowchart LR
 
 **런 #5가 더한 것**: `app-shell` 6 step이 `src/app/page.tsx` 상태 머신과 화면 5종을 얹어 **앱이 처음 업로드에서 추천까지 이어졌고**, 테스트가 731 → **922건**이 됐다. 이 런의 값어치는 코드보다 **런 #4 직후 고친 네 장치가 전부 실물에서 통과했다**는 데 있다 — M7(사용량 한도를 자가 교정으로 오인하지 않는다), M10 `RUNNING`([ADR-H006](DECISIONS.md)), `attempts` 기록([ADR-H007](DECISIONS.md)), 이월 보고 라우팅. 특히 **step 2가 실제로 한도에 걸렸는데 재시도를 한 번도 태우지 않고 `blocked`로 끝났다** — 런 #3에서 같은 일이 재시도 통계를 오염시켰던 바로 그 경로다. 이월 5건은 step 0이 전부 해소했다(세 런째였다). `calibrate` 4회차는 `tests_ran_floor`를 **829**로 올렸고 `scoped`/`full`이 191건 늘어난 뒤에도 **100.2%** — `loop_stage`가 이 스택에서 손해라는 판정이 재확인됐다. `retry_budget`은 여전히 `null`이지만 이유가 바뀌었다: "기록 0 step"이 **"기록 6 step · 미기록 20 step"**이 됐고 `RETRY_RECORD_MIN`(10)까지 4 step 남았다. 새 결함 **3건(M12·M13·M14)**이 드러났고 **M12는 닫혔다**(M13·M14는 남았다) — 셋 다 작업 품질이 아니라 **실측을 기록·보존하는 쪽**이다. 런 직후 26 step 전체를 처음 집계해 **M15**도 드러났다: 청구 토큰의 95.4%가 cache read이고 그 접두부의 86.9%가 가드레일 전량 주입이었다 ([ADR-H008](DECISIONS.md)에서 해결). M14는 M9의 형제였다(`--stage`가 전체를 덮는 것은 고쳤는데 **전체가 부분을 덮는 것**은 남아 있었다). 상세는 [PILOT-LOG.md](PILOT-LOG.md).
 
-**어댑터 `verified` 승격은 아직 아니다.** 다섯 런 모두 `execute.py`(순차 실행기)로 돌았고 어댑터의 스테이지 체인·귀속 규칙을 소비하지 않았다. 다만 `calibrate`가 `test_report` 파싱과 스테이지 명령에 이어 런 #3에서 `scoped`의 `select` 문법까지 **실제로 소비했다** — 어댑터에서 검증된 부분이 계속 늘고 있고, 나머지(스테이지 체인·`attribution`)는 04-gate가 생겨야 검증된다.
+**런 #6이 더한 것**: `contract-wiring` 5 step이 23번의 코드 배선 6건을 전부 닫아 **US-003을 빼면 계약과 코드가 처음으로 일치했고**, 테스트가 922 → **1036건**이 됐다. 그러나 이 런의 값어치 절반은 코드가 아니라 **[[ADR-H008]]의 A/B 실측**이다 — 런 #5가 세운 네 지표가 전부 예측한 방향으로 움직였다: 가드레일 문자 **−54.1%**(예측 41%보다 컸다) · turn당 재독 **−26.7%** · step당 비용 **−38.5%** · step당 turn **38.0 → 29.6**(런 #5가 경계한 "문서를 못 찾아 헤매느라 turn이 는다"는 실현되지 않았다). **품질 회귀 0건**이다 — 금지 경로 침범·CRITICAL 위반·새 의존성·레이어 경계·저장소 흔적 전부 0. 다만 **n=1이라 런 #7이 한 번 더 지지해야 한다.** 이 런이 남긴 가장 중요한 줄은 절감폭이 아니라 **절감이 어디서 멈추는가**다: 접두부를 문자 기준 절반으로 줄였는데 turn당 재독은 26.7%만 내려갔고, 역산하면 **turn당 재독의 약 53%만이 접두부이고 나머지 47%는 누적 대화(파일 읽기·도구 결과)**다. **가드레일을 0으로 만들어도 절반까지다** — 남은 절반이 [[ADR-H009]]가 겨눈 곳이고 런 #7이 잰다. 부수로 런 #5가 예약해 둔 "summary 누적 비중이 오르는가"의 답도 나왔다(**오르지 않았다** — 9.4% → 8.6%). 여섯 런 중 처음으로 **막힌 지점·수동 개입·실행기 결함이 0건**이었고, 대신 새로운 종류의 관측이 하나 나왔다: **설계가 틀렸고 워커가 고쳤다.** step 0의 파일이 `retryIndex` 클램프를 불필요하다고 적었는데 실제로는 `MAX_RECOMMEND_ATTEMPTS = 5`가 스키마 상한 4를 넘겨 마지막 재추천이 400으로 튕기는 상태였고, step 세션이 그것을 발견해 두 클램프를 걸고 제거하면 실패하는 테스트로 고정했다. 앞선 다섯 런의 보고는 전부 "설계가 **비워 둔** 것"이었지 "설계가 **틀린** 것"이 아니었다 — 후자는 이월로 처리되지 않고 런 중에 고쳐지지 않으면 계약이 깨진 채 남는다. `calibrate` 5회차는 **`retry_budget`을 `null`에서 처음으로 2로 바꿨다**(기록 11 step · 재시도 0건 · 최대 시도 1회) — [[ADR-H007]]이 런 #4 직후 만든 장치가 두 런 만에 답을 냈고, **기억 → 기록 → 정책**의 세 단계가 완결됐다. `tests_ran_floor`는 932, `scoped`/`full`은 **14.7%**로 M16의 경로 필터 판정이 재현됐다. 상세는 [PILOT-LOG.md](PILOT-LOG.md).
+
+**어댑터 `verified` 승격은 아직 아니다.** 여섯 런 모두 `execute.py`(순차 실행기)로 돌았고 어댑터의 스테이지 체인·귀속 규칙을 소비하지 않았다. 다만 `calibrate`가 `test_report` 파싱과 스테이지 명령에 이어 런 #3에서 `scoped`의 `select` 문법까지 **실제로 소비했다** — 어댑터에서 검증된 부분이 계속 늘고 있고, 나머지(스테이지 체인·`attribution`)는 04-gate가 생겨야 검증된다.
 
 각 단계의 게이트를 통과하지 못하면 **다음 단계로 넘어가지 않는다.** "일단 넣고 나중에 고친다"는 이 로드맵이 막으려는 실패 자체다.
 
@@ -131,7 +133,7 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 ## 6. 다음 행동
 
-1~11과 13·15·16·17·19가 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#5가 `lib/`·`services/`·`app/api/`·`components/`·`app/` 계층을 완주해 **앱이 업로드에서 추천까지 이어졌다.** **남은 것은 12·14·18·21·22이다.** 20·24·25·26은 런 #5 직후에 닫혔고, **13은 답이 뒤집혀 다시 열렸다가 닫혔다**(아래). 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
+1~11과 13·15·16·17·19·23이 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#6이 `lib/`·`services/`·`app/api/`·`components/`·`app/`·계약 배선을 완주해 **앱이 업로드에서 추천까지 이어졌고 계약과 코드가 US-003 한 칸을 빼고 일치한다.** **남은 것은 12·14·18·21·22·27이다.** 20·24·26은 닫혔고, 25는 **장치는 닫혔으나 실측이 런 #7에 걸려 있다.** **13은 답이 뒤집혀 다시 열렸다가 닫혔다**(아래). 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
 
 **런 #4가 11번에서 하지 못한 것**: 런 #3의 보고 3건(알라딘 호출 상한 260회 · 이미지 상수 이중화 · `errorCodeSchema`의 500대 공백)을 "여기서 정리한다"고 적었으나 **하나도 정리되지 않았다.** step 파일 5개가 전부 `src/lib/`·`docs/` 수정을 금지해 **설계 단계에서 이미 불가능해져 있었다.** 아래 15번으로 옮긴다.
 
@@ -148,26 +150,42 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 20. ~~**M12 — step별 `elapsed_sec`를 `index.json`에 남긴다.**~~ — **해결.** `steps[].runs[]`에 시도마다 `elapsed_sec`·`prompt_chars`·`guardrail_chars`·`cost_usd`·`turns`·`cache_read`를 남긴다. 배열인 것이 요점이다 — 런 #5에서 재개 실행이 `step2-output.json`을 덮어써 한도 중단분의 비용이 사라졌다. 원래 서술을 남겨 둔다: 재개된 step의 `started_at`은 첫 시도 것이라 `completed_at`과의 차가 **대기 시간을 포함한다**(런 #5 step 2: 유도값 3573s vs 실제 520s). [PILOT-LOG](PILOT-LOG.md)의 앞선 네 런 소요는 전부 그 유도값이다 — 재개가 한 번이라도 섞이면 그 방법이 깨진다. **실행기는 맞는 값을 콘솔에 찍고 버린다.** [ADR-H007](DECISIONS.md)이 `attempts`에 한 것과 같은 조치다
 21. **M13 — 재개 신호가 "출력 파일 존재"가 아니라 "산출물 존재"를 봐야 한다.** 25초 만에 한도로 잘려 소스를 한 줄도 못 쓴 step이 다음 실행에서 재개로 판정됐다. 무해했지만 8페이즈 파이프라인은 이 신호로 페이즈 재개를 판정한다. `exitCode != 0`인 출력 파일을 빼는 것이 최소 수정이다
 22. **M14 — 전체 `calibrate`가 `scoped`의 기존 실측을 지운다.** `--select` 없이 돌면 런 #4의 21.81s가 `skipped`로 덮이고, 그런데도 `partial: false`로 적혀 `doctor`가 통과시킨다. **M9의 형제다** — 그때는 부분이 전체를 덮었고 이번은 전체가 부분을 덮는다. 고칠 때 `cmd:null`(없는 것)·"이번에 못 쟀다"(모르는 것)·옛 값(stale) 셋을 구분하는 어휘가 필요하다
-24. ~~**M15 — 가드레일 전량 주입**~~ — **해결** ([ADR-H008](DECISIONS.md)). 다섯 런 26 step을 처음 집계하니 청구 토큰 115.6M 중 **cache read가 110.3M(95.4%)** 이고, 그 접두부의 **86.9%가 `CLAUDE.md` + `docs/*.md` 전량 주입**이었다. UI step이 배포 인프라 절을 750 turn 내내 재독한 셈이다. 이제 `steps[].docs`가 문서를 고르고, 미지정이면 전량 주입하되 경고로 드러난다. 런 #5의 step 파일들이 이미 선언한 대로만 넣었다면 문자 기준 **41% 절감**이었다 — **정보는 있었고 실행기가 쓰지 않았다.** 효과는 런 #6이 A/B로 답한다(대조군: turn당 145,491 · step당 $5.61)
+24. ~~**M15 — 가드레일 전량 주입**~~ — **해결** ([ADR-H008](DECISIONS.md)). 다섯 런 26 step을 처음 집계하니 청구 토큰 115.6M 중 **cache read가 110.3M(95.4%)** 이고, 그 접두부의 **86.9%가 `CLAUDE.md` + `docs/*.md` 전량 주입**이었다. UI step이 배포 인프라 절을 750 turn 내내 재독한 셈이다. 이제 `steps[].docs`가 문서를 고르고, 미지정이면 전량 주입하되 경고로 드러난다. 런 #5의 step 파일들이 이미 선언한 대로만 넣었다면 문자 기준 **41% 절감**이었다 — **정보는 있었고 실행기가 쓰지 않았다.**
 
-25. ~~**M16 — 읽기 turn이 접두부를 다시 읽게 만든다**~~ — **해결** ([ADR-H009](DECISIONS.md)). 26 step 트랜스크립트를 turn 단위로 분해하니 파일 읽기가 도구 호출의 38%, 컨텍스트 투입의 70.5%였고, **읽기 turn 336회가 유발한 접두부 재독이 전체의 44.0%**였다. `steps[].sources`가 있으면 실행기가 그 파일을 접두부에 싣는다(상한 60,000자, 미지정이면 기존 동작). **런 #6에서는 켜지 않는다** — 24번의 A/B가 먼저다. 런 #7이 실측을 준다
+    **런 #6의 A/B가 답했다.** 문자 **−54.1%**(예측 41%를 넘겼다) · turn당 재독 **145,491 → 106,596(−26.7%)** · step당 비용 **$5.61 → $3.45(−38.5%)** · step당 turn **38.0 → 29.6**(늘지 않았다) · **품질 회귀 0건.** step 2가 계약 4종을 만나 전량의 82%를 그대로 실었는데도 총 절감이 예측을 넘었다 — **줄이는 것이 목적인 장치가 아니라는 것이 그 행에서 보인다.** 8페이즈 파이프라인은 접두부에 계약·findings·리뷰어 프롬프트를 더 얹으므로 이 장치는 이식 대상이다. 남은 검증은 **n=1이라는 것 하나**다(런 #7이 두 번째 표본을 준다)
+
+25. ~~**M16 — 읽기 turn이 접두부를 다시 읽게 만든다**~~ — **장치는 해결, 실측은 런 #7이 준다** ([ADR-H009](DECISIONS.md)). 26 step 트랜스크립트를 turn 단위로 분해하니 파일 읽기가 도구 호출의 38%, 컨텍스트 투입의 70.5%였고, **읽기 turn 336회가 유발한 접두부 재독이 전체의 44.0%**였다. `steps[].sources`가 있으면 실행기가 그 파일을 접두부에 싣는다(상한 60,000자, 미지정이면 기존 동작). 런 #6에서는 켜지 않았고(24번의 A/B가 먼저였다) **`source_chars`가 5 step 전부 0인 것으로 그 판단이 지켜졌음이 파일에 남았다.**
+
+    **런 #6이 이 항목의 근거를 하나 더 줬다.** 가드레일을 절반으로 줄인 뒤에도 turn당 재독이 26.7%만 내려간 것을 역산하면 **turn당 재독의 약 47%가 접두부 밖(누적 대화·파일 읽기)**이다. 가드레일 쪽에서 더 짜낼 것이 거의 없다는 뜻이고, **남은 레버가 이것 하나라는 M16의 진단이 독립적으로 확인됐다.** 런 #7이 켠다 — 대조군은 런 #6(step당 $3.45 · turn당 106,596 · step당 turn 29.6 · `source_chars` 0)이다
 26. ~~**`scoped` 를 경로 필터로 다시 잰다**~~ — **해결.** 위 13번을 본다. 어댑터의 `select` 4줄을 지운 것이 전부이고 코드 변경은 없었다
 
 23. ~~**런 #6 전에 사람이 고쳐야 하는 계약 4건**~~ — **해결.** 네 건 중 **실제로 빈 것은 세 건**이었고 `book_resolved.matched`는 초기 커밋부터 PRD 표에 있었다(발생 조건만 모호해 불릿 한 줄로 닫았다). 고친 것: 상태도에 `error → recommending`·`error → moodInput`을 넣고 **`error`가 실패 단계를 기억한다**를 프로즈로 못 박았다(전이 22 → 25 — `guidedQuestions` 자기 전이도 리듀서에는 있고 상태도에는 없었다) · `recommendRequestSchema`에 `retryIndex`(0~4)·`irrelevantStreak`(0~2)를 **필수 평면 필드**로 넣어 두 공백을 1:1로 메웠다 · `recommend_failed`를 PRD 7번 표에 신설했다(에러율 + 세션당 비용). **세 건이 하나의 원인에서 나왔다** — 무상태라 서버가 셀 수 없는 값을 요청에 싣지 않아, 세는 쪽(클라이언트)과 판정하는 쪽(서버)이 갈라진 채로 다섯 런을 왔다.
 
     **계획에 없었으나 함께 고친 것**: PRD 7번 표와 흐름 2 시퀀스가 `recommend_viewed`를 **클라이언트 수집**이라 적고 있었는데 실제로는 `recommend/route.ts:252`가 서버에서 남기고 `page.tsx:330-334`가 의도적으로 보내지 않는다. 런 #6의 step이 바로 그 코드를 고치므로, **틀린 계약을 남겨 두면 워커가 "문서대로" 되돌려 이중 계상을 되살린다.** 비어 있는 문서만 위험한 것이 아니다.
 
-    **코드 배선 6건이 런 #6으로 넘어간다.** 문서만 고치고 코드를 어디에도 적지 않으면 그것이 15번이 기록한 실패의 원형이다:
+    **코드 배선 6건은 런 #6이 전부 닫았다.** 문서만 고치고 코드를 어디에도 적지 않으면 그것이 15번이 기록한 실패의 원형이었는데, 이번에는 6건을 step에 **이름으로 지정**하고 그 step의 금지사항에서 `src/**`를 뺐다:
 
-    | # | 파일 | 할 일 |
-    |---|------|-------|
-    | 1 | `src/lib/schemas.ts` | `recommendRequestSchema`에 `retryIndex`(0~4)·`irrelevantStreak`(0~2) |
-    | 2 | `src/app/api/recommend/route.ts` | 상단 "계약의 공백 두 곳" 주석 삭제 · `irrelevantStreak>=2`면 `relevant:false` 무시 · `retry_index` 실제값 · `warnBurnedTokens` → `record({event:"recommend_failed"})` |
-    | 3 | `src/lib/analytics.ts` | `AnalyticsEvent` 유니온 + `PROPERTY_KEYS`에 `recommend_failed` (`analyze_failed`가 템플릿) |
-    | 4 | `src/lib/api-client.ts` · `src/app/page.tsx` | 두 필드 전송 — `retryIndex`는 `state.recommendCount`, `irrelevantStreak`는 `irrelevantCount` |
-    | 5 | `src/lib/session.ts` · `src/app/page.tsx` | `error`가 실패 단계를 기억 + 회복 전이 2개 (상태도 25개 전이 전수 테스트) |
-    | 6 | `src/components/mood/MoodInput.tsx` | 3회째 강행 경로 (PRD US-003 AC — 지금 도달 불가) |
+    | # | 파일 | 할 일 | 받은 step |
+    |---|------|-------|-----------|
+    | 1 | `src/lib/schemas.ts` | `recommendRequestSchema`에 `retryIndex`(0~4)·`irrelevantStreak`(0~2) | **0** `request-contract` |
+    | 2 | `src/app/api/recommend/route.ts` | 상단 "계약의 공백 두 곳" 주석 삭제 · `irrelevantStreak>=2`면 `relevant:false` 무시 · `retry_index` 실제값 · `warnBurnedTokens` → `record({event:"recommend_failed"})` | **2** `recommend-route` |
+    | 3 | `src/lib/analytics.ts` | `AnalyticsEvent` 유니온 + `PROPERTY_KEYS`에 `recommend_failed` (`analyze_failed`가 템플릿) | **1** `analytics-event` |
+    | 4 | `src/lib/api-client.ts` · `src/app/page.tsx` | 두 필드 전송 — `retryIndex`는 `state.recommendCount`, `irrelevantStreak`는 `irrelevantCount` | **0** `request-contract` |
+    | 5 | `src/lib/session.ts` · `src/app/page.tsx` | `error`가 실패 단계를 기억 + 회복 전이 2개 (상태도 25개 전이 전수 테스트) | **3** `error-recovery` |
+    | 6 | `src/components/mood/MoodInput.tsx` | 3회째 강행 경로 (PRD US-003 AC — 지금 도달 불가) | **4** `mood-forced-path` |
 
-    부수로 `clientEventSchema`가 아직 `recommend_viewed`를 받는다. 보내는 곳이 없어 무해하지만 정리 대상이다. 런 #6 설계 시 위 6건을 step에 **이름으로 지정**하고 그 step의 금지사항에서 `src/lib/**`·`src/app/**`을 빼야 한다 — 15번이 남긴 교훈이 정확히 이 지점이다
+    부수 항목(`clientEventSchema`가 아직 `recommend_viewed`를 받는다)도 step 0이 닫았다. **15번이 남긴 교훈이 두 런째 작동했다** — 배정된 8건이 전부 해소됐고 미배정 7건은 `not_assigned_this_run`에 이름으로 적혔다.
+
+    **다만 6번이 화면까지만 닫혔다.** 강행이 서버 라우트와 화면에서만 이뤄지고 **첫 모델 호출에는 반영되지 않는다** — `lib/prompts.ts` 추천 프롬프트 규칙 7이 "relevant가 false면 recommendations를 빈 배열로 둔다"고 지시하므로 실제 응답은 `200 + 빈 배열`일 수 있다. step 2와 step 4가 독립적으로 같은 구멍을 지목했다. **US-003의 마지막 AC가 실환경에서 완결되는 마지막 한 칸이고 27번으로 옮긴다**
+
+27. **파일럿 런 #7 `forced-path` — US-003 마지막 칸 + UI 부채 3건, 그리고 [[ADR-H009]]의 A/B.** 두 가지를 한 런에서 얻는다.
+
+    **(a) 코드** — 23번 6번이 남긴 마지막 칸을 닫는다: `lib/prompts.ts` 규칙 7을 강행 요청에서 대체하고(step 0), `services/anthropic.ts`의 `RecommendOptions`에 통로를 열고(step 1), `app/api/recommend/route.ts`가 첫 호출부터 그것을 쓴다(step 2). 이어서 런 #5부터 이월된 UI 부채를 닫는다 — `BookList.result`를 `ShelfBook[]`로 넓혀 재검색 승격분을 한 목록에 담고 `onRetryLookup`에 책 인자를 주어 책 단위 재조회에 잇고(step 3), FR-010 재시도 간격 백오프(0→5→15초)를 구현한다(step 4).
+
+    **(b) 실측** — `steps[].sources`를 처음 켠다. 25번의 대조군이 런 #6이다.
+
+    **설계 제약이 하나 새로 드러났다**: `sources` 상한 60,000자를 `src/services/anthropic.ts` 하나가 53,091자로 88% 먹는다. `prompts.ts`(18,405)와 같은 step에 넣으면 71,496자로 `exit 2`다. **상한이 레이어 분할을 강제하는 방향으로 작동한다** — SKILL.md 원칙 1(scope 최소화)과 우연히 같은 답을 내지만, 우연인지 아닌지는 런 #7이 답한다.
+
+    **런 전에 사람이 고칠 것**: 강행을 모델 호출에 싣는다는 **계약 한 줄**(`docs/API_SPEC.md` 또는 `docs/TRD.md` 7번). 이 줄이 없으면 step이 프롬프트 문구를 지어내고 다음 런이 "문서대로" 되돌린다 — 23번 부수 항목이 기록한 실패 원형이다
 
 결정 기록은 [DECISIONS.md](DECISIONS.md)를 본다.

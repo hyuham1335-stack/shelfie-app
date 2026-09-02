@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:golden": "vitest run --config vitest.golden.config.ts",
     "audit": "npm audit --audit-level=high"
   },
   "dependencies": {

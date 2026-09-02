@@ -45,5 +45,6 @@ npm run dev        # 개발 서버
 npm run typecheck  # 타입 검사 (tsc --noEmit)
 npm run lint       # ESLint
 npm test           # 테스트
+npm run test:golden # 골든 인식률 (실제 API 호출 · CI 제외 · GOLDEN_SET_DIR 필요)
 npm run build      # 프로덕션 빌드
 npm run audit      # 의존성 취약점 게이트 (high 이상이면 배포 차단)

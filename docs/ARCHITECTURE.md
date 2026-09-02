@@ -55,6 +55,9 @@ flowchart TD
     lib --> libSession["session.ts<br/>세션 상태 리듀서 (순수)"]
     lib --> libApiClient["api-client.ts<br/>app/api 호출 래퍼 · 에러 정규화"]
     lib --> libShareImage["share-image.ts<br/>저장 이미지 레이아웃(순수) + 캔버스 그리기"]
+    lib --> libGoldenManifest["golden-manifest.ts<br/>골든 세트 매니페스트 스키마·파싱 (순수)"]
+    lib --> libGoldenScore["golden-score.ts<br/>재현율·오확인 판정 (순수)"]
+    lib --> libGoldenReport["golden-report.ts<br/>골든 결과 표·JSON 렌더 (순수)"]
 
     services --> svcAnthropic["anthropic.ts<br/>Claude API 래퍼"]
     services --> svcAladin["aladin.ts<br/>알라딘 OpenAPI 래퍼"]
@@ -108,6 +111,7 @@ flowchart LR
 - `lib/` → `services/` 금지. `lib/`는 외부 호출을 하지 않는 순수 함수만 담는다. 이 경계 덕분에 `lib/`는 모킹 없이 단위 테스트할 수 있다.
 - `types/` → `lib/schemas.ts`는 **타입 전용**으로만 허용한다(점선). 스키마와 타입을 이중 정의하지 않으려면(TR-002) `z.infer`가 스키마를 참조할 수밖에 없다. 대신 `types/`는 `import type`·`export type`만 쓰고 값을 하나도 내보내지 않으므로, 컴파일 후 런타임 import가 남지 않아 클라이언트 번들에 `lib/`가 끌려 들어가지 않는다. 역방향(`lib/` → `types/`)과 `types/`의 값 export는 계속 금지다.
 - 브라우저 API(Canvas)에 의존하는 `lib/` 모듈은 **`lib/image.ts`와 `lib/share-image.ts` 둘뿐이다.** 서버 코드에서 import하지 않는다.
+- **골든 인식률 러너는 프로덕션 코드가 아니라 테스트 코드다** (ADR-010). 러너는 `services/anthropic.ts`와 `services/aladin.ts`를 둘 다 부르는데 `lib/` → `services/`는 위에서 금지돼 있고, `services/`에 두면 "외부 API 래퍼"라는 그 디렉토리의 정의가 깨지며, `app/api/`에 두면 존재하지 않는 라우트가 생긴다. 그래서 **순수 부품 셋(`golden-manifest.ts`·`golden-score.ts`·`golden-report.ts`)만 `lib/`에 두고**, 실제 API 호출·파일 시스템 접근·리포트 파일 쓰기는 `src/services/shelf.golden.test.ts`가 한다. `lib/`의 셋은 `services/`도 `fs`도 모르므로 일반 `npm test`로 검증된다 — `share-image.ts`가 캔버스에 대해 쓴 것과 같은 분리다 (ADR-009).
 - `lib/share-image.ts`(FR-014 저장 이미지)는 **한 파일 안에서 두 겹으로 갈라져 있다** — 좌표·줄바꿈·잘림을 결정해 드로잉 명령 목록을 만드는 **순수 함수 층**과, 그 명령을 `CanvasRenderingContext2D`에 적용해 PNG `Blob`을 만드는 **얇은 그리기 층**이다. 순수 층은 `document`·`canvas`를 만지지 않으므로 jsdom 없이 값으로 검증하고, 그리기 층은 가짜 `ctx`로 호출 순서만 검사한다. **jsdom에 canvas 구현이 없어** 이 분리가 없으면 TDD가 성립하지 않는다 (ADR-009). 글자 폭은 직접 계산하지 않고 **측정 함수를 주입받는다** — 그것이 순수 층을 순수하게 유지하는 조건이다.
 - 저장소를 도입하면(ADR-007) Supabase도 위 그래프의 `외부 API`와 같은 자리에 놓인다. `components/` → Supabase 직접 호출 금지이며, 반드시 `app/api/`를 경유한다. `service_role` 키가 클라이언트 번들로 새는 경로를 구조적으로 막기 위함이고, 이는 `ANTHROPIC_API_KEY`에 적용하는 규칙과 같은 것이다.
 

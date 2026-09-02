@@ -433,6 +433,7 @@ erDiagram
 | `MODEL_RECOMMEND` | 한줄평·추천·문답 생성 모델 ID. 기본값 `claude-opus-5` | X | 서버 전용 | [MVP] |
 | `BOOK_PROOF_SECRET` | 확인된 책 서명(`proof`)의 HMAC 키 (ADR-006). 32바이트 이상 랜덤 값 | O (프로덕션) | 서버 전용 | [MVP] |
 | `SERVICE_ENABLED` | 긴급 차단 스위치. `false`면 모든 라우트가 외부 호출 없이 503과 점검 안내를 반환한다. 기본값 `true` | X | 서버 전용 | [MVP] |
+| `GOLDEN_SET_DIR` | 골든 인식률 세트(사진 + `manifest.json`)가 있는 **리포 밖** 디렉토리의 절대 경로 (ADR-010). 없으면 골든 테스트가 skip한다 — skip은 통과가 아니다 | X (골든 실행 시 O) | 서버 전용 · 테스트에서만 읽는다 | [MVP] |
 | `NEXT_PUBLIC_MAX_PHOTOS` | 클라이언트 업로드 장수 상한. 기본값 `5` | X | `NEXT_PUBLIC_` (공개되어도 무해. 서버에서 재검증한다) | [MVP] |
 | `SUPABASE_URL` | Supabase 프로젝트 엔드포인트 (ADR-007). 저장소 도입 전에는 존재하지 않는다 | O (도입 시) | 서버 전용 | [Scale] |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase 서버 접근 키. RLS를 우회하므로 **절대 `NEXT_PUBLIC_`을 붙이지 않는다** | O (도입 시) | 서버 전용 | [Scale] |
@@ -460,7 +461,7 @@ CLAUDE.md CRITICAL 규칙: 새 기능은 테스트를 먼저 작성하고, 통�
 | 통합 (Integration) | `app/api/` 라우트 핸들러 5종. `services/`를 모킹하고 요청→응답 계약과 에러 코드를 검증 | Vitest | [MVP] |
 | 계약 (Contract) | `services/` 래퍼가 기대하는 알라딘 XML/JSON 응답 형태와 Claude structured output 형태. 고정 픽스처로 검증 | Vitest | [MVP] |
 | 컴포넌트 | 화면 5종의 상태 분기 — 로딩·빈 상태·에러·부분 실패 | Testing Library | [MVP] |
-| 인식률 (Golden) | 골든 사진 20장에 대한 추출 결과를 기대 목록과 비교. **실제 API를 호출하므로 CI에서 제외하고 수동 실행** | Vitest (별도 태그) | [MVP] |
+| 인식률 (Golden) | 골든 사진 20장에 대해 **축 둘**을 잰다 — 추출 재현율(TR-003)과 알라딘 대조 오확인(TR-004). **실제 API를 호출하므로 CI에서 제외하고 수동 실행** (`npm run test:golden`, 아래 계약 절) | Vitest (`*.golden.test.ts`, 별도 config) | [MVP] |
 | 시간 예산 (Budget) | 각 단계가 예산을 넘겼을 때 요청이 200으로 끝나고 `lookup_failed`·빈 `claudeNote`로 강등되는지. 가짜 타이머로 검증 | Vitest | [MVP] |
 | E2E | 업로드 → 분석 → 기분 입력 → 추천 핵심 플로우 1개 | Playwright | [Scale] |
 | 부하 (Load) | Max TPS 목표 검증 | k6 | [Scale] |
@@ -473,6 +474,70 @@ CLAUDE.md CRITICAL 규칙: 새 기능은 테스트를 먼저 작성하고, 통�
 - 할루시네이션 회귀 테스트: "입력 목록에 없는 `bookId`를 반환한 추천 응답"을 픽스처로 두고, 그 응답이 사용자에게 도달하지 않는지 반드시 검증한다 (TR-010). 이 테스트는 삭제하지 않는다.
 - **사유 혼동 회귀 테스트**: 알라딘이 5xx·타임아웃을 반환한 픽스처에서 그 책의 `reason`이 `no_match`가 **아니라** `lookup_failed`인지 검증한다 (ADR-005). 이 테스트도 삭제하지 않는다 — 사유가 틀리면 사용자에게 사실이 아닌 설명을 하게 된다.
 - **골든 인식률 테스트 실행 트리거**: `MODEL_EXTRACT`·`MODEL_RECOMMEND`를 바꿀 때, 추출 프롬프트를 고칠 때, 제한 배포 직전. 셋 중 하나라도 해당하면 배포 전에 1회 수동 실행하고 결과를 기록한다. 모델 버전이 바뀌면 판독 품질이 예고 없이 달라진다는 ADR-001의 전제를 실행 가능한 게이트로 고정한 것이다.
+
+### 골든 인식률 계약 (ADR-010)
+
+세트는 **리포 밖**에 두고 `GOLDEN_SET_DIR`로 가리킨다. 리포에는 계약·판정·리포트만 있고 사진과 기대 목록은 없다 — 근거와 대가는 ADR-010.
+
+**세트 구조**
+
+```
+$GOLDEN_SET_DIR/
+  manifest.json
+  shelf-01.jpg  shelf-02.jpg  ...
+```
+
+**매니페스트 형식** — `lib/golden-manifest.ts`의 zod 스키마가 단일 출처다. 파싱 실패는 예외가 아니라 판별 가능한 실패 값으로 다룬다(검증 경계 패턴).
+
+```jsonc
+{
+  "version": 1,              // 형식 버전. 올릴 때 스키마와 함께 올린다
+  "setId": "hyu-shelf-2026a", // 사람이 붙인 세트 이름. 리포트에 그대로 실린다
+  "photos": [
+    {
+      "file": "shelf-01.jpg",
+      "sha256": "…",          // 이 파일의 해시. 세트가 바뀌면 리포트에서 보인다
+      "books": [
+        { "title": "죽음의 수용소에서", "author": "빅터 프랭클", "isbn13": "9788935210794" }
+      ]
+    }
+  ]
+}
+```
+
+- `books[].isbn13`은 **선택**이다. 있으면 오확인 판정이 ISBN으로 정확해지고, 없으면 제목 유사도로 판정한다. 20장 전부에 ISBN을 적는 것은 부담이므로 강제하지 않는다.
+- 기대 목록은 **그 사진에서 사람이 읽을 수 있는 책 전부**다. 일부만 적으면 재현율이 실제보다 높게 나온다.
+
+**판정 규약**
+
+| 축 | 정의 | 기준 | 출처 |
+|----|------|------|------|
+| 재현율 (recall) | 기대 책 중 추출 후보와 짝지어진 수 ÷ 기대 책 총수 | **≥ 0.90** | TR-003 |
+| 오확인 (misidentified) | 확인(`identified`)으로 승격된 책 중 그 사진의 기대 목록 어디와도 짝지어지지 않은 것 | **= 0건** | TR-004 |
+
+- 짝짓기는 `lib/match.ts`의 `normalizeTitle` + `titleSimilarity ≥ 0.8`(`MATCH_THRESHOLD`)을 **재사용**한다. 골든이 별도 유사도 기준을 만들면 프로덕션이 쓰는 임계값과 갈라지고, 그러면 골든이 통과해도 실제 판정은 다르게 난다.
+- 한 기대 항목에 후보가 둘 붙지 않도록 **유사도 내림차순 1:1 그리디**로 짝짓는다. 다대일을 허용하면 비슷한 제목 여러 권이 한 항목을 채워 재현율이 부풀려진다.
+- 임계값 두 개(`0.90`·`0`)는 `lib/env.ts`에 둔다 — 도메인 상수 단일 출처 (CLAUDE.md).
+
+**skip 사유 3종 — skip은 통과가 아니다**
+
+| 사유 | 조건 | 왜 실패가 아닌가 |
+|------|------|-----------------|
+| `no_set_dir` | `GOLDEN_SET_DIR` 미설정 | 세트가 없는 개발자의 로컬에서 이 테스트가 빨간불이 되면 아무도 안 돌리게 된다 |
+| `no_manifest` | 디렉토리는 있으나 `manifest.json`이 없거나 파싱 실패 | 위와 같다. 단 **파싱 실패는 사유 문자열에 이유를 남긴다** |
+| `no_api_key` | `ANTHROPIC_API_KEY` 또는 `ALADIN_TTB_KEY` 없음 | **가장 중요한 사유다.** `services/`는 키가 없으면 목업을 돌려주므로(9번), 키 없이 돌린 골든은 재현율 100%로 **통과**한다. 모델 품질을 재려던 게이트가 반대로 작동한다 (ADR-010) |
+
+세 경우 모두 테스트는 skip하고, **리포트 맨 위에 사유를 출력한다.** 배포 전 체크리스트(9번)의 "골든을 돌렸는가"는 skip한 리포트로는 답이 되지 않는다.
+
+**결과 기록** — `reports/golden/{ISO8601}.json`에 남기고 콘솔에 표로 찍는다. `reports/`는 `.gitignore` 대상이라 커밋되지 않는다(하네스 리포트와 같은 자리). 리포트에는 `setId`·`version`·사진별 `sha256`·모델 ID(`MODEL_EXTRACT`)를 함께 실어 **어느 세트를 어느 모델로 쟀는지**가 결과만 보고도 확정되게 한다.
+
+**실행**
+
+```bash
+GOLDEN_SET_DIR=/path/to/set npm run test:golden
+```
+
+`npm test`는 이 파일을 돌리지 않는다 — `vitest.config.ts`가 `**/*.golden.test.ts`를 exclude하고 골든은 별도 config(`vitest.golden.config.ts`)로 돈다. **골든 config는 junit 리포터를 쓰지 않는다**: 하네스 게이트가 `reports/junit/vitest.xml`에서 테스트 수를 읽으므로(`harness/adapters/nextjs-ts.json`), 골든이 그 파일을 덮으면 게이트의 `tests_ran_floor`가 20장짜리 숫자로 오염된다.
 
 ### AC 검증 커맨드
 

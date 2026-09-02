@@ -131,7 +131,7 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 ## 6. 다음 행동
 
-1~11과 13·15·16·17·19가 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#5가 `lib/`·`services/`·`app/api/`·`components/`·`app/` 계층을 완주해 **앱이 업로드에서 추천까지 이어졌다.** **남은 것은 12·14·18·21·22·23이다.** 20·24·25·26은 런 #5 직후에 닫혔고, **13은 답이 뒤집혀 다시 열렸다가 닫혔다**(아래). 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
+1~11과 13·15·16·17·19가 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#5가 `lib/`·`services/`·`app/api/`·`components/`·`app/` 계층을 완주해 **앱이 업로드에서 추천까지 이어졌다.** **남은 것은 12·14·18·21·22이다.** 20·24·25·26은 런 #5 직후에 닫혔고, **13은 답이 뒤집혀 다시 열렸다가 닫혔다**(아래). 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
 
 **런 #4가 11번에서 하지 못한 것**: 런 #3의 보고 3건(알라딘 호출 상한 260회 · 이미지 상수 이중화 · `errorCodeSchema`의 500대 공백)을 "여기서 정리한다"고 적었으나 **하나도 정리되지 않았다.** step 파일 5개가 전부 `src/lib/`·`docs/` 수정을 금지해 **설계 단계에서 이미 불가능해져 있었다.** 아래 15번으로 옮긴다.
 
@@ -153,6 +153,21 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 25. ~~**M16 — 읽기 turn이 접두부를 다시 읽게 만든다**~~ — **해결** ([ADR-H009](DECISIONS.md)). 26 step 트랜스크립트를 turn 단위로 분해하니 파일 읽기가 도구 호출의 38%, 컨텍스트 투입의 70.5%였고, **읽기 turn 336회가 유발한 접두부 재독이 전체의 44.0%**였다. `steps[].sources`가 있으면 실행기가 그 파일을 접두부에 싣는다(상한 60,000자, 미지정이면 기존 동작). **런 #6에서는 켜지 않는다** — 24번의 A/B가 먼저다. 런 #7이 실측을 준다
 26. ~~**`scoped` 를 경로 필터로 다시 잰다**~~ — **해결.** 위 13번을 본다. 어댑터의 `select` 4줄을 지운 것이 전부이고 코드 변경은 없었다
 
-23. **런 #6 전에 사람이 고쳐야 하는 계약 4건** — 상태도의 `error → moodInput/recommending` 회복 전이(`docs/ARCHITECTURE.md`) · `recommendRequestSchema`의 세션 진행 상태(`docs/API_SPEC.md`) · `recommend_failed`와 `book_resolved.matched`(PRD 7번 이벤트 표). **문서가 비어 있으면 워커는 코드를 소유해도 아무것도 할 수 없다** — 코드 step에 주면 세 런째 이월이 반복된다(15번의 교훈)
+23. ~~**런 #6 전에 사람이 고쳐야 하는 계약 4건**~~ — **해결.** 네 건 중 **실제로 빈 것은 세 건**이었고 `book_resolved.matched`는 초기 커밋부터 PRD 표에 있었다(발생 조건만 모호해 불릿 한 줄로 닫았다). 고친 것: 상태도에 `error → recommending`·`error → moodInput`을 넣고 **`error`가 실패 단계를 기억한다**를 프로즈로 못 박았다(전이 22 → 25 — `guidedQuestions` 자기 전이도 리듀서에는 있고 상태도에는 없었다) · `recommendRequestSchema`에 `retryIndex`(0~4)·`irrelevantStreak`(0~2)를 **필수 평면 필드**로 넣어 두 공백을 1:1로 메웠다 · `recommend_failed`를 PRD 7번 표에 신설했다(에러율 + 세션당 비용). **세 건이 하나의 원인에서 나왔다** — 무상태라 서버가 셀 수 없는 값을 요청에 싣지 않아, 세는 쪽(클라이언트)과 판정하는 쪽(서버)이 갈라진 채로 다섯 런을 왔다.
+
+    **계획에 없었으나 함께 고친 것**: PRD 7번 표와 흐름 2 시퀀스가 `recommend_viewed`를 **클라이언트 수집**이라 적고 있었는데 실제로는 `recommend/route.ts:252`가 서버에서 남기고 `page.tsx:330-334`가 의도적으로 보내지 않는다. 런 #6의 step이 바로 그 코드를 고치므로, **틀린 계약을 남겨 두면 워커가 "문서대로" 되돌려 이중 계상을 되살린다.** 비어 있는 문서만 위험한 것이 아니다.
+
+    **코드 배선 6건이 런 #6으로 넘어간다.** 문서만 고치고 코드를 어디에도 적지 않으면 그것이 15번이 기록한 실패의 원형이다:
+
+    | # | 파일 | 할 일 |
+    |---|------|-------|
+    | 1 | `src/lib/schemas.ts` | `recommendRequestSchema`에 `retryIndex`(0~4)·`irrelevantStreak`(0~2) |
+    | 2 | `src/app/api/recommend/route.ts` | 상단 "계약의 공백 두 곳" 주석 삭제 · `irrelevantStreak>=2`면 `relevant:false` 무시 · `retry_index` 실제값 · `warnBurnedTokens` → `record({event:"recommend_failed"})` |
+    | 3 | `src/lib/analytics.ts` | `AnalyticsEvent` 유니온 + `PROPERTY_KEYS`에 `recommend_failed` (`analyze_failed`가 템플릿) |
+    | 4 | `src/lib/api-client.ts` · `src/app/page.tsx` | 두 필드 전송 — `retryIndex`는 `state.recommendCount`, `irrelevantStreak`는 `irrelevantCount` |
+    | 5 | `src/lib/session.ts` · `src/app/page.tsx` | `error`가 실패 단계를 기억 + 회복 전이 2개 (상태도 25개 전이 전수 테스트) |
+    | 6 | `src/components/mood/MoodInput.tsx` | 3회째 강행 경로 (PRD US-003 AC — 지금 도달 불가) |
+
+    부수로 `clientEventSchema`가 아직 `recommend_viewed`를 받는다. 보내는 곳이 없어 무해하지만 정리 대상이다. 런 #6 설계 시 위 6건을 step에 **이름으로 지정**하고 그 step의 금지사항에서 `src/lib/**`·`src/app/**`을 빼야 한다 — 15번이 남긴 교훈이 정확히 이 지점이다
 
 결정 기록은 [DECISIONS.md](DECISIONS.md)를 본다.

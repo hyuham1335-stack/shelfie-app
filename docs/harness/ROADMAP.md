@@ -16,12 +16,12 @@
 | 가드레일 | `CLAUDE.md` — 각 문서 경로만 참조. CRITICAL 규칙(TDD·Mermaid·API 단일 출처·레이어 경계) |
 | 워크플로우 | `.claude/skills/harness/SKILL.md` (doctor → step 설계 → `phases/` 생성 → 실행), `.claude/skills/review/SKILL.md` |
 | **계약 계층** | `harness/config.json` · `config.schema.json` · `adapters/{nextjs-ts,_template}.json` + `adapter.schema.json` · `profiles/nextjs-ts/` · `templates/contract.md` |
-| 실행기 | `scripts/harness.py` — `init` · `doctor` · `calibrate`. `scripts/execute.py` — 순차 step 실행기, CLI는 `{task-name}` + `--push` |
-| 테스트 | `scripts/test_harness.py` (70건) · `scripts/test_execute.py` (141건) |
+| 실행기 | `scripts/harness.py` — `init` · `doctor` · `calibrate`. `scripts/execute.py` — 순차 step 실행기, CLI는 `{task-name}` + `--push`. `scripts/backfill_reads.py` — 지난 런의 끌어온 양 사후 집계 |
+| 테스트 | `scripts/test_harness.py` (70건) · `scripts/test_execute.py` (163건) |
 | 파일럿 | `phases/lib-core/` · `phases/services-core/` · `phases/routes-core/` · `phases/app-core/` 각 5 step · `phases/app-shell/` 6 step · `phases/contract-wiring/` · `phases/forced-path/` · `phases/could-have/` 각 5 step — **여덟 런 41 step 완주.** 기록은 [PILOT-LOG.md](PILOT-LOG.md) |
 | 실측 | `harness/calibration.json` — `calibrate` 산출. 정책 4종이 여기서 유도된다 |
 
-`scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md 상시 + `steps[].docs`가 고른 docs/\*.md, 미지정이면 전량 + 경고 — [ADR-H008](DECISIONS.md)) · 소스 첨부(`steps[].sources` — [ADR-H009](DECISIONS.md)) · summary 컨텍스트 누적 · 자가 교정(상한은 `calibrate`가 유도, 미측정이면 `MAX_RETRIES`가 바닥값) · **2단계 커밋(커밋 범위는 `roles[].owns`에서 유도하고 소유 밖 변경은 커밋하지 않고 드러낸다 — M11)** · 타임스탬프와 `attempts` 기록 · **시도별 실측(`steps[].runs[]`) 기록** · **접두부 분해 기록([ADR-H010](DECISIONS.md))** · **실행 중 상태(`phases/{phase}/RUNNING`) 관리**.
+`scripts/execute.py`가 하는 일: 브랜치 생성 · 가드레일 주입(CLAUDE.md 상시 + `steps[].docs`가 고른 docs/\*.md, 미지정이면 전량 + 경고 — [ADR-H008](DECISIONS.md)) · 소스 첨부(`steps[].sources` — [ADR-H009](DECISIONS.md)) · summary 컨텍스트 누적 · 자가 교정(상한은 `calibrate`가 유도, 미측정이면 `MAX_RETRIES`가 바닥값) · **2단계 커밋(커밋 범위는 `roles[].owns`에서 유도하고 소유 밖 변경은 커밋하지 않고 드러낸다 — M11)** · 타임스탬프와 `attempts` 기록 · **시도별 실측(`steps[].runs[]`) 기록** · **접두부 분해 기록([ADR-H010](DECISIONS.md))** · **세션이 끌어온 양 기록(트랜스크립트 사후 집계 — [ADR-H011](DECISIONS.md))** · **실행 중 상태(`phases/{phase}/RUNNING`) 관리**.
 
 재개 판정은 **"돌았다"가 아니라 "남겼다"를 본다** — 출력 파일과 죽은 `RUNNING`은 신호일 뿐이고, 소유 경로의 미커밋 변경이나 그 step의 `feat` 커밋이 있어야 재개다 (M13).
 
@@ -139,7 +139,7 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 ## 6. 다음 행동
 
-1~11과 13·15·16·17·18·19·21·22·23·25·27이 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#8이 `lib/`·`services/`·`app/api/`·`components/`·`app/`·계약 배선·강행 경로·Could-have를 완주해 **앱이 업로드에서 추천까지 이어졌고 계약과 코드가 일치하며, PRD의 Must·Should·Could가 전부 구현됐다.** **남은 것은 12·14·28·29이다** — 셋 다 "대상이 없어서" 또는 "표본이 모자라서" 열려 있고, 실행기 결함(M11·M13·M14)은 2026-09-02에 전부 닫혔다. 20·24·26도 닫혔다. **13은 답이 뒤집혀 다시 열렸다가 닫혔다**(아래). 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
+1~11과 13·15·16·17·18·19·21·22·23·25·27이 완료됐다. `calibrate`가 구현됐고 파일럿 런 #1~#8이 `lib/`·`services/`·`app/api/`·`components/`·`app/`·계약 배선·강행 경로·Could-have를 완주해 **앱이 업로드에서 추천까지 이어졌고 계약과 코드가 일치하며, PRD의 Must·Should·Could가 전부 구현됐다.** **남은 것은 12·14·28이다** — 셋 다 "대상이 없어서" 또는 "표본이 모자라서" 열려 있고, 실행기 결함(M11·M13·M14·M17)은 2026-09-02에 전부 닫혔다. 20·24·26도 닫혔다. **29는 2026-09-02에 닫혔다** — 실행기가 세션이 끌어온 양을 재고, 백필이 지난 여덟 런 41 step을 표본으로 바꿨다([[ADR-H011]]). 28은 그 표본이 방향을 확정했지만 **값은 아직 정하지 않는다.** **13은 답이 뒤집혀 다시 열렸다가 닫혔다**(아래). 런 #4에서 UI_GUIDE의 "Claude 생성 텍스트 블록"과 사실·해석 분리(ADR-002)가 처음 화면에서 시험되어 통과했고, ADR-005(`lookup_failed` ≠ `no_match`)도 문구·색·행동 셋 다 갈렸다.
 
 **런 #4가 11번에서 하지 못한 것**: 런 #3의 보고 3건(알라딘 호출 상한 260회 · 이미지 상수 이중화 · `errorCodeSchema`의 500대 공백)을 "여기서 정리한다"고 적었으나 **하나도 정리되지 않았다.** step 파일 5개가 전부 `src/lib/`·`docs/` 수정을 금지해 **설계 단계에서 이미 불가능해져 있었다.** 아래 15번으로 옮긴다.
 
@@ -204,10 +204,14 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
     **재는 쪽은 2026-09-02에 만들었다 ([[ADR-H010]]).** 실행기가 접두부를 네 조각으로 분해해 `steps[].runs[]`에 남긴다 — `preamble_chars`(접두부 전체) · `guardrail_chars` · `source_chars` · `context_chars`(누적 summary), 그리고 접두부 **밖**인 `step_body_chars`. 나머지(상용구)는 차로 유도된다. step 시작마다 같은 분해를 콘솔에도 찍는다. **상한은 걸지 않았다** — 걸면 그 순간부터 step 설계가 그 값에 맞춰지고, 그러면 그 값이 옳았는지 잴 표본이 더는 생기지 않는다. 막는 대신 **드러낸다.** 값을 정할 표본은 런 #8부터 쌓인다.
 
+    **나머지 절반도 2026-09-02에 만들었다 ([[ADR-H011]], 아래 29번).** 41 step 백필이 이 항목의 방향 전환을 숫자로 확정했다 — **끌어온 양 ↔ 비용 r = 0.752**(n=15) vs **접두부 ↔ 비용 r = 0.040**(n=5). 세 런의 인상이 아니라 상관계수로 갈렸다. **그러므로 이 항목이 찾던 "하나의 예산"은 접두부 총량에 거는 것이 아니다.** 다만 관계는 결정적이지 않다(r=0.75이지 0.95가 아니다) — 끌어온 양이 79,860자인데 22 turn·$3.64로 끝난 step(런 #7 `booklist-props`)과 79,679자에 44 turn·$4.09가 든 step(런 #6 `request-contract`)이 같이 있다. **값은 아직 정하지 않는다.** 다음은 이 눈금이 여러 런에서 무엇을 예측하는지 보는 것이고, 그때까지 상한은 없다.
+
     ~~함께 볼 열린 질문 — 첨부는 읽을 파일에 값을 하고 쓸 파일에는 덜 하는가~~ — **런 #8이 답했다: 아니다, 그리고 질문이 틀린 축을 보고 있었다.** 팔 A(쓸 파일 첨부)가 15.0 turn·$2.40, 팔 B(읽을 파일만 첨부)가 33.5 turn·$3.80이었고, 같은 `page.tsx`를 두고 첨부한 런 #7 step 4(27 turn)와 첨부하지 않은 런 #8 step 3(44 turn)이 같은 방향을 냈다. **축은 크기다** — 첨부의 값은 *안 첨부했을 때 드는 읽기 turn 수*에 비례한다. 상세는 [[ADR-H010]]
 
-29. **실행기가 "세션이 직접 읽은 양"을 재야 한다.** 런 #8이 드러냈다.
+29. ~~**실행기가 "세션이 직접 읽은 양"을 재야 한다.**~~ — **해결 (2026-09-02, [[ADR-H011]]).** 실행기가 step 세션의 트랜스크립트를 `session_id`로 찾아 `runs[]`에 `tool_result_chars` · `tool_result_count` · `tool_output_chars` · `tool_calls` · `session_id`를 남긴다. `scripts/backfill_reads.py`가 지난 여덟 런 **41/41 step을 사후 집계**해 표본이 런 #9를 기다리지 않고 지금 생겼다. 원래 서술을 남겨 둔다.
 
-    28번의 예산값을 정하려면 접두부(첨부한 것)만으로는 부족하다. 런 #8의 네 step을 가른 변수는 **첨부되지 않아 세션이 직접 읽어야 했던 양**이었는데(66,275자 → 44 turn · 16,334자 → 23 turn), 실행기는 그 숫자를 모른다. `sources`는 알고 `preamble_chars`도 알지만, step이 무엇을 몇 자 읽었는지는 기록하지 않는다. **재지 않는 것을 근거로 상수를 정할 수 없다** — [[ADR-H007]]이 `MAX_RETRIES`에서, [[ADR-H010]]이 접두부에서 각각 같은 자리를 지났다. 트랜스크립트에 있는 값이므로 사후 집계는 가능하고, 실행기가 `runs[]`에 남기게 하는 것이 다음 작업이다
+    **백필이 28번에 준 답**: 끌어온 양 ↔ 비용 **r = 0.752**(n=15)인데 접두부 ↔ 비용은 **r = 0.040**(n=5)이다. **예산을 걸 곳은 접두부가 아니라 여기다.** 부수로 [[ADR-H009]]의 기제가 이 눈금에서 처음 보였다 — `sources`를 켠 런(#7·#8)의 step당 끌어온 양이 33,440자로, 안 켠 런(#1~#6)의 52,622자보다 **36.4% 작다**(작업 성격이 교란 변수이므로 방향만 읽는다). **상한은 이번에도 걸지 않았다** — [[ADR-H010]]과 같은 이유다.
+
+    원래 서술: 28번의 예산값을 정하려면 접두부(첨부한 것)만으로는 부족하다. 런 #8의 네 step을 가른 변수는 **첨부되지 않아 세션이 직접 읽어야 했던 양**이었는데(66,275자 → 44 turn · 16,334자 → 23 turn), 실행기는 그 숫자를 모른다. `sources`는 알고 `preamble_chars`도 알지만, step이 무엇을 몇 자 읽었는지는 기록하지 않는다. **재지 않는 것을 근거로 상수를 정할 수 없다** — [[ADR-H007]]이 `MAX_RETRIES`에서, [[ADR-H010]]이 접두부에서 각각 같은 자리를 지났다. 트랜스크립트에 있는 값이므로 사후 집계는 가능하고, 실행기가 `runs[]`에 남기게 하는 것이 다음 작업이다
 
 결정 기록은 [DECISIONS.md](DECISIONS.md)를 본다.

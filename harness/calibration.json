@@ -1,29 +1,29 @@
 {
-  "measured_at": "2026-09-02T15:57:54+0900",
+  "measured_at": "2026-09-02T17:49:09+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": true,
   "stages": {
     "compile": {
-      "sec": 3.86,
+      "sec": 3.0,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T15:57:54+0900"
+      "measured_at": "2026-09-02T17:49:09+0900"
     },
     "lint": {
-      "sec": 11.45,
+      "sec": 9.31,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T15:57:54+0900"
+      "measured_at": "2026-09-02T17:49:09+0900"
     },
     "check": {
-      "sec": 2.2,
+      "sec": 1.72,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T15:57:54+0900"
+      "measured_at": "2026-09-02T17:49:09+0900"
     },
     "scoped": {
       "sec": 4.33,
@@ -35,14 +35,14 @@
       "stale_reason": "선택 대상 없음 — 계약이 있어야 측정된다. --select <test-name> 으로 수동 측정할 수 있다"
     },
     "full": {
-      "sec": 41.86,
+      "sec": 29.67,
       "ok": true,
       "exit_code": 0,
-      "tests_ran": 1257,
-      "suites": 44,
+      "tests_ran": 1311,
+      "suites": 46,
       "failures": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T15:57:54+0900"
+      "measured_at": "2026-09-02T17:49:09+0900"
     },
     "e2e": {
       "sec": null,
@@ -51,11 +51,11 @@
       "reason": "cmd:null — 이 스택에 없는 스테이지"
     },
     "build": {
-      "sec": 11.28,
+      "sec": 8.59,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T15:57:54+0900"
+      "measured_at": "2026-09-02T17:49:09+0900"
     },
     "docs": {
       "sec": null,
@@ -65,7 +65,7 @@
     }
   },
   "retry": {
-    "steps_recorded": 25,
+    "steps_recorded": 29,
     "steps_unrecorded": 20,
     "steps_retried": 0,
     "max_attempts_observed": 1
@@ -79,7 +79,7 @@
     "background_threshold_sec": 180,
     "background_full_regression": false,
     "full_timeout_sec": 300,
-    "tests_ran_floor": 1131,
+    "tests_ran_floor": 1179,
     "retry_budget": 2
   }
 }

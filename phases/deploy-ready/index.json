@@ -217,7 +217,47 @@
         "src/components/common/ErrorBanner.tsx"
       ],
       "started_at": "2026-09-02T17:35:52+0900",
-      "summary": "PRD 5번 Edge Cases 표 12행 ↔ 화면·상태 머신의 1:1 대응(TR-011 AC)을 실행 가능한 회귀로 바꿨다 — 새 파일 src/app/edge-cases.test.tsx 하나에 **12행 전부의 판정표를 파일 상단 주석의 표로** 남기고(행마다 어디서 잠겼는지 테스트 이름까지 가리킨다), 비어 있던 행만 9 it 로 채웠다. describe 이름이 'PRD 5번 [로딩]'·'[오프라인·네트워크 단절]'·'[결과 이탈]'처럼 행 이름을 그대로 달아 깨진 테스트만 보고 무너진 계약을 안다. **12행 판정** — ① 빈 상태: 잠김(page.test.tsx 'EMPTY_SHELF는 빈 목록이 아니라 재촬영 안내로 분기한다'). ② 로딩: **일부 채움** — 첫 분석의 진행 표시는 UploadScreen.test.tsx 가, 클라이언트 타임아웃 70초는 api-client.test.ts 가 이미 잠갔으나 **재시도 중의 진행 화면은 아무 데서도 잠기지 않았다**(page.test.tsx:216 은 첫 분석만 본다) → 채웠다(role=status·aria-live=polite·'사진 2장을 다시 읽고 있어요' 분모 포함, 응답 뒤 낡은 진행 문구가 남지 않는 것까지). 다만 PRD 가 발생 조건으로 적은 '분석 요청이 300ms를 넘김'이라는 지연 문턱은 구현이 없다(스켈레톤이 지연 없이 바로 선다) — 표에 적어 두었다. ③ 실패: 잠김(ErrorBanner.test.tsx 정해진 문구·원문 비노출·재시도 버튼 + page.test.tsx 재시도, 외부 1회 자동 재시도는 services/*.test.ts). ④ 권한 없음: **일부 잠김·일부 구현 없음**(보고 ②). ⑤ 부분 실패: **일부 잠김 + 결함 보고**(보고 ①). ⑥ 대량 데이터: 잠김(BookList.test.tsx overflow 안내 + merge.test.ts 결정적 절단). ⑦ 오프라인·네트워크 단절: **채움** — fetch 가 던질 때 값으로 돌아오는 것은 api-client.test.ts 가 잠갔으나 '끊긴 뒤에도 입력 상태가 메모리에 남는가'는 비어 있었다 → 분석 단절(status 0·requestId null)에서 고른 **원본 File[] 이 남아 재업로드 없이 재시도되고 원본에서 다시 리사이즈되는 것**(step 0 이 바꾼 뒤의 상태를 검사한다)과, 추천 단절 뒤 '기분 다시 입력'에서 **적었던 기분이 입력창에 그대로 남고 모델을 다시 부르지 않는 것**을 잠갔다. ⑧ 확인 0건·미확인만: 잠김(page.test.tsx + BookList.test.tsx). ⑨ 결과 이탈(새로고침·뒤로가기): **전부 비어 있었다 → 채움**(6 it) — beforeunload 가 idle 과 첫 분석 진행 중에는 걸리지 않고, reviewing·unidentifiedOnly·result 에서는 걸리며, 사용자가 스스로 '다시 찍기'로 돌아가면 다시 풀리는 것까지. **되묻지 않는 쪽도 계약**이라 양방향으로 잠갔다. ⑩ 재추천·재시도 반복: 잠김(간격 0→5→15초와 3회 소진은 page.test.tsx describe '재시도 간격', 재추천 5회 상한은 session.test.ts, 소진 뒤 '감추지 않고 비활성'은 RecommendationList.test.tsx) — 세 곳에 이미 있어 네 번째로 잠그지 않았다. ⑪ 같은 사진 중복 선택: 잠김(UploadScreen.test.tsx duplicate). ⑫ 파노라마·초고해상도: 잠김(UploadScreen.test.tsx '경고하되 막지 않는다' + PhotoThumbnails.test.tsx '너무 길어요'). **구현·소스는 한 줄도 고치지 않았다** — 최종 워킹 트리 변경은 새 테스트 파일 1개뿐이고, 검사가 실제로 무는지는 page.tsx 를 일부러 망가뜨려(beforeunload 등록을 항상 켜기/항상 끄기 · defaultMood 제거 · 진행 문구 교체 · handleAnalyze 의 setFiles(sources)→setFiles([])) 9 it 전부가 각각 실패하는 것을 확인하고 되돌렸다. **새 보고 3건(사람·문서 소유자 판단 필요)**: ① **[부분 실패 행의 실제 결함 — step 0 이 넘긴 것을 실측으로 확인했다]** 확인된 책이 1권 이상인 reviewing 화면에서는 '이 사진만 다시 시도'가 먹지 않는다. lib/session.ts 의 ANALYZE_RETRIED 가 unidentifiedOnly 와 error(failedStage=analyze)만 처리하므로 reviewing 에서 온 액션은 상태를 그대로 돌려주고(리듀서 직접 호출로 확인: reviewing → reviewing), 그러면 뒤이어 도착하는 ANALYZE_SUCCEEDED 도 status!=='analyzing' 으로 버려진다. **HTTP 호출은 나가므로 모델 비용만 들고 화면은 그대로다.** 기존 page.test.tsx:935 는 analyze 호출 횟수만 세어 이 결함을 통과시킨다. lib/session.ts 수정은 이 step 의 금지 범위('src/lib 의 동작을 바꾸지 마라')라 고치지 않았고, 결함을 정답으로 굳히는 테스트도 쓰지 않았다 — 선택지는 (a) ANALYZE_RETRIED 에 reviewing 을 추가해 확인된 책을 유지한 채 analyzing 으로 보내기(ANALYZE_SUCCEEDED 가 결과를 어떻게 병합할지 — 덮을지 합칠지 — 를 함께 정해야 한다) (b) reviewing 화면에서 부분 실패 재시도 CTA 를 감추기(PRD 5번 부분 실패 행의 '그 사진만 다시 시도할 수 있게 한다'와 어긋난다)이며 (a)가 PRD 에 맞지만 병합 규칙이 문서에 없어 사람이 정해야 한다. ② **[권한 없음 행] PRD 가 지정한 안내 문구 \"사진 접근 권한이 없어요. 갤러리에서 직접 선택해 주세요\"가 구현에 없다** — 브라우저가 카메라 권한 거부를 페이지에 알려주지 않아 그 상태를 관측할 수 없다는 것이 PhotoPicker.tsx 의 명시적 판단이고, 그래서 '촬영·선택 두 경로를 항상 나란히 둔다'로 대체돼 있다(그쪽은 PhotoPicker.test.tsx 가 잠갔다). PRD 표의 '사용자에게 보이는 것' 열을 그 대체 설계로 고쳐 적거나, 관측 가능한 신호를 근거로 안내를 띄우기로 정하거나 둘 중 하나가 필요하다. 없는 것을 테스트로 지어내지 않았다. ③ **[오프라인 행] PRD 문구 \"인터넷 연결을 확인해 주세요\"가 구현에 없다** — api-client 가 네트워크 단절과 상류 5xx 를 같은 UPSTREAM_UNAVAILABLE 로 정규화하고 배너가 \"지금 책을 확인할 수 없어요\"를 쓴다. 단절(status 0)과 상류 장애(status 5xx)는 코드에서 구분 가능하므로 갈라 쓸 수는 있으나, 사용자가 할 수 있는 일이 재시도로 같아 502·500 을 한 문구로 묶은 UI_GUIDE 판단과 같은 계열이다 — **이 step 은 실제 문구를 그대로 단정했고**(테스트가 문서가 아니라 코드를 따라간 자리다) PRD 표와 UI_GUIDE 중 어느 쪽을 고칠지는 문서 소유자의 결정이다. AC 다섯 줄 전부 통과: typecheck 0 · lint 0 · test 46파일 1311개 통과(기존 1302 + 신규 9, 깨진 것 0) · build 성공 · audit 0 vulnerabilities."
+      "summary": "PRD 5번 Edge Cases 표 12행 ↔ 화면·상태 머신의 1:1 대응(TR-011 AC)을 실행 가능한 회귀로 바꿨다 — 새 파일 src/app/edge-cases.test.tsx 하나에 **12행 전부의 판정표를 파일 상단 주석의 표로** 남기고(행마다 어디서 잠겼는지 테스트 이름까지 가리킨다), 비어 있던 행만 9 it 로 채웠다. describe 이름이 'PRD 5번 [로딩]'·'[오프라인·네트워크 단절]'·'[결과 이탈]'처럼 행 이름을 그대로 달아 깨진 테스트만 보고 무너진 계약을 안다. **12행 판정** — ① 빈 상태: 잠김(page.test.tsx 'EMPTY_SHELF는 빈 목록이 아니라 재촬영 안내로 분기한다'). ② 로딩: **일부 채움** — 첫 분석의 진행 표시는 UploadScreen.test.tsx 가, 클라이언트 타임아웃 70초는 api-client.test.ts 가 이미 잠갔으나 **재시도 중의 진행 화면은 아무 데서도 잠기지 않았다**(page.test.tsx:216 은 첫 분석만 본다) → 채웠다(role=status·aria-live=polite·'사진 2장을 다시 읽고 있어요' 분모 포함, 응답 뒤 낡은 진행 문구가 남지 않는 것까지). 다만 PRD 가 발생 조건으로 적은 '분석 요청이 300ms를 넘김'이라는 지연 문턱은 구현이 없다(스켈레톤이 지연 없이 바로 선다) — 표에 적어 두었다. ③ 실패: 잠김(ErrorBanner.test.tsx 정해진 문구·원문 비노출·재시도 버튼 + page.test.tsx 재시도, 외부 1회 자동 재시도는 services/*.test.ts). ④ 권한 없음: **일부 잠김·일부 구현 없음**(보고 ②). ⑤ 부분 실패: **일부 잠김 + 결함 보고**(보고 ①). ⑥ 대량 데이터: 잠김(BookList.test.tsx overflow 안내 + merge.test.ts 결정적 절단). ⑦ 오프라인·네트워크 단절: **채움** — fetch 가 던질 때 값으로 돌아오는 것은 api-client.test.ts 가 잠갔으나 '끊긴 뒤에도 입력 상태가 메모리에 남는가'는 비어 있었다 → 분석 단절(status 0·requestId null)에서 고른 **원본 File[] 이 남아 재업로드 없이 재시도되고 원본에서 다시 리사이즈되는 것**(step 0 이 바꾼 뒤의 상태를 검사한다)과, 추천 단절 뒤 '기분 다시 입력'에서 **적었던 기분이 입력창에 그대로 남고 모델을 다시 부르지 않는 것**을 잠갔다. ⑧ 확인 0건·미확인만: 잠김(page.test.tsx + BookList.test.tsx). ⑨ 결과 이탈(새로고침·뒤로가기): **전부 비어 있었다 → 채움**(6 it) — beforeunload 가 idle 과 첫 분석 진행 중에는 걸리지 않고, reviewing·unidentifiedOnly·result 에서는 걸리며, 사용자가 스스로 '다시 찍기'로 돌아가면 다시 풀리는 것까지. **되묻지 않는 쪽도 계약**이라 양방향으로 잠갔다. ⑩ 재추천·재시도 반복: 잠김(간격 0→5→15초와 3회 소진은 page.test.tsx describe '재시도 간격', 재추천 5회 상한은 session.test.ts, 소진 뒤 '감추지 않고 비활성'은 RecommendationList.test.tsx) — 세 곳에 이미 있어 네 번째로 잠그지 않았다. ⑪ 같은 사진 중복 선택: 잠김(UploadScreen.test.tsx duplicate). ⑫ 파노라마·초고해상도: 잠김(UploadScreen.test.tsx '경고하되 막지 않는다' + PhotoThumbnails.test.tsx '너무 길어요'). **구현·소스는 한 줄도 고치지 않았다** — 최종 워킹 트리 변경은 새 테스트 파일 1개뿐이고, 검사가 실제로 무는지는 page.tsx 를 일부러 망가뜨려(beforeunload 등록을 항상 켜기/항상 끄기 · defaultMood 제거 · 진행 문구 교체 · handleAnalyze 의 setFiles(sources)→setFiles([])) 9 it 전부가 각각 실패하는 것을 확인하고 되돌렸다. **새 보고 3건(사람·문서 소유자 판단 필요)**: ① **[부분 실패 행의 실제 결함 — step 0 이 넘긴 것을 실측으로 확인했다]** 확인된 책이 1권 이상인 reviewing 화면에서는 '이 사진만 다시 시도'가 먹지 않는다. lib/session.ts 의 ANALYZE_RETRIED 가 unidentifiedOnly 와 error(failedStage=analyze)만 처리하므로 reviewing 에서 온 액션은 상태를 그대로 돌려주고(리듀서 직접 호출로 확인: reviewing → reviewing), 그러면 뒤이어 도착하는 ANALYZE_SUCCEEDED 도 status!=='analyzing' 으로 버려진다. **HTTP 호출은 나가므로 모델 비용만 들고 화면은 그대로다.** 기존 page.test.tsx:935 는 analyze 호출 횟수만 세어 이 결함을 통과시킨다. lib/session.ts 수정은 이 step 의 금지 범위('src/lib 의 동작을 바꾸지 마라')라 고치지 않았고, 결함을 정답으로 굳히는 테스트도 쓰지 않았다 — 선택지는 (a) ANALYZE_RETRIED 에 reviewing 을 추가해 확인된 책을 유지한 채 analyzing 으로 보내기(ANALYZE_SUCCEEDED 가 결과를 어떻게 병합할지 — 덮을지 합칠지 — 를 함께 정해야 한다) (b) reviewing 화면에서 부분 실패 재시도 CTA 를 감추기(PRD 5번 부분 실패 행의 '그 사진만 다시 시도할 수 있게 한다'와 어긋난다)이며 (a)가 PRD 에 맞지만 병합 규칙이 문서에 없어 사람이 정해야 한다. ② **[권한 없음 행] PRD 가 지정한 안내 문구 \"사진 접근 권한이 없어요. 갤러리에서 직접 선택해 주세요\"가 구현에 없다** — 브라우저가 카메라 권한 거부를 페이지에 알려주지 않아 그 상태를 관측할 수 없다는 것이 PhotoPicker.tsx 의 명시적 판단이고, 그래서 '촬영·선택 두 경로를 항상 나란히 둔다'로 대체돼 있다(그쪽은 PhotoPicker.test.tsx 가 잠갔다). PRD 표의 '사용자에게 보이는 것' 열을 그 대체 설계로 고쳐 적거나, 관측 가능한 신호를 근거로 안내를 띄우기로 정하거나 둘 중 하나가 필요하다. 없는 것을 테스트로 지어내지 않았다. ③ **[오프라인 행] PRD 문구 \"인터넷 연결을 확인해 주세요\"가 구현에 없다** — api-client 가 네트워크 단절과 상류 5xx 를 같은 UPSTREAM_UNAVAILABLE 로 정규화하고 배너가 \"지금 책을 확인할 수 없어요\"를 쓴다. 단절(status 0)과 상류 장애(status 5xx)는 코드에서 구분 가능하므로 갈라 쓸 수는 있으나, 사용자가 할 수 있는 일이 재시도로 같아 502·500 을 한 문구로 묶은 UI_GUIDE 판단과 같은 계열이다 — **이 step 은 실제 문구를 그대로 단정했고**(테스트가 문서가 아니라 코드를 따라간 자리다) PRD 표와 UI_GUIDE 중 어느 쪽을 고칠지는 문서 소유자의 결정이다. AC 다섯 줄 전부 통과: typecheck 0 · lint 0 · test 46파일 1311개 통과(기존 1302 + 신규 9, 깨진 것 0) · build 성공 · audit 0 vulnerabilities.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 701,
+          "at": "2026-09-02T17:47:34+0900",
+          "guardrail_docs": [
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 48771,
+          "source_chars": 43919,
+          "context_chars": 5966,
+          "prompt_chars": 103581,
+          "preamble_chars": 99472,
+          "step_body_chars": 4109,
+          "cost_usd": 6.0764,
+          "turns": 47,
+          "cache_read": 6318856,
+          "cache_write": 187553,
+          "output_tokens": 38901,
+          "session_id": "86f1ad08-2dcd-4244-b67f-2398a1b676e6",
+          "tool_result_chars": 76554,
+          "tool_result_count": 46,
+          "tool_output_chars": 90316,
+          "tool_calls": {
+            "Bash": 45,
+            "Write": 1
+          },
+          "tool_result_p50": 875,
+          "tool_result_p90": 3771,
+          "tool_result_max": 15492,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T17:47:34+0900",
+      "attempts": 1
     }
   ],
   "created_at": "2026-09-02T16:35:12+0900"

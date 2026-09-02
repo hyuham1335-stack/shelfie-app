@@ -42,7 +42,8 @@
     },
     {
       "dir": "golden-set",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-02T15:53:40+0900"
     }
   ]
 }

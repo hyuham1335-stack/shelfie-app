@@ -91,7 +91,30 @@
         "src/lib/prompts.ts"
       ],
       "started_at": "2026-09-02T11:52:43+0900",
-      "summary": "generateRecommendations(books, mood, options: RecommendOptions) 의 RecommendOptions 에 forced?: boolean 을 추가했다. 최종 형태는 { deadlineMs: number; correction?: { violatingBookIds: readonly string[] }; forced?: boolean; clientImpl?: unknown; sleepImpl?: (ms: number) => Promise<void> } 이고 src/services/anthropic.ts 에서 export 한다. forced 는 옵셔널이고 기본이 꺼짐이라 미지정 호출의 요청 본문은 변경 전과 완전히 동일하다 (프롬프트 전문을 buildRecommendPrompt(books, mood) 와 대조해 고정했고, forced: false 도 미지정과 body 가 toEqual). buildRecommendBody(books, mood, correction, forced) 가 buildRecommendPrompt(books, mood, { forced }) 로 플래그만 넘긴다 — 강행 문구는 이 파일에서 조립하지 않고 prompts.ts 가 소유한다. correction 과 forced 는 독립이라 교정 재요청(correction + forced: true)에서도 강행 규칙이 유지되고 규칙 7 문구는 사라진다. forced 가 켜져도 RecommendOutcome.relevant 는 모델 값 그대로다(false 를 true 로 덮어쓰지 않는다). 화이트리스트 검증은 여전히 라우트의 일이고, 실패 경로(deadlineMs <= 0 · timeout · 5xx 2회 upstream)와 모델 호출 횟수(1회)는 forced 와 무관하게 동일하다. 테스트 12건 추가 (1047 → 1059). step 2 는 irrelevantStreak >= 2 일 때 첫 호출의 옵션으로 forced: true 를 넘기면 된다."
+      "summary": "generateRecommendations(books, mood, options: RecommendOptions) 의 RecommendOptions 에 forced?: boolean 을 추가했다. 최종 형태는 { deadlineMs: number; correction?: { violatingBookIds: readonly string[] }; forced?: boolean; clientImpl?: unknown; sleepImpl?: (ms: number) => Promise<void> } 이고 src/services/anthropic.ts 에서 export 한다. forced 는 옵셔널이고 기본이 꺼짐이라 미지정 호출의 요청 본문은 변경 전과 완전히 동일하다 (프롬프트 전문을 buildRecommendPrompt(books, mood) 와 대조해 고정했고, forced: false 도 미지정과 body 가 toEqual). buildRecommendBody(books, mood, correction, forced) 가 buildRecommendPrompt(books, mood, { forced }) 로 플래그만 넘긴다 — 강행 문구는 이 파일에서 조립하지 않고 prompts.ts 가 소유한다. correction 과 forced 는 독립이라 교정 재요청(correction + forced: true)에서도 강행 규칙이 유지되고 규칙 7 문구는 사라진다. forced 가 켜져도 RecommendOutcome.relevant 는 모델 값 그대로다(false 를 true 로 덮어쓰지 않는다). 화이트리스트 검증은 여전히 라우트의 일이고, 실패 경로(deadlineMs <= 0 · timeout · 5xx 2회 upstream)와 모델 호출 횟수(1회)는 forced 와 무관하게 동일하다. 테스트 12건 추가 (1047 → 1059). step 2 는 irrelevantStreak >= 2 일 때 첫 호출의 옵션으로 forced: true 를 넘기면 된다.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 413,
+          "at": "2026-09-02T11:59:36+0900",
+          "guardrail_docs": [
+            "ADR",
+            "API_SPEC",
+            "TRD"
+          ],
+          "guardrail_chars": 63786,
+          "source_chars": 52345,
+          "prompt_chars": 122376,
+          "cost_usd": 3.6645,
+          "turns": 22,
+          "cache_read": 3129585,
+          "cache_write": 147422,
+          "output_tokens": 21659
+        }
+      ],
+      "completed_at": "2026-09-02T11:59:36+0900",
+      "attempts": 1
     },
     {
       "step": 2,

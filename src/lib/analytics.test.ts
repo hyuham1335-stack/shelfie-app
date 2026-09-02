@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { logEvent, type AnalyticsEvent } from "./analytics";
-import { unidentifiedReasonSchema } from "./schemas";
+import { errorCodeSchema, unidentifiedReasonSchema } from "./schemas";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -32,7 +32,7 @@ const 사유_0건 = {
   lookup_failed: 0,
 };
 
-describe("logEvent — PRD 7번 이벤트 8종을 JSON 한 줄로 남긴다 (TR-012)", () => {
+describe("logEvent — PRD 7번 이벤트 9종을 JSON 한 줄로 남긴다 (TR-012)", () => {
   it("photo_uploaded", () => {
     logEvent({ event: "photo_uploaded", session_id: SESSION, photo_count: 3 });
     expect(lastLine()).toEqual({
@@ -155,6 +155,45 @@ describe("logEvent — PRD 7번 이벤트 8종을 JSON 한 줄로 남긴다 (TR-
     });
   });
 
+  it("recommend_failed — 실패에 태운 토큰도 청구되므로 함께 싣는다", () => {
+    logEvent({
+      event: "recommend_failed",
+      session_id: SESSION,
+      error_code: "RECOMMENDATION_VALIDATION_FAILED",
+      input_tokens: 4_300,
+      output_tokens: 180,
+    });
+    expect(lastLine()).toEqual({
+      event: "recommend_failed",
+      session_id: SESSION,
+      error_code: "RECOMMENDATION_VALIDATION_FAILED",
+      input_tokens: 4_300,
+      output_tokens: 180,
+    });
+    // PRD 7번 표의 속성 넷 + event. duration_ms·recommended_count는 표에 없다.
+    expect(Object.keys(lastLine())).toHaveLength(5);
+  });
+
+  it("recommend_failed — error_code는 errorCodeSchema의 값이면 전부 통과한다", () => {
+    for (const code of errorCodeSchema.options) {
+      logSpy.mockClear();
+      logEvent({
+        event: "recommend_failed",
+        session_id: SESSION,
+        error_code: code,
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      expect(lastLine()).toEqual({
+        event: "recommend_failed",
+        session_id: SESSION,
+        error_code: code,
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+    }
+  });
+
   it("recommend_accepted — North Star의 분자", () => {
     logEvent({ event: "recommend_accepted", session_id: SESSION, position: 2 });
     expect(lastLine()).toEqual({
@@ -254,6 +293,31 @@ describe("PII·이미지·판독 원문을 남기지 않는다 (PRD 7번)", () =
     });
     expect(JSON.stringify(line)).not.toContain("소년이 온다");
   });
+
+  it("recommend_failed도 표에 없는 속성을 얹으면 출력에서 빠진다", () => {
+    logEvent({
+      event: "recommend_failed",
+      session_id: SESSION,
+      error_code: "UPSTREAM_UNAVAILABLE",
+      input_tokens: 4_300,
+      output_tokens: 0,
+      // 라우트가 실수로 얹기 쉬운 값들 — 기분 원문·요청 ID·책 목록.
+      mood: "번아웃이라 가볍게 읽을 것",
+      request_id: "req_01HXYZ",
+      books: [{ isbn13: "9788936434120", title: "소년이 온다" }],
+    } as unknown as AnalyticsEvent);
+
+    const line = lastLine();
+    expect(line).toEqual({
+      event: "recommend_failed",
+      session_id: SESSION,
+      error_code: "UPSTREAM_UNAVAILABLE",
+      input_tokens: 4_300,
+      output_tokens: 0,
+    });
+    expect(JSON.stringify(line)).not.toContain("번아웃");
+    expect(JSON.stringify(line)).not.toContain("소년이 온다");
+  });
 });
 
 describe("로깅 실패가 요청 처리를 막지 않는다 (TR-012)", () => {
@@ -311,7 +375,7 @@ describe("로깅 실패가 요청 처리를 막지 않는다 (TR-012)", () => {
 
 /*
  * 타입 수준 보장 (컴파일이 곧 검증이라 런타임 테스트를 두지 않는다):
- * - `input_tokens`·`output_tokens`는 Claude를 호출하는 세 이벤트에서 옵셔널이 아니다.
+ * - `input_tokens`·`output_tokens`는 Claude를 호출하는 네 이벤트에서 옵셔널이 아니다.
  *   빠뜨리면 `npm run typecheck`가 깨진다 — 토큰이 빠지면 세션당 비용이
  *   실제보다 낮게 집계되어 300원 가드레일이 무의미해진다.
  * - `event` 이름은 리터럴 유니온이라 오타가 컴파일 타임에 걸린다.

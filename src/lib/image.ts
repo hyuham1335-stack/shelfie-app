@@ -17,7 +17,7 @@
  * 비용이 예측 가능해진다. 더 키워도 책등 판독이 그만큼 좋아지지 않고, 더
  * 줄이면 글자가 뭉개진다.
  */
-import { MAX_PHOTOS } from "./env";
+import { MAX_OUTPUT_BYTES_PER_IMAGE, MAX_OUTPUT_BYTES_TOTAL, MAX_PHOTOS } from "./env";
 import { imageDataUriSchema } from "./schemas";
 
 /** 리사이즈 후 긴 변의 목표 픽셀 (FR-002) */
@@ -37,11 +37,13 @@ export const JPEG_QUALITY = 0.85;
 /** 원본 파일 1장의 크기 상한 (FR-001) */
 export const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 
-/** 리사이즈 산출물 1장의 전송 크기 상한 (API_SPEC 공통 규약) */
-export const MAX_OUTPUT_BYTES_PER_IMAGE = 2 * 1024 * 1024;
-
-/** 리사이즈 산출물 합계의 전송 크기 상한. 플랫폼 상한 4.5MB보다 낮게 잡는다 */
-export const MAX_OUTPUT_BYTES_TOTAL = 4 * 1024 * 1024;
+/**
+ * 전송 크기 상한은 `lib/env.ts`가 단일 출처다 — 서버(`app/api/analyze`)도 같은
+ * 값으로 다시 재야 하는데, 브라우저 전용인 이 모듈을 서버가 import할 수 없기
+ * 때문이다(/docs/ARCHITECTURE.md). 이름은 여기서도 계속 내보낸다:
+ * 이 두 상한은 리사이즈 산출물의 성질이라 호출부가 `image`에서 찾는 것이 자연스럽다.
+ */
+export { MAX_OUTPUT_BYTES_PER_IMAGE, MAX_OUTPUT_BYTES_TOTAL } from "./env";
 
 /**
  * 업로드를 허용하는 MIME (FR-001).

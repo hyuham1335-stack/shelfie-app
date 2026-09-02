@@ -258,7 +258,9 @@ flowchart LR
 
 명명 규칙: snake_case, `{object}_{action}` 형식. 저장소가 없으므로 구조화 JSON 한 줄로 표준 출력에 남기고 Vercel 로그로 조회한다. 개인 식별 정보·이미지·판독 원문(`rawText`)은 절대 기록하지 않는다.
 
-**수집 경로**: 대부분은 라우트 핸들러가 직접 남기지만, `recommend_viewed`·`recommend_accepted`·`book_resolved` 세 가지는 클라이언트에서만 관측된다. 이 셋은 `POST /api/events`로 보내 서버 로그에 합류시킨다. 이 경로가 없으면 **North Star 지표의 분자를 셀 수 없어 가설 검증 자체가 성립하지 않는다.** 아래 표의 `수집` 열이 어느 쪽인지 밝힌다.
+**수집 경로**: 대부분은 라우트 핸들러가 직접 남기지만, `recommend_accepted`·`book_resolved` 두 가지는 클라이언트에서만 관측된다. 이 둘은 `POST /api/events`로 보내 서버 로그에 합류시킨다. 이 경로가 없으면 **North Star 지표의 분자를 셀 수 없어 가설 검증 자체가 성립하지 않는다.** 아래 표의 `수집` 열이 어느 쪽인지 밝힌다.
+
+**`recommend_viewed`는 서버가 남긴다.** 렌더 시점이 아니라 응답 반환 직전이며, `duration_ms`와 토큰은 서버만 알기 때문이다. 양쪽이 보내면 **추천 수락률의 분모가 두 배로 부푼다.** 그래서 `/api/events`의 허용 목록에도 이 이름을 두지 않는다 — 보내는 클라이언트가 없는 것과 받을 수 있는 것은 다른 문제고, 받을 수 있으면 언젠가 누군가 보낸다.
 
 | 이벤트명 | 수집 | 발생 시점 | 속성 (Properties) | 연결 지표 |
 |----------|------|-----------|-------------------|-----------|
@@ -266,14 +268,17 @@ flowchart LR
 | `analyze_completed` | 서버 | 분석 응답 반환 직전 | `session_id`, `identified_count`, `unidentified_count`, `unidentified_by_reason`(4종 카운트), `overflow_count`, `failed_photo_count`, `duration_ms`, `input_tokens`, `output_tokens` | 책 인식률, 미확인 비율(가드레일), 세션당 비용(가드레일) |
 | `analyze_failed` | 서버 | 분석 중 처리 불가 오류 | `session_id`, `error_code`, `failed_photo_count` | 에러율(가드레일) |
 | `questions_generated` | 서버 | 문답 응답 반환 직전 | `session_id`, `question_count`(0이면 폴백), `input_tokens`, `output_tokens` | 세션 완주율, 세션당 비용(가드레일) |
-| `mood_submitted` | 서버 | 기분 텍스트 또는 문답 답변 제출 | `session_id`, `input_mode` (`free_text` 또는 `guided`), `retry_index`(다시 추천받기 횟수) | 세션 완주율 |
+| `mood_submitted` | 서버 | 기분 텍스트 또는 문답 답변 제출 | `session_id`, `input_mode` (`free_text` 또는 `guided`), `retry_index`(다시 추천받기 횟수 — 요청의 `retryIndex`, `/docs/API_SPEC.md`) | 세션 완주율 |
 | `book_resolved` | **클라이언트** → `/api/events` | 미확인 책을 사용자가 확정 | `session_id`, `resolve_attempt`, `matched` | 책 인식률 |
-| `recommend_viewed` | **클라이언트** → `/api/events` | 추천 결과 렌더링 | `session_id`, `recommended_count`, `duration_ms`, `input_tokens`, `output_tokens`(응답에서 전달받은 값) | 추천 수락률(분모), 세션 완주율(분자), 세션당 비용 |
+| `recommend_viewed` | 서버 | 추천 응답 반환 직전 | `session_id`, `recommended_count`, `duration_ms`, `input_tokens`, `output_tokens` | 추천 수락률(분모), 세션 완주율(분자), 세션당 비용 |
+| `recommend_failed` | 서버 | 추천 실패 응답 반환 직전 | `session_id`, `error_code`, `input_tokens`, `output_tokens` | 에러율(가드레일), 세션당 비용(가드레일) |
 | `recommend_accepted` | **클라이언트** → `/api/events` | "이거 읽을래요" 클릭 | `session_id`, `position` (1~3) | **추천 수락률(분자) — North Star** |
 
 - 지표에 연결되지 않는 이벤트는 만들지 않는다.
 - **Claude를 호출하는 모든 이벤트에 토큰 수를 싣는다.** 가드레일이 "세션당 비용 300원"인데 추출 토큰만 기록하면 추천·문답 비용이 집계에서 빠져 실제보다 낮게 보인다.
 - 미확인은 사유별로 나눠 센다. `lookup_failed`(알라딘 장애)는 미확인 비율 가드레일의 분자에서 제외한다 — 외부 장애를 프롬프트 품질 저하로 오독하면 엉뚱한 롤백을 하게 된다 (ADR-005).
+- **추천 실패는 `recommend_viewed`를 올리지 않는다.** 추천 수락률의 **분모**가 실패 요청으로 부풀면 North Star가 실제보다 낮게 보인다. 그래서 실패 전용 이벤트를 따로 둔다 — `analyze_completed`/`analyze_failed`와 같은 짝이다. **태운 토큰은 실패해도 청구되므로** `recommend_failed`가 함께 싣는다. 싣지 않으면 세션당 비용 가드레일이 실패분을 보지 못한다.
+- **`book_resolved.matched`는 사용자가 고른 후보가 실제로 목록에 합류했는지다.** 재검색 후보를 골랐으나 재조회에서 `isbn13`이 일치하지 않아 승격하지 못하면 `false`다. 성공만 세면 **책 인식률이 재검색 실패를 보지 못한다** — 고른 책이 붙지 않는 것은 인식률의 문제이지 사용자의 문제가 아니다.
 
 ---
 

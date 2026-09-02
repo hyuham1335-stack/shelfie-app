@@ -7,8 +7,51 @@ import { z } from "zod";
 /** 모든 Claude 호출의 기본 모델. 환경변수로 배포 없이 교체할 수 있다. */
 export const DEFAULT_MODEL = "claude-opus-5";
 
-/** 한 요청에 올릴 수 있는 사진 장수 상한 (FR-001) */
-export const MAX_PHOTOS = 5;
+/**
+ * 사진 장수 상한의 **천장** (FR-001).
+ *
+ * 환경변수는 이 값을 넓히지 못하고 좁히기만 한다. `NEXT_PUBLIC_` 값은
+ * 클라이언트 번들에 그대로 박히는 공개 값이라, 그것 하나로 서버가 받는
+ * 장수가 늘어날 수 있다면 FR-001은 방어가 아니라 권고가 된다.
+ */
+const MAX_PHOTOS_CEILING = 5;
+
+/**
+ * 한 요청에 올릴 수 있는 사진 장수 상한 (FR-001, TRD 7번 `NEXT_PUBLIC_MAX_PHOTOS`).
+ *
+ * `process.env.NEXT_PUBLIC_MAX_PHOTOS`를 **정적 참조로** 읽는다 — `NEXT_PUBLIC_`
+ * 값은 빌드 타임에 문자열로 치환되므로 계산된 키(`process.env[name]`)로 접근하면
+ * 치환되지 않아 항상 undefined가 된다.
+ *
+ * 값이 없거나 숫자가 아니거나 범위를 벗어나면 천장으로 떨어진다. 여기서 던지지
+ * 않는 이유는 이 모듈이 클라이언트에서도 import되기 때문이다 — 상수 하나를
+ * 가져가려다 화면이 통째로 죽으면 안 된다.
+ */
+export const MAX_PHOTOS: number = clampPhotoLimit(process.env.NEXT_PUBLIC_MAX_PHOTOS);
+
+function clampPhotoLimit(raw: string | undefined): number {
+  if (raw === undefined) return MAX_PHOTOS_CEILING;
+
+  const parsed = Number(raw.trim());
+  if (!Number.isInteger(parsed)) return MAX_PHOTOS_CEILING;
+
+  // 1 미만이면 사진을 한 장도 못 올리게 되고, 천장을 넘으면 FR-001을 어긴다.
+  return Math.min(Math.max(parsed, 1), MAX_PHOTOS_CEILING);
+}
+
+/**
+ * 리사이즈 산출물 1장의 전송 크기 상한 (FR-002, API_SPEC 공통 규약).
+ *
+ * 브라우저(`lib/image.ts`)와 서버(`app/api/analyze`)가 **같은 값**을 재야 한다.
+ * 서버가 다시 재는 것은 클라이언트 검증을 신뢰하지 않기 때문이지만(TRD 6.5),
+ * 그렇다고 두 벌로 적어 둘 이유는 없다 — 값이 갈리면 클라이언트가 통과시킨
+ * 요청을 서버가 거부하는 조합이 조용히 생긴다. 그래서 값은 여기 하나로 두고
+ * 재는 일은 두 곳에서 각자 한다.
+ */
+export const MAX_OUTPUT_BYTES_PER_IMAGE = 2 * 1024 * 1024;
+
+/** 리사이즈 산출물 합계의 전송 크기 상한. 플랫폼 상한 4.5MB보다 낮게 잡는다 */
+export const MAX_OUTPUT_BYTES_TOTAL = 4 * 1024 * 1024;
 
 /** 확인된 책 목록의 상한 (FR-005) */
 export const MAX_IDENTIFIED_BOOKS = 50;
@@ -31,6 +74,18 @@ export const MAX_ALADIN_CANDIDATES = 5;
 
 /** 한 번에 추천하는 책 수 (FR-006) */
 export const MAX_RECOMMENDATIONS = 3;
+
+/**
+ * `retryIndex`의 상한. FR-010의 "세션당 5회"를 0-based로 센 값이다.
+ * 넘겨 보내면 400이므로 요청을 조립하는 화면이 이 값으로 클램프한다.
+ */
+export const MAX_RETRY_INDEX = 4;
+
+/**
+ * `irrelevantStreak`의 상한. 2회 연속 무관 판정이면 서버가 판정을 무시하고
+ * 추천을 진행하므로(API_SPEC /api/recommend) 그보다 큰 값에는 의미가 없다.
+ */
+export const MAX_IRRELEVANT_STREAK = 2;
 
 /** 책등 추출에 쓸 모델 ID */
 export function getExtractModel(): string {

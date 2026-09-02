@@ -2,10 +2,47 @@
   "project": "shelfie",
   "phase": "routes-core",
   "steps": [
-    { "step": 0, "name": "aladin-lookup", "status": "pending" },
-    { "step": 1, "name": "anthropic-notes", "status": "pending" },
-    { "step": 2, "name": "analyze-route", "status": "pending" },
-    { "step": 3, "name": "resolve-route", "status": "pending" },
-    { "step": 4, "name": "events-route", "status": "pending" }
-  ]
+    {
+      "step": 0,
+      "name": "aladin-lookup",
+      "status": "completed",
+      "started_at": "2026-09-01T16:40:49+0900",
+      "summary": "services/aladin.ts에 ItemLookUp 경로 추가 — export: lookupFacts(isbn13, SearchOptions) / lookupFactsMany(isbn13s, SearchOptions) / type FactsOutcome({status:'ok',facts:AladinFacts} | {status:'failed'}). 호출 수는 ItemLookUp을 judge()가 확인으로 승격시킨 책에만 걸어 줄였다(후보 80건이 아니라 확인된 책 수 ≤50에 비례. 미확인 책은 사실 필드가 필요 없다). searchByTitle·searchMany 시그니처 불변, 전송은 requestWithRetry로 공유(5xx·타임아웃 1회 재시도, 4xx 재시도 없음). 브레이커·데드라인은 SearchOptions로 주입해 ItemSearch와 하나를 나눠 쓴다 — 라우트는 대조 단계 시작 시 deadlineAt를 한 번 잡고 두 호출에 (deadlineAt - Date.now())를 각각 넘기고 같은 breaker를 넘길 것. 사실을 못 채우면(link 누락·절대 URL 아님·요청 ISBN13 불일치·결과 0건·5xx·타임아웃·브레이커 Open·예산 소진) 전부 failed → 호출부가 lookup_failed로 강등하고 확인으로 승격하지 않는다. pages·aladinRating은 키 누락과 0을 모두 null로 옮기며 이때도 status는 ok다(null은 정상값). 목업 모드(TTB 키 없음)는 신원 필드를 만들 수 없으므로 라우트는 ItemSearch 후보의 제목·저자·출판사·표지를 유지하고 facts에서 pages·aladinRating·aladinLink만 취할 것. 테스트 57건(기존 32 + 신규 25, 전부 fetch 주입·실제 네트워크 없음). 보고: ItemLookUp 도입으로 세션당 알라딘 호출 상한 추정이 TRD 10번의 160회에서 최대 260회(후보 80×2 + 확인 50×2)로 늘어 TRD 10번 병목 표·PRD 부채 표의 수치 갱신이 필요하다 — docs는 이 step에서 고치지 않았다.",
+      "completed_at": "2026-09-01T16:50:33+0900"
+    },
+    {
+      "step": 1,
+      "name": "anthropic-notes",
+      "status": "completed",
+      "started_at": "2026-09-01T16:50:34+0900",
+      "summary": "services/anthropic.ts에 한줄평 배치 추가 — export: generateNotes(books, NoteOptions) / type NoteOutcome({status:'ok',notes:Map<isbn13,note>,usage} | {status:'skipped',reason:'budget'|'no_books'} | {status:'failed',reason:NoteFailureReason,usage?}) / NoteOptions / NoteBook / NoteFailureReason. 프롬프트·스키마는 lib/prompts.ts의 buildNotePrompt·noteJsonSchema·noteBatchSchema를 그대로 쓰고 새로 만들지 않았다. 모델은 getRecommendModel()(추출 모델과 분리), 호출 규약(adaptive thinking·budget_tokens 없음·output_config.format·betas+fallbacks·max_tokens 16000·stop_reason 먼저 읽기)은 buildBody/callWithRetry로 추출과 한 벌을 공유한다. 예산은 deadlineMs < STAGE_BUDGET_MS.note(8s)면 SDK를 부르지 않고 skipped:budget, 0권이면 skipped:no_books — 사유 보존을 위해 failed와 나눴다. **배치는 단건과 다르게** max_tokens에서 입력을 절반으로 쪼개 1회만 재시도한다(전체 1회+절반 1회=2회, 다시 쪼개지 않음. 한쪽이라도 실패하면 전체 failed이고 그때까지의 usage는 합산). refusal은 재시도 없음, 429·5xx·연결 오류만 1회 재시도. 응답의 isbn13은 요청 목록으로 화이트리스트 검증해 목록 밖은 버린다. 설계 선택: 60자 초과 등 noteBatchSchema 위반은 **배치 전체를 failed(schema)**로 처리했다(그 책만 빈 문자열로 두지 않음) — 항목별 재파싱은 60자 상한을 이 파일에서 다시 조립해야 해 상한이 두 곳에 생기고, 한줄평은 해석이라 전원 빈 문자열이어도 책 목록·추천은 그대로 나가기 때문. 라우트는 skipped·failed 모두 claudeNote:\"\"로 강등하고 요청은 200으로 끝낼 것. ② 이전 런 보고 해소: ExtractOutcome.failed에 usage?를 추가해 refusal·max_tokens·응답 스키마 위반(=응답이 돌아와 과금된 경우)의 토큰을 비용 집계로 나른다. 호출 자체가 없거나(예산 소진·데이터 URI 위반) 응답을 못 받은 경우(timeout·연결 오류·봉투 파싱 실패)는 usage 키 자체를 만들지 않는다 — 0을 지어내면 '호출했는데 공짜'로 집계된다. 기존 39건 중 8건의 toEqual 단언을 usage 포함으로 갱신했다(동작 회귀 아님). 테스트 68건(기존 39 + 신규 29, 전부 SDK 스텁·실제 API 호출 없음), 전체 389건 통과. 보고: 라우트(step 2)는 analyze_completed의 토큰 합계에 실패 분기의 usage도 더해야 가드레일이 정확해진다.",
+      "completed_at": "2026-09-01T17:03:39+0900"
+    },
+    {
+      "step": 2,
+      "name": "analyze-route",
+      "status": "completed",
+      "started_at": "2026-09-01T17:03:39+0900",
+      "summary": "src/app/api/analyze/route.ts 신설 (app/api/ 첫 라우트) — export: POST / maxDuration=60 / runtime='nodejs'(lib/proof가 node:crypto를 쓴다). 흐름은 ARCHITECTURE 데이터 흐름 1 그대로: createBudget(55s) → 사진별 병렬 extractFromPhoto(deadlineFor('extract')) → reduceBeforeLookup → searchMany → judge → dedupeByIsbn → lookupFactsMany → capIdentified/capUnidentified → generateNotes → issueProof → analyzeResponseSchema 검증 → 200. 판정·상한·예산·서명은 전부 lib/ 기존 함수를 그대로 부르고 라우트에 재구현한 로직은 0건이다. **상태 코드 분기**: 스키마 위반 400(zod 이슈를 코드로만 옮긴다 — images 배열 too_big→TOO_MANY_PHOTOS, 원소 위반→UNSUPPORTED_IMAGE_TYPE, 그 외 INVALID_REQUEST. 원본 메시지·필드 경로는 노출하지 않음) / 장당 2MB 초과 400 IMAGE_TOO_LARGE / 합계 4MB 초과 413 PAYLOAD_TOO_LARGE / 추출 후보 0건 404 EMPTY_SHELF / **후보 있음+확인 0건은 200 + identified:[] + 미확인 목록**(EMPTY_SHELF 아님, ADR-005) / 일부 사진 실패 200 + failedPhotoIndexes / 전 사진 실패 502 / SERVICE_ENABLED=false 503(값이 망가져 읽을 수 없어도 차단 쪽으로 넘어진다 — 해석 못 하는 스위치로 45원짜리 모델을 계속 부르지 않는다). **예산 처리**: 단계별 독립 타임아웃을 두지 않고 budget.deadlineFor()가 준 min(단계 예산, 남은 예산)만 넘긴다. 대조 단계는 시작 시점에 deadlineAt를 한 번 잡아 ItemSearch·ItemLookUp이 하나의 예산과 **하나의 요청 스코프 브레이커**를 나눠 쓴다(각자 12s를 잡으면 총 예산이 깨진다). 한줄평은 budget.isExhaustedFor('note')면 호출 자체를 생략하고 전원 claudeNote:''. 어느 단계가 예산을 넘겨도 응답은 200이고 산출물만 강등한다(대조 미완료 lookup_failed, 한줄평 빈 문자열). 사유 4종은 끝까지 다른 값으로 나른다 — 조회 전 강등은 unreadable, ItemSearch 실패와 **ItemLookUp 실패**는 둘 다 lookup_failed(사실을 못 채우면 확인으로 승격하지 않는다), 결과 0건만 no_match. 설계 선택 3가지: ① **ItemLookUp 전에 dedupeByIsbn을 돌린다**(step 지시의 7→8 순서를 바꿨다) — 같은 ISBN을 두 번 조회하면 알라딘 일일 한도만 축나고 결과는 같다. ② 신원 필드(제목·저자·출판사·표지)는 ItemSearch 후보를 유지하고 facts에서 pages·aladinRating·aladinLink만 취한다(step 0 보고의 목업 모드 규약). ③ 미확인 목록 순서는 조회를 시도한 것(no_match·ambiguous·lookup_failed) 먼저, 조회조차 못 한 unreadable을 뒤에 둔다 — 100건 절단 때 정보량이 많은 쪽이 남는다. 관측성: photo_uploaded·analyze_completed·analyze_failed를 남기고 토큰은 **실패 분기의 usage까지 합산**한다(step 1 보고 반영). 미확인은 사유별 4종 카운트로 나눠 센다. logEvent 호출은 라우트에서도 try/catch로 감싸 로깅 실패가 응답을 막지 않는다. 테스트 35건 신설(services/를 모킹, lib/은 진짜를 쓴다 — 판정까지 모킹하면 라우트가 판정을 재구현해도 초록불이 난다), 전체 424건 통과. lint·typecheck·build·audit(0건) 전부 통과. 보고 3건: ① 장당 2MB·합계 4MB 상수가 lib/image.ts(브라우저 전용이라 서버에서 import 금지)와 라우트 두 곳에 있다 — lib/env.ts로 옮기는 것이 맞지만 이 step은 lib/ 수정 금지라 하지 않았다. ② errorCodeSchema에 500대 내부 오류 코드가 없어, 우리 응답이 analyzeResponseSchema를 어기는 경우(외부 값이 services/ 검증을 통과했으나 계약과 어긋남)를 502 UPSTREAM_UNAVAILABLE로 내보낸다 — 계약 위반 본문을 사용자에게 보내지 않는 쪽을 택했다. ③ dedupe를 앞당겨 세션당 알라딘 호출 상한이 후보 80×2 + 확인(중복 제거 후 ≤50)×2 = 260회로 유지되며, TRD 10번 병목 표의 160회 수치는 여전히 갱신이 필요하다.",
+      "completed_at": "2026-09-01T17:18:37+0900"
+    },
+    {
+      "step": 3,
+      "name": "resolve-route",
+      "status": "completed",
+      "started_at": "2026-09-01T19:48:49+0900",
+      "summary": "src/app/api/books/resolve/route.ts 신설 (TR-008, US-002) — export: POST / maxDuration=10 / runtime='nodejs'(lib/proof가 node:crypto를 쓴다). 흐름은 ARCHITECTURE 데이터 흐름 3 그대로: SERVICE_ENABLED 확인 → resolveRequestSchema 검증 → createRequestBreaker → searchByTitle → 5건 절단 → lookupFactsMany → issueProof → resolveResponseSchema 검증 → 200. analyze 라우트와 같은 형태(검증 → 처리 → 응답 스키마 검증, requestId·X-Request-Id·에러 본문 requestId, ERROR_MESSAGES 상수)로 맞췄고 라우트에 재구현한 판정 로직은 0건이다. **후보 전원에 proof를 발급한다**(ADR-006) — recommend가 서명을 검증하는데 이 경로가 서명 없는 책을 내주면 US-002가 곧 검증 우회 통로가 되기 때문. 한 요청의 서명은 같은 issuedAt으로 발급해 만료가 책마다 어긋나지 않게 했다. **404와 502를 가른다**(ADR-005): 검색 성공 + 결과 0건만 404 NOT_FOUND_IN_ALADIN('원서·절판일 수 있어요'), 알라딘 5xx·타임아웃·브레이커 Open은 502 UPSTREAM_UNAVAILABLE('지금 확인할 수 없었어요'), 예산 소진은 504 TIMEOUT. 설계 선택 4가지: ① **자르고 나서 조회한다** — 어차피 5건(MAX_ALADIN_CANDIDATES)만 나가므로 나머지까지 ItemLookUp을 부르면 알라딘 일일 한도만 축난다. ② 사실을 못 채운 후보(ItemLookUp failed)는 그 책만 버리고 나머지는 그대로 내보낸다(fail-soft) — 빈 칸을 사실처럼 보여 주지 않는다(ADR-002). 전원 실패면 404가 아니라 502다(알라딘에 없다는 뜻이 아니다). ③ 신원 필드(제목·저자·출판사·표지)는 ItemSearch 후보를 유지하고 facts에서 pages·aladinRating·aladinLink만 취한다(step 0 목업 모드 규약). ④ 단계가 하나뿐이라 lib/budget의 단계 배분표를 쓰지 않고 총 예산 9s(함수 상한 10s − 응답 조립 1s)를 잡아 ItemSearch·ItemLookUp이 **하나의 예산과 하나의 요청 스코프 브레이커**를 나눠 쓴다. 검색 순위는 재정렬하지 않고 그대로 보존하며 서버가 1건을 임의로 확정하지 않는다(US-002). Claude를 부르지 않아 응답에 claudeNote가 없다. 브레이커는 요청마다 새로 만들어 서버 상태를 남기지 않는다(ADR-003). 테스트 28건 신설(services/aladin.ts만 모킹, lib/proof·schemas는 진짜를 쓴다 — proof 검증은 verifyProof로 실제 확인하고 서명 뒤바꾸기 음성 케이스도 둔다), 전체 452건 통과. typecheck·lint·test·build·audit(0건) 전부 통과. 보고 2건: ① errorCodeSchema에 500대 내부 코드가 없어, 우리 응답이 resolveResponseSchema를 어기는 경우를 analyze와 같이 502 UPSTREAM_UNAVAILABLE로 내보낸다(계약 위반 본문을 사용자에게 보내지 않는 쪽). ② 이 라우트는 서버 이벤트를 남기지 않는다 — book_resolved는 PRD 7번이 클라이언트 → /api/events 경로로 정의한 이벤트라 step 4가 받는다.",
+      "completed_at": "2026-09-01T19:52:00+0900"
+    },
+    {
+      "step": 4,
+      "name": "events-route",
+      "status": "completed",
+      "started_at": "2026-09-01T20:50:27+0900",
+      "summary": "src/app/api/events/route.ts 신설 (TR-014) — export: POST / maxDuration=3 / runtime='nodejs'(randomUUID). 흐름: SERVICE_ENABLED 확인 → 본문 크기 → JSON 파싱 → eventsRequestSchema → sessionId 형식 → 속성 화이트리스트 → logEvent → eventsResponseSchema 검증 → 202 {accepted:true}. analyze·resolve와 같은 형태(requestId·X-Request-Id·에러 본문 requestId·ERROR_MESSAGES 상수·serviceEnabled 폴백)로 맞췄다. **이벤트 정의를 라우트에 다시 만들지 않았다**: 허용 3종은 lib/schemas의 clientEventSchema가 화이트리스트이고, toAnalyticsEvent()의 반환 타입을 lib/analytics의 판별 유니온 Extract<AnalyticsEvent,{event:ClientEventName}>로 못박아 PRD 7번 표가 바뀌면 이 파일이 컴파일 단계에서 깨진다. position 상한(1~3)은 recommendationSchema.shape.position을 재사용해 두 곳에 적지 않았다. **PII 차단은 두 겹**: 라우트의 이벤트별 zod object가 정의되지 않은 키를 벗겨 내고, logEvent의 PROPERTY_KEYS 투영이 다시 거른다 — 회귀 테스트가 실제 표준 출력 줄을 파싱해 email·rawText·file_name이 없음을 확인한다. **본문 8KB는 파싱 전에 잰다**: Content-Length가 상한을 넘는다고 말하면 스트림을 읽지도 않고(bodyUsed=false로 검증) 400, 헤더는 신뢰할 수 없으므로 읽은 뒤 TextEncoder 바이트 길이로 다시 잰다(한글이 3바이트라 문자 수로 재면 어긋난다). **로깅 실패는 202를 막지 못한다** — 진짜 logEvent가 예외를 삼키지만 그 성질에 기대지 않고 라우트에서도 try/catch로 감싼다(TR-012). 저장 부수효과 0: 표준 출력 한 줄이 전부이고(ADR-003), 회귀 테스트가 globalThis 키 수 불변과 라우트 소스에 fs·localStorage가 없음을 함께 본다. 설계 선택 3가지: ① **sessionId를 UUID v4로 검증하고 어긋나면 400**(step 지시) — lib/schemas의 sessionIdSchema는 길이만 보는데, 그것은 분석·추천처럼 지켜야 할 작업이 있는 요청을 로깅용 값 하나로 실패시키지 않기 위한 것이다. 이 라우트에는 지킬 작업이 없고 요청의 내용물이 곧 로그 줄이라 여기서만 좁게 본다. 값 자체는 여전히 신뢰하지 않는다(위조 시 지표 오염은 감수 — 주석에 명시). ② **정의된 속성이 빠지면 400**(무시가 아니다) — 정의 밖 키는 API_SPEC대로 조용히 버리지만, recommend_viewed의 토큰이 빠진 채 통과하면 세션당 비용이 실제보다 낮게 집계되어 300원 가드레일이 무의미해진다. ③ SERVICE_ENABLED=false면 503 — 외부 호출이 없어 비용은 안 들지만 TRD 7번이 '모든 라우트'로 정했고 화면이 점검 상태를 한 신호로 읽어야 한다. 테스트 30건 신설(lib/analytics는 기본적으로 진짜를 부르는 대역으로 감싸고 console.log 스파이로 실제 줄을 읽는다 — 인자만 기록하면 표준 출력에 무엇이 나가는지 아무도 보지 않게 된다. 던지는 대역은 TR-012 검증에만 사용), 전체 482건 통과. typecheck·lint·test·build·audit(0건) 전부 통과. 보고 2건: ① API_SPEC 인증 절은 sessionId 형식 위반 시 'invalid로 치환해 기록하고 요청은 정상 처리'라고 적었는데 이 라우트는 400을 낸다(step 지시). 같은 절의 /api/events 실패 응답 목록이 '스키마 위반 → 400'이라 문서 안에서도 두 문장이 갈린다 — API_SPEC의 해당 문장을 엔드포인트별로 명시하는 갱신이 필요하다(docs는 이 step에서 고치지 않았다). ② UUID v4 패턴이 라우트에만 있다 — lib/schemas.ts에 strictSessionIdSchema로 두는 편이 맞지만 이 step은 lib/ 수정 금지라 하지 않았다.",
+      "completed_at": "2026-09-01T20:59:22+0900"
+    }
+  ],
+  "created_at": "2026-09-01T16:40:49+0900",
+  "completed_at": "2026-09-01T20:59:23+0900"
 }

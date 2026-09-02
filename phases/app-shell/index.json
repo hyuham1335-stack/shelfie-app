@@ -1,0 +1,95 @@
+{
+  "project": "shelfie",
+  "phase": "app-shell",
+  "carried_reports": {
+    "note": "이전 런의 미해소 보고를 어느 step이 받는지 명시한다. 배정하지 않으면 이월된다 — 네 건이 세 런을 그렇게 살아남았다 (ROADMAP 15).",
+    "resolved_by_main_before_run": [
+      "알라딘 호출 상한 160 → 260회 (docs/TRD.md)",
+      "errorCodeSchema 500대 공백의 계약 쪽 (docs/API_SPEC.md — INTERNAL_ERROR)",
+      "unidentifiedOverflowCount 승인 문구 (docs/UI_GUIDE.md)",
+      "vitest.config.ts setupFiles — jest-dom 매처 · RTL 자동 cleanup"
+    ],
+    "assigned_to_steps": {
+      "0": [
+        "NEXT_PUBLIC_MAX_PHOTOS 를 env.ts 가 읽지 않음 (런 #2)",
+        "2MB·4MB 이미지 상수 이중화 (런 #3)",
+        "errorCodeSchema 에 INTERNAL_ERROR 추가 + 소비처 (런 #3)",
+        "'50권까지만' 하드코딩 · unidentifiedOverflowCount 무표시 (런 #4)",
+        "컴포넌트 테스트 9개의 중복 afterEach(cleanup) 제거"
+      ],
+      "1": [
+        "photoCount 를 세션 상태가 보관 (런 #4)"
+      ],
+      "2": [
+        "recommend_viewed 이중 계상 — 클라이언트는 보내지 않는다 (런 #4)"
+      ],
+      "5": [
+        "ambiguous 후보에 proof 가 없음 — resolve 재호출로 승격 (런 #4)",
+        "photoCount 를 BookList 에 전달 (런 #4)"
+      ]
+    },
+    "not_assigned_this_run": [
+      "recommend_failed 이벤트 부재 (런 #4) — PRD 7번 이벤트 표 신설이 선행이다. console.warn 을 유지하고 런 #6으로 넘긴다",
+      "@anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡음 (런 #2·#3) — 이번 런은 SDK 를 건드리지 않는다",
+      "무상태에서 relevant:false 2회 연속 무시 · mood_submitted.retry_index (런 #4) — 요청 스키마에 세션 진행 상태를 넣을 것인가는 계약 결정이라 API_SPEC 갱신이 선행이다. 런 #5는 클라이언트 책임으로 두고 서버 판정을 바꾸지 않는다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "contracts-debt",
+      "status": "completed",
+      "started_at": "2026-09-01T23:33:40+0900",
+      "summary": "세 런째 이월된 계약 부채 정리: ① src/lib/env.ts 가 NEXT_PUBLIC_MAX_PHOTOS 를 정적 참조로 읽어 MAX_PHOTOS_CEILING(5, 비공개)으로 [1,5] 클램프 — MAX_PHOTOS 는 계속 env.ts export ② 이미지 전송 상한을 src/lib/env.ts 로 이관: MAX_OUTPUT_BYTES_PER_IMAGE(2MB)·MAX_OUTPUT_BYTES_TOTAL(4MB) — 이름 그대로 src/lib/image.ts 가 재수출하고, analyze 라우트는 @/lib/env 에서 직접 import(로컬 MAX_IMAGE_BYTES·MAX_REQUEST_IMAGE_BYTES 삭제) ③ errorCodeSchema 에 INTERNAL_ERROR(500) 추가 + analyze·resolve·recommend·events 의 '우리 응답이 우리 스키마를 어김' 분기를 502/400 → 500 INTERNAL_ERROR 로 이동(외부 장애 502 는 전부 유지), ERROR_MESSAGES 4곳·ErrorBanner MESSAGE 맵 채움 ④ BookList 가 MAX_IDENTIFIED_BOOKS 를 import 하고 unidentifiedOverflowCount Notice 추가 ⑤ 컴포넌트 테스트 9개의 파일 상단 afterEach(cleanup) 과 미사용 import 제거.",
+      "completed_at": "2026-09-01T23:43:15+0900",
+      "attempts": 1
+    },
+    {
+      "step": 1,
+      "name": "session-machine",
+      "status": "completed",
+      "started_at": "2026-09-01T23:43:15+0900",
+      "summary": "src/lib/session.ts 신설 (순수 · fetch·React·저장소 0건). 상태 10종 판별 유니온 SessionState = SessionData & {status} (error 변형만 errorCode: ErrorCode 로 좁힘), SessionStatus, ShelfBook = {origin:\"photo\";book:IdentifiedBook} | {origin:\"resolved\";book:ResolvedCandidate} (승격분에 photoIndex 를 지어내지 않는다), InputMode. SessionData 필드: sessionId·photoCount·books·unidentified·overflowCount·unidentifiedOverflowCount·failedPhotoIndexes·mood·inputMode·questions·recommendations·shortfall·recommendCount·errorCode·requestId. createSessionState(sessionId): SessionState (UUID 는 밖에서 주입). sessionReducer(state, action): SessionState — 정의되지 않은 조합은 던지지 않고 같은 참조 반환. SessionAction 15종: ANALYZE_STARTED{photoCount} · ANALYZE_RETRIED{photoCount} · ANALYZE_SUCCEEDED{result: AnalyzeResponse} · ANALYZE_FAILED{code,requestId}(EMPTY_SHELF→emptyShelf, 그 외→error) · BOOK_RESOLVED{rawText,book: ResolvedCandidate} · MOOD_STEP_ENTERED · GUIDED_MODE_ENTERED · QUESTIONS_RECEIVED{questions}(빈 배열→moodInput 폴백) · GUIDED_SKIPPED · MOOD_SUBMITTED{mood} · ANSWERS_SUBMITTED{mood} · RECOMMEND_SUCCEEDED{recommendations,shortfall} · RECOMMEND_FAILED{code,requestId}(IRRELEVANT_MOOD·RECOMMENDATION_VALIDATION_FAILED→moodInput, 그 외→error) · RECOMMEND_AGAIN · RESTARTED. 셀렉터: toBookReferences(state): BookReference[] · toRecommendBooks(state): RecommendBook[](승격분 claudeNote=\"\") · canRecommendAgain(state): boolean · hasVerifiedBooks(state): boolean, 상수 MAX_RECOMMEND_ATTEMPTS=5. 이월 보고 \"photoCount 를 세션 상태가 보관\" 해소 — ANALYZE_STARTED/RETRIED 가 기록한다. 판단 두 가지를 명시한다: ① RESTARTED 는 recommendCount 를 초기화하지 않는다(FR-010 상한이 세션당이라 \"새 사진으로 시작\"으로 풀리면 상한이 없어진다) ② 책장이 50권일 때의 BOOK_RESOLVED 는 상태를 바꾸지 않는다(미확인 원문을 지우고 책을 버리면 조용한 소실이 된다). 테스트 55개 — 상태도 22개 전이 전부 + 미정의 (상태×액션) 조합 전수 무시 검증.",
+      "completed_at": "2026-09-01T23:51:10+0900",
+      "attempts": 1
+    },
+    {
+      "step": 2,
+      "name": "api-client",
+      "status": "completed",
+      "started_at": "2026-09-01T23:51:10+0900",
+      "attempts": 1,
+      "summary": "src/lib/api-client.ts 신설 — 클라이언트의 유일한 네트워크 경계 (import 는 @/lib/schemas 의 errorResponseSchema · @/types/api · @/types/book 뿐. 서버 전용 모듈 0건). 결과 타입: type ApiResult<T> = {ok:true;data:T} | {ok:false;code:ErrorCode;requestId:string|null;status:number} — 응답을 받지 못한 경우(네트워크 단절·클라이언트 타임아웃) status 는 0 이고, 화면 분기 기준은 언제나 code 다. 시그니처 5종: analyzePhotos(sessionId:string, images:string[]): Promise<ApiResult<AnalyzeResponse>> · resolveBook(sessionId:string, query:string): Promise<ApiResult<ResolveResponse>> · fetchMoodQuestions(sessionId:string, books:BookReference[]): Promise<ApiResult<MoodQuestionsResponse>> · requestRecommendations(input:RecommendRequest): Promise<ApiResult<RecommendResponse>> · sendClientEvent(event:ClientEventPayload): Promise<void>(실패를 삼키므로 반환값 없음). export const CLIENT_TIMEOUT_MS = {analyze:70000, resolve:15000, questions:35000, recommend:35000, events:5000} — 전부 서버 하드 상한보다 길다(API_SPEC 공통 규약). export type ClientEventPayload 는 recommend_accepted{position:1|2|3} 와 book_resolved{resolve_attempt:number;matched:boolean} 판별 유니온이라 이월 보고 \"recommend_viewed 이중 계상\"이 타입으로 막힌다 — 보내려 하면 TS2322 로 컴파일이 깨지는 것을 프로브로 확인했다(라우트 recommend/route.ts:253 이 정본). 실패 정규화: 본문이 errorResponseSchema 를 통과하면 그 code·requestId 를 그대로 쓰고, 파싱 실패·계약 위반 시 상태 코드로 유추한다(504→TIMEOUT, 그 외 5xx→INTERNAL_ERROR, 나머지→INVALID_REQUEST). 504 를 5xx 일괄 INTERNAL_ERROR 에서 뺀 것은 타임아웃을 우리 결함으로 오귀속하지 않기 위해서다. requestId 는 본문 우선 → X-Request-Id 헤더 → null(지어내지 않는다). 200 인데 본문이 JSON 이 아니면 INTERNAL_ERROR(우리 계약 위반이므로 502 가 아니다). fetch 가 던지면 타임아웃 abort 는 TIMEOUT, 그 외는 UPSTREAM_UNAVAILABLE(status 0). throw 0건 · 재시도 루프 0건(재시도는 상태 머신과 화면의 결정). 테스트 35개. 단계 5 에 넘기는 두 가지: ① resolveBook 은 스텝이 명시한 시그니처대로 author 를 노출하지 않는다 — resolveRequestSchema 는 optional author 를 허용하므로 저자 tie-break 가 필요해지면 인자 추가로 확장한다 ② 성공 본문은 JSON.parse 후 타입 단언만 하고 zod 재검증을 하지 않는다 — 5개 라우트가 모두 응답 직전 자기 스키마로 safeParse 하고 위반 시 500 을 내므로 검증 경계가 서버에 있다.",
+      "completed_at": "2026-09-02T00:50:43+0900"
+    },
+    {
+      "step": 3,
+      "name": "ui-upload",
+      "status": "completed",
+      "started_at": "2026-09-02T00:50:43+0900",
+      "summary": "src/components/upload/ 4종 신설 (fetch 0건 · services/lib.proof/lib.prompts/api-client import 0건 · UI_GUIDE 안티패턴 0건). export: PhotoPicker({onSelect:(files:File[])=>void, disabled?:boolean}) — accept 는 SUPPORTED_MIME_TYPES.join(\",\") 에서 만들고 촬영(capture=\"environment\")·선택(multiple) 두 입력을 sr-only + label 로 분리해 카메라 권한이 거부돼도 선택 경로가 남는다(PRD 5번), 선택 후 input.value 를 비워 같은 파일 재선택이 된다. PhotoThumbnails({photos: readonly UploadPhoto[], onRemove:(id:string)=>void, disabled?:boolean}) + export type UploadPhoto={id;name;previewUrl:string|null;tooSmall:boolean} — previewUrl 이 null 이면 표지 폴백과 같은 첫 글자 블록으로 흡수하고, tooSmall 은 차단이 아니라 표시다. RejectedNotice({reasons: readonly RejectReason[]}) — 5종을 사유별로 집계해 Notice 로 한 줄씩. decode_failed(브라우저가 못 열었다 → 사진 앱에서 JPG 로 내보내기)와 unsupported_type(우리가 안 받는다 → 허용 형식 목록)은 서로 다른 문장이다. UploadScreen({onAnalyze:(dataUris:string[], photoCount:number)=>void, isAnalyzing?:boolean}) — step 5 가 배선할 유일한 콜백이다. photoCount 는 analyze 응답에 없고 부분 실패 배너의 분모라 여기서 나온다. 판정은 전부 lib/image.ts 것을 쓴다: validateSelection(기존 선택분을 앞에 세워 중복·장수 상한이 새로 고른 쪽에 걸리게 한다) · hashBytes(FileReader.readAsArrayBuffer, jsdom 에 Blob.arrayBuffer 가 없다) · isTooSmallAfterResize(선택 시점에 createImageBitmap 으로 치수만 재고, 잴 수 없는 환경에서는 경고하지 않는다) · checkOutputBudget(초과 시 onAnalyze 를 부르지 않는다 — 413 은 마지막 방어선이지 설계가 아니다). 판단 두 가지: ① resizeToDataUri 가 실패한 사진은 decode_failed 로 말하고 목록에서 빼되 그 회차는 전송하지 않는다(보낸 장수가 사용자가 본 장수와 달라지면 분모가 거짓말이 된다) ② 진행 표시는 role=\"status\" aria-live=\"polite\" + 정적 Skeleton 이고 준비(리사이즈)와 분석 중 문구를 나눈다. 테스트 49개(전체 870개 통과). 이월: UploadScreen 은 촬영 가이드 예시 이미지(PRD 7번 1단계)를 넣지 않았다 — 자산이 없고 Could have 다.",
+      "completed_at": "2026-09-02T01:01:51+0900",
+      "attempts": 1
+    },
+    {
+      "step": 4,
+      "name": "ui-mood-recommend",
+      "status": "completed",
+      "started_at": "2026-09-02T01:01:52+0900",
+      "summary": "src/components/mood/ 2종 · src/components/recommend/ 2종 신설 (fetch·api-client·localStorage·sessionStorage·쿠키 0건 · UI_GUIDE 안티패턴 0건 · 원시 hex 0건). export — MoodInput({onSubmit:(mood:string)=>void, onGuidedStart:()=>void, irrelevantCount?:number, isSubmitting?:boolean, defaultMood?:string}) + 상수 MOOD_MIN_LENGTH=2 · MOOD_MAX_LENGTH=500 · IRRELEVANT_EMPHASIS_THRESHOLD=2 · MOOD_EXAMPLES(3개) + nextIrrelevantCount(current:number, code:ErrorCode|null):number. GuidedQuestions({questions: readonly MoodQuestion[], onSubmit:(mood:string)=>void, onSkip:()=>void, isLoading?:boolean, isSubmitting?:boolean}) + composeMood(questions, answers:MoodAnswers):string · type MoodAnswers=Record<string,string>. RecommendationCard({book:AladinFacts, recommendation:Recommendation, onAccept?:(bookId:string, position:1|2|3)=>void, accepted?:boolean}). RecommendationList({recommendations: readonly Recommendation[], books: readonly AladinFacts[], shortfall:boolean, canRecommendAgain:boolean, onAccept:(bookId:string, position:1|2|3)=>void, onRecommendAgain:()=>void}). 판단 다섯 가지를 명시한다: ① 사실은 AladinFacts 로만 받는다 — IdentifiedBook·ResolvedCandidate 둘 다 이 층을 갖고, 좁은 타입으로 받으면 claudeNote 가 추천 카드에 흘러들 수 없다(추천 화면의 해석은 추천 이유 하나여야 한다, ADR-002). recommendation.reason 은 예외 없이 ClaudeText label=\"추천 이유\" 를 거치고 카드 반경은 rounded-lg 로 확인(rounded-md)·미확인(rounded-sm)과 다르다 — 둘 다 회귀 테스트로 고정했다 ② 무관 판정 연속 횟수는 화면이 센다(서버는 무상태라 셀 수 없다). nextIrrelevantCount 가 규칙이고 저장소에 남기지 않는다. 1회째는 PRD 문구 \"책 고르는 데 참고할 내용을 적어 주세요\", 2회째부터는 같은 요구를 반복하지 않고 예시 블록을 강조한다 ③ 비운 채 제출은 onGuidedStart 로 가고(FR-007) 경고색을 쓰지 않는다. 한 글자만 적은 경우만 중립 Notice 로 더 적도록 안내하고 어느 콜백도 부르지 않는다 ④ GuidedQuestions 는 questions 가 빈 배열이면 null 을 반환한다 — 폴백 전이는 리듀서(QUESTIONS_RECEIVED [] → moodInput)의 일이고 화면은 에러 배너를 만들지 않는다 ⑤ RecommendationList 는 bookId 를 books 에서 찾아 그리고 못 찾으면 그 카드를 버린다(사실 없이 카드를 세우면 지어내야 한다). 수락은 책당 1회만 onAccept 를 부르고, 추천 묶음(bookId 서명)이 바뀌면 수락 표시를 비운다 — 언마운트 전제를 페이지 렌더 구조에 두면 배선 한 번으로 North Star 분자를 잃는다. 테스트 39개(전체 909개 통과). step 5 에 넘기는 것: irrelevantCount 는 페이지가 useState 로 들고 nextIrrelevantCount 로 갱신한다(RECOMMEND_FAILED 의 code 를 그대로 넘기면 된다). canRecommendAgain 은 lib/session 의 셀렉터를 그대로 쓰고, recommend_viewed·recommend_accepted 전송은 페이지가 한다. 이월: RecommendationList 는 \"새 사진으로 시작\"(result → idle) 경로를 두지 않았다 — 스텝이 명시한 범위가 shortfall 안내와 다시 추천받기뿐이라 step 5 가 화면 밖에 배치한다.",
+      "completed_at": "2026-09-02T01:12:31+0900",
+      "attempts": 1
+    },
+    {
+      "step": 5,
+      "name": "page-shell",
+      "status": "completed",
+      "started_at": "2026-09-02T01:12:31+0900",
+      "summary": "src/app/page.tsx 를 \"use client\" 로 재작성 — useReducer(sessionReducer) 하나가 세션 전체를 관리하고 화면 5종을 상태로 고른다 (services/ · lib/proof · lib/prompts import 0건 · localStorage·sessionStorage·쿠키 0건 · 전역 상태 라이브러리 0건 · 원시 hex 0건 · UI_GUIDE 안티패턴 0건). sessionId 는 useReducer 지연 초기화에서 crypto.randomUUID() 로 한 번만 만든다. 로컬 state 는 넷뿐이다: photos(리사이즈된 data URI, 메모리에만) · analyzeAttempts · irrelevantCount · panel(재검색 패널). ARCHITECTURE 상태도 10개 상태·22개 전이가 전부 도달 가능하고, 전이는 예외 없이 dispatch 로만 일어난다. 배선: UploadScreen.onAnalyze(dataUris, photoCount) → ANALYZE_STARTED 로 photoCount 를 상태에 넣고 BookList 에 photoCount={state.photoCount} 로 전달(부분 실패 배너의 분모, 응답에 없다). failedPhotoCount 는 세션 상태에 없어 failedPhotoIndexes.length 로 되살린다 — analyze 라우트가 언제나 그렇게 채운다. beforeunload 는 status 가 아니라 '잃을 것이 있는가'(books 또는 unidentified 비어 있지 않음)로 건다. 핵심(ambiguous 승격): onSelectCandidate 는 `제목 저자`(200자 절단)로 resolveBook 을 다시 부르고 응답에서 isbn13 이 일치하는 항목만 origin:\"resolved\" 로 합류시킨다. 불일치면 승격하지 않고 mismatch 스테이지로 재검색 경로에 남긴다('고른 책을 다시 확인하지 못했어요') — 응답 1번 후보로 때우지 않는다. 회귀 테스트 2개로 고정했다. 에러 분기는 step 표대로: EMPTY_SHELF→emptyShelf 재촬영, UNVERIFIED_BOOKS→재시도 버튼 없이 '처음으로'만(→idle), IRRELEVANT_MOOD→moodInput + nextIrrelevantCount, INTERNAL_ERROR·UPSTREAM_UNAVAILABLE·TIMEOUT→ErrorBanner + 저장된 사진으로 재시도(재업로드 없음), SERVICE_DISABLED→ErrorBanner 가 재시도 버튼을 감춘다. proof 는 파싱하지도 만료를 예측하지도 않는다. 이벤트는 recommend_accepted 와 book_resolved 둘뿐 — 추천 조회 이벤트는 라우트가 정본이라 보내지 않는다(파일에 그 문자열이 없다). 테스트 13개 신설(전체 922개 통과). AC 5종 전부 통과: typecheck·lint·test·build·audit(0건). 남은 결함·미해소 보고 8건 — ① BookList.result 가 AnalyzeResponse 이고 identified 가 photoIndex 를 요구해 재검색 승격분을 담을 수 없다. photoIndex 0 을 지어내는 대신 페이지가 '직접 확인한 책' 섹션을 따로 렌더했다. 다음 런이 BookList props 를 ShelfBook[] 로 넓히면 한 목록으로 합쳐진다 ② UnidentifiedBookCard 의 onRetryLookup?: () => void 가 책 인자를 받지 않아 책 단위 재조회를 표현할 수 없다 — 전체 재분석에 배선했고 비용이 크다 ③ ErrorBanner.requestId 가 string 필수라 requestId 없음(네트워크 단절 시 api-client 가 null 을 준다)을 표현하지 못해 '(없음)' 문자열로 넘긴다 ④ 상태도에 error → moodInput/recommending 전이가 없어, 추천 단계의 외부 장애 회복 경로가 '전체 재분석' 또는 '처음으로'뿐이다(추천 한 번의 실패에 분석 비용을 다시 낸다) ⑤ FR-010 분석 재시도 상한 3회는 페이지가 세지만 간격 백오프(0초→5초→15초)는 구현하지 않았다 ⑥ IRRELEVANT_MOOD 2회 연속 후 3번째에 추천을 강행하는 US-003 AC 는 도달 불가다 — recommendRequestSchema 에 그 횟수를 담을 필드가 없어(recommend/route.ts 가 이미 보고한 공백) 화면은 예시 강조까지만 한다. API_SPEC 갱신이 선행이다 ⑦ 재시도가 들고 있는 것은 원본 File 이 아니라 리사이즈된 data URI 다 — 재업로드를 요구하지 않는다는 목적은 같지만 EXIF·품질을 다시 고를 수는 없다 ⑧ book_resolved 를 승격 성공(matched:true)뿐 아니라 isbn13 불일치(matched:false)에도 보낸다. step 은 성공만 명시했으나 matched 가 false 를 표현하지 못하면 책 인식률 지표가 재검색 실패를 못 본다고 판단했다.",
+      "completed_at": "2026-09-02T01:26:58+0900",
+      "attempts": 1
+    }
+  ],
+  "created_at": "2026-09-01T23:33:40+0900",
+  "completed_at": "2026-09-02T01:26:58+0900"
+}

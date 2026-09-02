@@ -343,6 +343,8 @@ describe("POST /api/recommend 계약", () => {
     books: [recommendBook],
     mood: "복잡한 하루였고 머리를 식히고 싶어요",
     inputMode: "free_text",
+    retryIndex: 0,
+    irrelevantStreak: 0,
   };
 
   it("정상 요청을 파싱한다", () => {
@@ -357,6 +359,34 @@ describe("POST /api/recommend 계약", () => {
   it("inputMode는 free_text 또는 guided다", () => {
     expect(recommendRequestSchema.safeParse({ ...request, inputMode: "guided" }).success).toBe(true);
     expect(recommendRequestSchema.safeParse({ ...request, inputMode: "voice" }).success).toBe(false);
+  });
+
+  it("retryIndex는 0~4의 정수다 (FR-010의 세션당 5회)", () => {
+    for (const retryIndex of [0, 1, 4]) {
+      expect(recommendRequestSchema.safeParse({ ...request, retryIndex }).success).toBe(true);
+    }
+    for (const retryIndex of [-1, 5, 1.5, "2", null]) {
+      expect(recommendRequestSchema.safeParse({ ...request, retryIndex }).success).toBe(false);
+    }
+  });
+
+  it("irrelevantStreak는 0~2의 정수다 — 2회 연속이면 서버가 판정을 무시한다", () => {
+    for (const irrelevantStreak of [0, 1, 2]) {
+      expect(recommendRequestSchema.safeParse({ ...request, irrelevantStreak }).success).toBe(true);
+    }
+    for (const irrelevantStreak of [-1, 3, 0.5, "1", null]) {
+      expect(recommendRequestSchema.safeParse({ ...request, irrelevantStreak }).success).toBe(false);
+    }
+  });
+
+  it("두 값은 옵셔널도 기본값도 아니다 — 누락은 400이다", () => {
+    // 기본값을 주면 "보내지 않았다"와 "0이다"가 구분되지 않고, 클라이언트가
+    // 배선을 잊어도 retry_index가 조용히 0으로 기록된다 (API_SPEC).
+    const { retryIndex: _retry, ...withoutRetry } = request;
+    const { irrelevantStreak: _streak, ...withoutStreak } = request;
+
+    expect(recommendRequestSchema.safeParse(withoutRetry).success).toBe(false);
+    expect(recommendRequestSchema.safeParse(withoutStreak).success).toBe(false);
   });
 
   it("책 목록의 각 항목에 proof가 없으면 거부한다 (ADR-006)", () => {
@@ -394,26 +424,30 @@ describe("POST /api/recommend 계약", () => {
 });
 
 describe("POST /api/events 계약", () => {
-  it("허용 이벤트 3종만 받는다 (TR-014)", () => {
-    for (const event of ["recommend_viewed", "recommend_accepted", "book_resolved"]) {
+  it("허용 이벤트 2종만 받는다 (TR-014)", () => {
+    for (const event of ["recommend_accepted", "book_resolved"]) {
       expect(eventsRequestSchema.safeParse({ sessionId: SESSION_ID, event }).success).toBe(true);
     }
     expect(eventsRequestSchema.safeParse({ sessionId: SESSION_ID, event: "analyze_completed" }).success).toBe(false);
     expect(eventsRequestSchema.safeParse({ sessionId: SESSION_ID, event: "custom_event" }).success).toBe(false);
   });
 
+  it("recommend_viewed는 받지 않는다 — 라우트가 남기므로 분모가 이중 계상된다", () => {
+    expect(eventsRequestSchema.safeParse({ sessionId: SESSION_ID, event: "recommend_viewed" }).success).toBe(false);
+  });
+
   it("properties는 선택이며 원시값만 담는다 (PII 유입 차단)", () => {
     expect(
       eventsRequestSchema.safeParse({
         sessionId: SESSION_ID,
-        event: "recommend_viewed",
+        event: "recommend_accepted",
         properties: { position: 1 },
       }).success,
     ).toBe(true);
     expect(
       eventsRequestSchema.safeParse({
         sessionId: SESSION_ID,
-        event: "recommend_viewed",
+        event: "recommend_accepted",
         properties: { nested: { deep: "value" } },
       }).success,
     ).toBe(false);
@@ -421,11 +455,14 @@ describe("POST /api/events 계약", () => {
 });
 
 describe("에러 응답 규약", () => {
-  it("API_SPEC의 에러 코드 14종과 정확히 일치한다", () => {
+  it("API_SPEC의 에러 코드 15종과 정확히 일치한다", () => {
     expect([...errorCodeSchema.options].sort()).toEqual(
       [
         "EMPTY_SHELF",
         "IMAGE_TOO_LARGE",
+        // 500. 502와 뭉개지 않는다 — 우리 응답이 우리 계약을 어긴 것을 502로
+        // 내보내면 남의 장애로 기록된다 (API_SPEC 에러 응답 규약).
+        "INTERNAL_ERROR",
         "INVALID_REQUEST",
         "IRRELEVANT_MOOD",
         "NOT_FOUND_IN_ALADIN",

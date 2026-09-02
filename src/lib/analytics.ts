@@ -10,7 +10,7 @@
  * 이벤트 이름을 문자열로 받는 느슨한 API는 오타가 조용히 통과해 지표를 비운다.
  * 지표가 비었다는 사실은 집계할 때가 되어서야 드러나고, 그때는 이미 데이터가
  * 없다. 그래서 이름과 속성을 리터럴 유니온으로 묶어 호출부에서 컴파일이
- * 깨지게 한다. 이벤트 목록의 정본은 /docs/PRD.md 7번 표다 — 여기 있는 8종이
+ * 깨지게 한다. 이벤트 목록의 정본은 /docs/PRD.md 7번 표다 — 여기 있는 9종이
  * 그 표와 1:1로 대응하며, 지표에 연결되지 않는 이벤트는 만들지 않는다.
  *
  * ## 왜 속성을 화이트리스트로 투영하는가
@@ -43,7 +43,7 @@ export type UnidentifiedReasonCounts = Record<
 >;
 
 /**
- * PRD 7번 표의 이벤트 8종.
+ * PRD 7번 표의 이벤트 9종.
  *
  * `input_tokens`·`output_tokens`는 Claude를 호출하는 이벤트에서 **옵셔널이
  * 아니다.** 일부 호출의 토큰이 빠지면 세션당 비용이 실제보다 낮게 집계되어
@@ -103,6 +103,20 @@ export type AnalyticsEvent =
       input_tokens: number;
       output_tokens: number;
     }
+  /**
+   * 추천 실패 응답 반환 직전 — 에러율(가드레일) · 세션당 비용(가드레일).
+   *
+   * `recommend_viewed`를 대신 올리지 않는다. 실패가 분모에 섞이면 추천 수락률이
+   * 실제보다 낮게 보인다 — `analyze_completed`/`analyze_failed`와 같은 짝이다.
+   * 태운 토큰은 실패해도 청구되므로 여기서도 옵셔널이 아니다 (PRD 7번).
+   */
+  | {
+      event: "recommend_failed";
+      session_id: string;
+      error_code: z.infer<typeof errorCodeSchema>;
+      input_tokens: number;
+      output_tokens: number;
+    }
   /** "이거 읽을래요" 클릭 (클라이언트 관측) — North Star의 분자 */
   | {
       event: "recommend_accepted";
@@ -146,6 +160,7 @@ const PROPERTY_KEYS: {
     "input_tokens",
     "output_tokens",
   ],
+  recommend_failed: ["session_id", "error_code", "input_tokens", "output_tokens"],
   recommend_accepted: ["session_id", "position"],
 };
 

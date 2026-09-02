@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { aladinFactsSchema } from "@/lib/schemas";
+
 import {
   ALADIN_CALL_TIMEOUT_MS,
   ALADIN_CONCURRENCY,
   BREAKER_CONSECUTIVE_FAILURES,
   createRequestBreaker,
+  lookupFacts,
+  lookupFactsMany,
   searchByTitle,
   searchMany,
 } from "./aladin";
@@ -616,6 +620,469 @@ describe("TTB 키는 로그·에러 어디에도 남지 않는다", () => {
       }).impl,
     });
     await searchByTitle("책", null, { deadlineMs: 5, fetchImpl: neverResolves().impl });
+
+    expect(captured.length).toBeGreaterThan(0);
+    for (const line of captured) {
+      expect(line).not.toContain(TTB_KEY);
+    }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * lookupFacts — ItemLookUp으로 서지 사실을 채운다 (TR-004 보완)
+ *
+ * 이 블록의 관심사는 하나다: **사실 필드를 못 채운 책은 확인으로 올라가지
+ * 않는다.** 빈 칸을 사실인 것처럼 보여주는 것은 ADR-002가 가장 심각한 결함으로
+ * 규정한 것과 같은 종류의 거짓말이다.
+ * ------------------------------------------------------------------ */
+
+const ISBN13 = "9788936434120";
+
+/** 알라딘 ItemLookUp 원본 레코드 1건 */
+function lookupItem(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    title: "소년이 온다",
+    author: "한강 (지은이)",
+    publisher: "창비",
+    isbn13: ISBN13,
+    isbn: "8936434128",
+    cover: "https://image.aladin.co.kr/product/4086/40/cover/8936434128_1.jpg",
+    link: "https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=40864086",
+    customerReviewRank: 9.2,
+    subInfo: { itemPage: 216 },
+    ...overrides,
+  };
+}
+
+/** ItemLookUp 응답 봉투. 검색과 같은 형태이며 item이 1건이다 */
+function lookupBody(items: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    version: "20131101",
+    title: "알라딘 상품정보",
+    totalResults: items.length,
+    startIndex: 1,
+    itemsPerPage: items.length,
+    item: items,
+  };
+}
+
+describe("lookupFacts — 성공 응답", () => {
+  it("200 + 정상 응답이면 aladinFactsSchema를 통과한 facts를 돌려준다", async () => {
+    const { impl } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem()])));
+
+    const outcome = await lookupFacts(ISBN13, {
+      deadlineMs: AMPLE_DEADLINE_MS,
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("ok");
+    if (outcome.status !== "ok") return;
+    expect(aladinFactsSchema.safeParse(outcome.facts).success).toBe(true);
+    expect(outcome.facts).toEqual({
+      isbn13: ISBN13,
+      title: "소년이 온다",
+      author: "한강 (지은이)",
+      publisher: "창비",
+      coverUrl: "https://image.aladin.co.kr/product/4086/40/cover/8936434128_1.jpg",
+      pages: 216,
+      aladinRating: 9.2,
+      aladinLink: "https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=40864086",
+    });
+  });
+
+  it("ISBN13으로 ItemLookUp을 호출한다", async () => {
+    const { impl, calls } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem()])));
+
+    await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl });
+
+    expect(calls).toHaveLength(1);
+    const url = new URL(calls[0]);
+    expect(url.protocol).toBe("https:");
+    expect(url.pathname).toContain("ItemLookUp");
+    expect(url.searchParams.get("ttbkey")).toBe(TTB_KEY);
+    expect(url.searchParams.get("itemIdType")).toBe("ISBN13");
+    expect(url.searchParams.get("ItemId")).toBe(ISBN13);
+  });
+
+  it("pages·aladinRating이 없는 응답은 null로 채우고 ok다 — 조회 실패가 아니다", async () => {
+    const { impl } = alwaysRespond(() =>
+      jsonResponse(lookupBody([lookupItem({ customerReviewRank: undefined, subInfo: {} })])),
+    );
+
+    const outcome = await lookupFacts(ISBN13, {
+      deadlineMs: AMPLE_DEADLINE_MS,
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("ok");
+    if (outcome.status !== "ok") return;
+    expect(outcome.facts.pages).toBeNull();
+    expect(outcome.facts.aladinRating).toBeNull();
+    expect(outcome.facts.title).toBe("소년이 온다");
+  });
+
+  it("subInfo가 통째로 없어도 ok이고 pages만 null이다", async () => {
+    const { impl } = alwaysRespond(() =>
+      jsonResponse(lookupBody([lookupItem({ subInfo: undefined })])),
+    );
+
+    const outcome = await lookupFacts(ISBN13, {
+      deadlineMs: AMPLE_DEADLINE_MS,
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("ok");
+    if (outcome.status !== "ok") return;
+    expect(outcome.facts.pages).toBeNull();
+    expect(outcome.facts.aladinRating).toBe(9.2);
+  });
+
+  it("평점 0·쪽수 0은 정보 없음이므로 null이다 — 0.0점짜리 책이라고 말하지 않는다", async () => {
+    const { impl } = alwaysRespond(() =>
+      jsonResponse(lookupBody([lookupItem({ customerReviewRank: 0, subInfo: { itemPage: 0 } })])),
+    );
+
+    const outcome = await lookupFacts(ISBN13, {
+      deadlineMs: AMPLE_DEADLINE_MS,
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("ok");
+    if (outcome.status !== "ok") return;
+    expect(outcome.facts.aladinRating).toBeNull();
+    expect(outcome.facts.pages).toBeNull();
+  });
+});
+
+describe("lookupFacts — 검증 경계 (ADR-002)", () => {
+  it("aladinLink가 없으면 failed다 — 사실을 못 채운 책은 확인으로 승격되지 않는다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem({ link: undefined })])));
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+  });
+
+  it("링크가 절대 URL이 아니면 failed다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl } = alwaysRespond(() =>
+      jsonResponse(lookupBody([lookupItem({ link: "/shop/wproduct.aspx?ItemId=1" })])),
+    );
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+  });
+
+  it("요청한 ISBN13과 다른 책이 오면 failed다 — 남의 책 사실을 붙이지 않는다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl } = alwaysRespond(() =>
+      jsonResponse(lookupBody([lookupItem({ isbn13: "9788937460777" })])),
+    );
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+  });
+
+  it("결과가 0건이면 failed다 — 이 함수는 no_match를 만들지 않는다 (ADR-005)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl } = alwaysRespond(() => jsonResponse(lookupBody([])));
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+  });
+
+  it("errorCode 봉투와 JSON이 아닌 본문도 failed다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(
+      await lookupFacts(ISBN13, {
+        deadlineMs: AMPLE_DEADLINE_MS,
+        fetchImpl: alwaysRespond(() => jsonResponse({ errorCode: 8 })).impl,
+      }),
+    ).toEqual({ status: "failed" });
+
+    expect(
+      await lookupFacts(ISBN13, {
+        deadlineMs: AMPLE_DEADLINE_MS,
+        fetchImpl: alwaysRespond(() => textResponse("not json")).impl,
+      }),
+    ).toEqual({ status: "failed" });
+  });
+});
+
+describe("lookupFacts — 실패는 failed로 나른다 (ADR-005 회귀. 이 블록은 삭제하지 않는다)", () => {
+  it("500이면 failed이고 1회 재시도한다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl, calls } = alwaysRespond(() => jsonResponse({}, 500));
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("타임아웃은 failed다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl } = neverResolves();
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: 5, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+  });
+
+  it("4xx는 재시도하지 않는다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl, calls } = alwaysRespond(() => jsonResponse({}, 404));
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("데드라인이 0이면 호출하지 않고 즉시 failed다 (예산 소진 → lookup_failed)", async () => {
+    const { impl, calls } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem()])));
+
+    expect(await lookupFacts(ISBN13, { deadlineMs: 0, fetchImpl: impl })).toEqual({
+      status: "failed",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("예산 소진은 브레이커의 연속 실패로 세지 않는다", async () => {
+    const { impl } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem()])));
+    const breaker = createRequestBreaker();
+
+    for (let i = 0; i < BREAKER_CONSECUTIVE_FAILURES + 1; i += 1) {
+      await lookupFacts(ISBN13, { deadlineMs: 0, breaker, fetchImpl: impl });
+    }
+
+    expect(breaker.isOpen()).toBe(false);
+  });
+
+  it("브레이커가 열려 있으면 호출하지 않고 failed다", async () => {
+    const { impl, calls } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem()])));
+    const breaker = createRequestBreaker(1);
+    breaker.recordFailure();
+    expect(breaker.isOpen()).toBe(true);
+
+    expect(
+      await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, breaker, fetchImpl: impl }),
+    ).toEqual({ status: "failed" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("ItemSearch가 연 브레이커를 ItemLookUp도 그대로 존중한다 — 브레이커는 하나다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl, calls } = stubFetch(async (url) =>
+      url.includes("ItemSearch") ? jsonResponse({}, 500) : jsonResponse(lookupBody([lookupItem()])),
+    );
+    const breaker = createRequestBreaker();
+    const options = { deadlineMs: AMPLE_DEADLINE_MS, breaker, fetchImpl: impl };
+
+    for (let i = 0; i < BREAKER_CONSECUTIVE_FAILURES; i += 1) {
+      await searchByTitle(`책 ${i}`, null, options);
+    }
+    expect(breaker.isOpen()).toBe(true);
+
+    const callsBefore = calls.length;
+    expect(await lookupFacts(ISBN13, options)).toEqual({ status: "failed" });
+    expect(calls).toHaveLength(callsBefore);
+  });
+});
+
+describe("lookupFactsMany", () => {
+  function isbn13s(count: number): string[] {
+    return Array.from({ length: count }, (_, index) => `978893643${String(index).padStart(4, "0")}`);
+  }
+
+  it("동시 실행 수가 12를 넘지 않는다 (TR-004)", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const { impl } = stubFetch(async (url) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight -= 1;
+      const isbn = new URL(url).searchParams.get("ItemId") ?? ISBN13;
+      return jsonResponse(lookupBody([lookupItem({ isbn13: isbn })]));
+    });
+
+    await lookupFactsMany(isbn13s(40), { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl });
+
+    expect(peak).toBe(ALADIN_CONCURRENCY);
+  });
+
+  it("결과 순서가 입력 순서와 같다", async () => {
+    const { impl } = stubFetch(async (url) => {
+      const isbn = new URL(url).searchParams.get("ItemId") ?? ISBN13;
+      await new Promise((resolve) => setTimeout(resolve, isbn.endsWith("0") ? 3 : 0));
+      return jsonResponse(lookupBody([lookupItem({ isbn13: isbn })]));
+    });
+
+    const input = isbn13s(5);
+    const outcomes = await lookupFactsMany(input, {
+      deadlineMs: AMPLE_DEADLINE_MS,
+      fetchImpl: impl,
+    });
+
+    expect(outcomes).toHaveLength(5);
+    outcomes.forEach((outcome, index) => {
+      expect(outcome.status).toBe("ok");
+      if (outcome.status !== "ok") return;
+      expect(outcome.facts.isbn13).toBe(input[index]);
+    });
+  });
+
+  it("빈 목록이면 호출 없이 빈 배열이다", async () => {
+    const { impl, calls } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem()])));
+
+    expect(await lookupFactsMany([], { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual(
+      [],
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("브레이커가 열리면 잔여 책은 조회하지 않고 전부 failed로 온다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl, calls } = alwaysRespond(() => jsonResponse({}, 500));
+
+    const outcomes = await lookupFactsMany(isbn13s(50), {
+      deadlineMs: AMPLE_DEADLINE_MS,
+      fetchImpl: impl,
+    });
+
+    expect(outcomes).toHaveLength(50);
+    expect(outcomes.every((outcome) => outcome.status === "failed")).toBe(true);
+    expect(calls.length).toBeLessThanOrEqual(ALADIN_CONCURRENCY * 2);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 두 호출은 하나의 데드라인을 나눠 쓴다 (ADR-005)
+ *
+ * 각자 12s를 쓰면 합이 24s가 되어 총 예산(55s)이 깨지고, 플랫폼이 연결을 끊어
+ * 정해진 504조차 돌려주지 못한다. 호출부는 대조 단계 시작 시점에 데드라인
+ * **시각**을 한 번 잡고, 두 호출에 각각 남은 시간을 넘긴다.
+ * ------------------------------------------------------------------ */
+
+describe("ItemSearch + ItemLookUp 합산 데드라인", () => {
+  it("검색이 예산을 다 쓰면 ItemLookUp은 호출 없이 failed다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const lookupCalls: string[] = [];
+    const { impl } = stubFetch(async (url, init) => {
+      if (url.includes("ItemLookUp")) {
+        lookupCalls.push(url);
+        return jsonResponse(lookupBody([lookupItem()]));
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        });
+      });
+    });
+
+    // 대조 단계 예산을 한 번만 잡는다. 두 호출이 이 시각을 공유한다.
+    const stageDeadlineAt = Date.now() + 20;
+
+    const search = await searchByTitle("소년이 온다", null, {
+      deadlineMs: stageDeadlineAt - Date.now(),
+      fetchImpl: impl,
+    });
+    const facts = await lookupFacts(ISBN13, {
+      deadlineMs: stageDeadlineAt - Date.now(),
+      fetchImpl: impl,
+    });
+
+    expect(search).toEqual({ status: "failed" });
+    expect(facts).toEqual({ status: "failed" });
+    expect(lookupCalls).toHaveLength(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 목업 모드 — ItemLookUp도 키 없이 돌아야 한다 (TRD 9번)
+ * ------------------------------------------------------------------ */
+
+describe("lookupFacts — 목업 모드", () => {
+  beforeEach(() => {
+    vi.stubEnv("ALADIN_TTB_KEY", undefined);
+  });
+
+  it("fetch를 호출하지 않고 스키마를 통과하는 목업 사실을 돌려준다", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { impl, calls } = alwaysRespond(() => jsonResponse(lookupBody([lookupItem()])));
+
+    const outcome = await lookupFacts(ISBN13, {
+      deadlineMs: AMPLE_DEADLINE_MS,
+      fetchImpl: impl,
+    });
+
+    expect(calls).toHaveLength(0);
+    expect(outcome.status).toBe("ok");
+    if (outcome.status !== "ok") return;
+    expect(aladinFactsSchema.safeParse(outcome.facts).success).toBe(true);
+    expect(outcome.facts.isbn13).toBe(ISBN13);
+  });
+
+  it("목업이라는 사실을 로그로 드러낸다 — 조용한 목업은 금지다", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS });
+
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(" ")).toContain("목업");
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 시크릿 유출 회귀 — ItemLookUp 경로 (TRD 6.5). 이 블록은 삭제하지 않는다.
+ * ------------------------------------------------------------------ */
+
+describe("TTB 키는 ItemLookUp 실패 경로에서도 남지 않는다", () => {
+  it("모든 실패 경로의 콘솔 출력에 키가 들어 있지 않다", async () => {
+    const captured: string[] = [];
+    const capture = (...args: unknown[]) => {
+      captured.push(args.map((arg) => String(arg)).join(" "));
+    };
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    vi.spyOn(console, "log").mockImplementation(capture);
+
+    const options = { deadlineMs: AMPLE_DEADLINE_MS };
+
+    await lookupFacts(ISBN13, {
+      ...options,
+      fetchImpl: alwaysRespond(() => jsonResponse({}, 500)).impl,
+    });
+    await lookupFacts(ISBN13, {
+      ...options,
+      fetchImpl: alwaysRespond(() => jsonResponse({}, 404)).impl,
+    });
+    await lookupFacts(ISBN13, {
+      ...options,
+      fetchImpl: alwaysRespond(() => textResponse("not json")).impl,
+    });
+    await lookupFacts(ISBN13, {
+      ...options,
+      fetchImpl: alwaysRespond(() => jsonResponse({ errorCode: 8 })).impl,
+    });
+    await lookupFacts(ISBN13, {
+      ...options,
+      fetchImpl: alwaysRespond(() => jsonResponse(lookupBody([lookupItem({ link: undefined })])))
+        .impl,
+    });
+    await lookupFacts(ISBN13, {
+      ...options,
+      fetchImpl: stubFetch(async () => {
+        throw new Error(`request to https://www.aladin.co.kr/...?ttbkey=${TTB_KEY} failed`);
+      }).impl,
+    });
+    await lookupFacts(ISBN13, { deadlineMs: 5, fetchImpl: neverResolves().impl });
 
     expect(captured.length).toBeGreaterThan(0);
     for (const line of captured) {

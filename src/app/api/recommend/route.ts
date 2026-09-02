@@ -32,6 +32,14 @@
  * 클라이언트에 맡기면 같은 규칙이 화면마다 다시 구현되고 그중 하나는 반드시 덜
  * 검증된다.
  *
+ * **강행하기로 정했으면 그 사실을 첫 모델 호출에도 싣는다.** `irrelevantStreak`는
+ * 호출 전에 이미 손에 있으므로 판정도 호출 앞에서 끝나고, `forced` 옵션으로
+ * 나간다(`services/anthropic`). 라우트에서만 422를 걷어내면 프롬프트는 여전히
+ * "단서가 없으면 빈 배열"이라고 지시하므로 강행의 결과가 `200` + 빈 배열이 된다
+ * (API_SPEC). 강행은 재호출이 아니라 **첫 호출의 옵션**이라 모델 호출 횟수를
+ * 늘리지 않고, 교정 재요청에도 그대로 유지된다. 강행 중에도 `relevant` 값 자체는
+ * 모델이 준 그대로다 — 무시하기로 한 것은 값의 효력이지 값이 아니다.
+ *
  * 두 값에는 서명을 붙이지 않는다. `proof`가 필요한 이유는 **책이 사실인 척할 수
  * 있기 때문**인데, 이 둘은 위조해도 얻는 것이 **원래 허용된 동작 하나**뿐이다 —
  * `irrelevantStreak`를 2로 보내면 세 번째에 어차피 허용되는 억지 추천 한 번을 앞당길
@@ -202,11 +210,32 @@ export async function POST(request: Request): Promise<Response> {
   /** 무관 판정 강행을 요청당 한 번만 기록하기 위한 표시. 응답에는 나가지 않는다 */
   let forcedIrrelevant = false;
 
+  /**
+   * 이 요청은 무관 판정을 무시하기로 정해진 요청인가. **모델을 부르기 전에
+   * 이미 알 수 있는 값**이다 — `irrelevantStreak`는 요청에 실려 오고, 판정을
+   * 무시할지는 이 라우트가 정한다 (API_SPEC).
+   *
+   * 그래서 이 값은 **첫 호출의 옵션으로 나간다.** 라우트에서만 422를 걷어내면
+   * 프롬프트는 여전히 "단서가 없으면 `recommendations`를 빈 배열로 둔다"고
+   * 지시하므로 강행의 결과가 `200` + 빈 배열이 된다 — 화면에는 "그대로 골라
+   * 드릴게요"라고 적어 놓고 아무것도 주지 않는 상태다 (API_SPEC).
+   *
+   * **재호출이 아니다.** 빈 배열을 받고 나서 강행 프롬프트로 다시 부르면 같은
+   * 요청에 모델 비용이 두 배가 되고 시간 예산도 위태로워진다 (TRD 7번).
+   *
+   * 422를 내지 않는 경계와 같은 상수를 쓴다. 두 값이 갈리면 "강행 프롬프트로
+   * 불렀는데 422로 끊는다" 또는 그 반대가 생긴다.
+   */
+  const forced = irrelevantStreak >= IRRELEVANT_STREAK_LIMIT;
+
   for (let attempt = 0; attempt <= MAX_CORRECTION_ATTEMPTS; attempt += 1) {
     const outcome: RecommendOutcome = await generateRecommendations(promptBooks, mood, {
       deadlineMs: budget.remainingMs(),
       // 첫 시도에는 교정이 없다. 두 번째에만 위반 ID와 허용 목록을 다시 싣는다.
       ...(violations.length > 0 ? { correction: { violatingBookIds: violations } } : {}),
+      // 교정 재요청에도 그대로 실린다. 여기서 강행이 풀리면 모델이 다시 규칙 7을
+      // 보고 빈 배열을 돌려주어, 강행 경로가 교정 한 번으로 조용히 무력화된다.
+      ...(forced ? { forced: true } : {}),
     });
 
     accumulate(usage, outcome);
@@ -231,6 +260,12 @@ export async function POST(request: Request): Promise<Response> {
       // 2회 연속 무관 판정 뒤의 요청이다. 판정을 무시하고 계속 진행한다 —
       // **모델을 다시 부르지 않는다.** `outcome.picks`는 이미 손에 있고, 다시
       // 부르면 같은 응답에 비용만 두 배가 된다.
+      //
+      // 위에서 강행 프롬프트로 불렀어도 이 분기는 남는다. 강행 규칙은 `relevant`를
+      // 모델 판단 그대로 두라고 말하므로(step 0의 규칙 8) 강행 호출에서도
+      // `false`가 올 수 있고, 그때도 진행해야 한다. 프롬프트는 *빈 배열이 오지
+      // 않게* 만들고, 이 분기는 *그래도 false면 무시*를 지킨다. 서버가 무시하기로
+      // 한 것은 그 값의 **효력**이지 값이 아니므로 `relevant`를 덮어쓰지 않는다.
       //
       // 무시하는 것은 무관 판정 하나뿐이다. 아래 화이트리스트 검증(FR-009)은
       // 그대로 지난다 — 목록 밖 책은 이 경로로도 사용자에게 도달하지 않는다.

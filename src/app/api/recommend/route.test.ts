@@ -531,6 +531,129 @@ describe("irrelevantStreak", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * 강행을 **첫 모델 호출에** 싣는다 (API_SPEC /api/recommend)
+ *
+ * 라우트에서만 422를 걷어내면 프롬프트는 여전히 "단서가 없으면 빈 배열"이라고
+ * 지시하므로 강행의 결과가 200 + 빈 배열이 된다 — 화면에는 "그대로 골라
+ * 드릴게요"라고 적어 놓고 아무것도 주지 않는 상태다.
+ *
+ * 그래서 아래 목은 **프롬프트를 흉내 낸다**: 강행 옵션이 꺼져 있으면 무관 판정 +
+ * 빈 배열, 켜져 있으면 목록 안에서 골라 채운다. 이 구분이 없으면 라우트가 옵션을
+ * 넘기지 않아도 테스트가 초록불이 된다.
+ * ------------------------------------------------------------------ */
+
+describe("강행 옵션 전달", () => {
+  /** 강행 옵션을 존중하는 목. 켜져 있으면 채우고, 꺼져 있으면 빈 배열이다 */
+  function setForcedAwareRecommend(picks: readonly RecommendPick[] = [
+    pickOf(isbnOf(1), 1),
+    pickOf(isbnOf(2), 2),
+  ]): void {
+    generateRecommendationsMock.mockImplementation(
+      async (books: { isbn13: string }[], mood: string, options: RecommendOptions) => {
+        callsSeen.push({ books: [...books], mood, options });
+        // relevant는 두 경로에서 모두 모델 판단 그대로 false다. 강행이 바꾸는 것은
+        // 규칙 7(빈 배열)이지 relevant 값이 아니다 (step 0 규칙 8).
+        return okOutcome(options.forced ? picks : [], undefined, false);
+      },
+    );
+  }
+
+  it("streak 2 요청은 강행 옵션과 함께 서비스를 부른다", async () => {
+    setForcedAwareRecommend();
+
+    await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    expect(callsSeen[0].options.forced).toBe(true);
+  });
+
+  it.each([0, 1])("streak %i 요청은 강행 옵션 없이 부르고 relevant: false면 422다", async (
+    irrelevantStreak,
+  ) => {
+    setForcedAwareRecommend();
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak })));
+
+    expect(callsSeen[0].options.forced).toBeUndefined();
+    expect(response.status).toBe(422);
+    expect((await readJson(response)).code).toBe("IRRELEVANT_MOOD");
+  });
+
+  it("강행 옵션을 받은 모델이 추천을 채우면 200 + 빈 배열이 아닌 추천이다", async () => {
+    setForcedAwareRecommend();
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+    const body = await readJson(response);
+
+    expect(response.status).toBe(200);
+    // 이 런의 본체다. 라우트가 옵션을 넘기지 않으면 여기서 빈 배열이 나온다 —
+    // "적으신 그대로 골라 드릴게요"라고 약속한 뒤 아무것도 주지 않는 상태다.
+    expect(body.recommendations).not.toHaveLength(0);
+    expect((body.recommendations as RecommendPick[]).map((item) => item.bookId)).toEqual([
+      isbnOf(1),
+      isbnOf(2),
+    ]);
+  });
+
+  it("강행 호출에도 모델이 relevant: false를 내면 422가 아니라 진행한다", async () => {
+    setForcedAwareRecommend();
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    // 목이 두 경로에서 모두 relevant: false를 돌려주므로, 200이 나왔다는 것은
+    // 호출 뒤의 무시 분기가 여전히 살아 있다는 뜻이다.
+    expect(response.status).toBe(200);
+  });
+
+  it("강행 요청도 모델 호출은 1회다 — 강행 때문에 재호출이 생기지 않는다", async () => {
+    setForcedAwareRecommend();
+
+    await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    expect(generateRecommendationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("교정 재요청에도 강행 옵션이 유지된다", async () => {
+    setRecommendSequence(
+      okOutcome([pickOf(OUTSIDER_ISBN, 1)], undefined, false),
+      okOutcome([pickOf(isbnOf(1), 1)], undefined, false),
+    );
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    expect(callsSeen[0].options.forced).toBe(true);
+    // 여기서 강행이 풀리면 모델이 규칙 7을 다시 보고 빈 배열을 돌려주어,
+    // 강행 경로가 교정 한 번으로 조용히 무력화된다.
+    expect(callsSeen[1].options.forced).toBe(true);
+    expect(callsSeen[1].options.correction?.violatingBookIds).toEqual([OUTSIDER_ISBN]);
+    expect(response.status).toBe(200);
+  });
+
+  it("강행 요청에서 목록 밖 bookId가 오면 교정 1회 후 502다 (FR-009)", async () => {
+    setRecommendSequence(okOutcome([pickOf(OUTSIDER_ISBN, 1)], undefined, false));
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+    const body = await readJson(response);
+
+    expect(generateRecommendationsMock).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(502);
+    expect(body.code).toBe("RECOMMENDATION_VALIDATION_FAILED");
+    expect(JSON.stringify(body)).not.toContain(OUTSIDER_ISBN);
+  });
+
+  it("강행 로그에 mood 원문이 없다 (PRD 7번)", async () => {
+    const secret = "비밀이 섞인 기분 문장입니다";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setForcedAwareRecommend();
+
+    await POST(recommendRequest(bodyOf({ irrelevantStreak: 2, mood: secret })));
+
+    const warnings = warnSpy.mock.calls.map((call) => call.join(" "));
+    expect(warnings.some((line) => line.includes("강행"))).toBe(true);
+    expect(warnings.join("\n")).not.toContain(secret);
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * shortfall (FR-006)
  * ------------------------------------------------------------------ */
 

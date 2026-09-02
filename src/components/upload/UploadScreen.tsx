@@ -32,6 +32,7 @@ import {
   validateSelection,
 } from "@/lib/image";
 import type { RejectReason, SelectedFileMeta } from "@/lib/image";
+import { CaptureGuide } from "./CaptureGuide";
 import { PhotoPicker } from "./PhotoPicker";
 import { PhotoThumbnails } from "./PhotoThumbnails";
 import type { UploadPhoto } from "./PhotoThumbnails";
@@ -162,6 +163,13 @@ export function UploadScreen({ onAnalyze, isAnalyzing = false }: UploadScreenPro
       </header>
 
       <PhotoPicker onSelect={handleSelect} disabled={busy} />
+
+      {/*
+        촬영 요령은 접힌 시트로 둔다 (FR-015). 헤더의 한 줄은 펼치지 않는 사용자를 위한
+        것이라 시트가 그것을 대체하지 않고 넓힌다. 촬영 버튼 바로 아래에 둬야 "읽고 나서
+        누른다"가 한 눈에 이어진다 — 시트가 버튼 위로 올라가면 첫 행동이 밀린다.
+      */}
+      <CaptureGuide />
 
       <PhotoThumbnails photos={photos} onRemove={handleRemove} disabled={busy} />
 

@@ -253,3 +253,47 @@ describe("UploadScreen — AI 슬롭 안티패턴 (UI_GUIDE)", () => {
     expect(container.innerHTML).not.toContain(token);
   });
 });
+
+describe("UploadScreen — 촬영 가이드 시트 (FR-015)", () => {
+  it("시트는 접힌 채로 붙고, 촬영 팁 한 줄은 그대로 보인다", () => {
+    const { container } = render(<UploadScreen onAnalyze={() => {}} />);
+
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect((details as HTMLDetailsElement).open).toBe(false);
+    // 시트는 펼치지 않는 사용자를 위한 한 줄을 대체하지 않는다.
+    expect(screen.getByText(/책등이 보이도록/)).toBeInTheDocument();
+  });
+
+  it("시트를 펼쳐도 촬영 팁 한 줄이 화면에 남는다", () => {
+    render(<UploadScreen onAnalyze={() => {}} />);
+
+    fireEvent.click(screen.getByText("어떻게 찍으면 잘 읽히나요?"));
+
+    expect(screen.getByText(/책등이 보이도록/)).toBeInTheDocument();
+  });
+
+  it("가이드는 업로드·분석 흐름을 막지 않는다", async () => {
+    비트맵대체();
+    캔버스대체();
+    const onAnalyze = vi.fn();
+    render(<UploadScreen onAnalyze={onAnalyze} />);
+
+    fireEvent.click(screen.getByText("어떻게 찍으면 잘 읽히나요?"));
+    고르기([사진("a.jpg")]);
+    await 썸네일("a.jpg");
+    fireEvent.click(screen.getByRole("button", { name: "분석 시작" }));
+
+    await waitFor(() => expect(onAnalyze).toHaveBeenCalledTimes(1));
+  });
+
+  it("가이드를 펼쳐도 이벤트를 보내지 않는다 (PRD 7번)", () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    render(<UploadScreen onAnalyze={() => {}} />);
+
+    fireEvent.click(screen.getByText("어떻게 찍으면 잘 읽히나요?"));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

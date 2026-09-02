@@ -1,0 +1,76 @@
+{
+  "project": "shelfie",
+  "phase": "contract-wiring",
+  "carried_reports": {
+    "note": "이전 런의 미해소 보고를 어느 step 이 받는지 명시한다. 배정하지 않으면 이월된다 — 네 건이 세 런을 그렇게 살아남았다 (ROADMAP 15). 이번 런의 본체는 ROADMAP 23 이 표로 남긴 코드 배선 6건이고, 그 계약 쪽 문서는 런 시작 전에 메인이 전부 고쳤다.",
+    "resolved_by_main_before_run": [
+      "상태도에 error → recommending · error → moodInput 추가 + 'error 가 실패 단계를 기억한다' 프로즈 (docs/ARCHITECTURE.md, 전이 22 → 25)",
+      "recommendRequestSchema 에 retryIndex(0~4) · irrelevantStreak(0~2) 를 필수 평면 필드로 규정 (docs/API_SPEC.md) + 서명 대상이 아닌 이유 (docs/ADR.md ADR-006)",
+      "recommend_failed 이벤트 신설 — session_id · error_code · input_tokens · output_tokens (docs/PRD.md 7번 표)",
+      "recommend_viewed 를 /api/events 허용 목록에서 제거 (docs/API_SPEC.md · docs/TRD.md TR-014 · docs/PRD.md 263행)",
+      "recommend_viewed 수집 주체를 '서버'로 정정 (docs/PRD.md 7번 표 · 흐름 2 시퀀스) — 틀린 계약을 남겨 두면 워커가 '문서대로' 되돌려 이중 계상을 되살린다"
+    ],
+    "assigned_to_steps": {
+      "0": [
+        "배선 1 — recommendRequestSchema 에 retryIndex · irrelevantStreak (src/lib/schemas.ts)",
+        "배선 4 — 두 필드를 클라이언트가 싣는다 (src/lib/api-client.ts · src/app/page.tsx)",
+        "clientEventSchema 가 아직 recommend_viewed 를 받는다 (ROADMAP 23 부수 항목)"
+      ],
+      "1": [
+        "배선 3 — AnalyticsEvent 유니온 + PROPERTY_KEYS 에 recommend_failed (src/lib/analytics.ts). 런 #4 가 처음 보고했고 런 #5 는 PRD 표 신설이 선행이라 넘겼다"
+      ],
+      "2": [
+        "배선 2 — 라우트가 두 필드를 소비하고 실패를 이벤트로 남긴다 (src/app/api/recommend/route.ts)",
+        "무상태에서 relevant:false 2회 연속 무시 · mood_submitted.retry_index (런 #4·#5 이월)"
+      ],
+      "3": [
+        "배선 5 — error 가 실패 단계를 기억 + 회복 전이 2개 (src/lib/session.ts · src/app/page.tsx). 런 #5 보고 ④",
+        "런 #5 보고 ③ — ErrorBanner.requestId 가 string 필수라 '요청 ID 없음'을 '(없음)' 문자열로 지어낸다"
+      ],
+      "4": [
+        "배선 6 — IRRELEVANT_MOOD 2회 연속 후 3회째 강행 (src/components/mood/MoodInput.tsx · src/app/page.tsx). 런 #5 보고 ⑥, PRD US-003 AC"
+      ]
+    },
+    "not_assigned_this_run": [
+      "런 #5 보고 ① — BookList.result 가 AnalyzeResponse 라 재검색 승격분을 담지 못한다 (props 를 ShelfBook[] 로 넓히는 일). 이번 런은 계약·이벤트 배선이고 목록 화면을 건드리지 않는다. 페이지가 '직접 확인한 책' 섹션을 따로 렌더하는 지금 상태로 둔다",
+      "런 #5 보고 ② — UnidentifiedBookCard.onRetryLookup 이 책 인자를 받지 않아 책 단위 재조회를 표현하지 못하고 전체 재분석에 배선돼 있다. 비용 문제이지 계약 문제가 아니다",
+      "런 #5 보고 ⑤ — FR-010 재시도 간격 백오프(0초 → 5초 → 15초) 미구현. 상한 3회는 이미 지켜진다",
+      "런 #5 보고 ⑦ — 재시도가 들고 있는 것이 원본 File 이 아니라 리사이즈된 data URI 다. '재업로드를 요구하지 않는다'는 목적은 이미 충족돼 있다",
+      "런 #3 보고 — 알라딘 호출 상한. 메인이 TRD 에서 260회로 이미 갱신했고 코드 쪽 소비처가 없다",
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡다. 이번 런은 services/ 를 건드리지 않는다",
+      "ROADMAP 18·21·22 (M11 남은 절반 · M13 재개 신호 · M14 calibrate 덮어쓰기) — scripts/** 는 main_owned_paths 다. step 에 주지 않는다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "request-contract",
+      "status": "pending",
+      "docs": ["API_SPEC", "ADR", "ARCHITECTURE"]
+    },
+    {
+      "step": 1,
+      "name": "analytics-event",
+      "status": "pending",
+      "docs": ["PRD", "ARCHITECTURE"]
+    },
+    {
+      "step": 2,
+      "name": "recommend-route",
+      "status": "pending",
+      "docs": ["API_SPEC", "PRD", "ADR", "TRD"]
+    },
+    {
+      "step": 3,
+      "name": "error-recovery",
+      "status": "pending",
+      "docs": ["ARCHITECTURE", "ADR", "UI_GUIDE"]
+    },
+    {
+      "step": 4,
+      "name": "mood-forced-path",
+      "status": "pending",
+      "docs": ["UI_GUIDE", "PRD", "API_SPEC"]
+    }
+  ]
+}

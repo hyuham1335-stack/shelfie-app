@@ -179,7 +179,34 @@
         "src/components/common/Notice.tsx"
       ],
       "started_at": "2026-09-02T13:48:10+0900",
-      "summary": "RecommendationList 에 \"이미지로 저장\" Secondary 버튼을 sticky 하단(다시 추천받기 아래)에 붙이고, 누르면 콜백만 위로 올린다 — 캔버스·Blob·다운로드는 page.tsx 가 한다. 새 props 3종: isSavingImage: boolean · saveImageFailed: boolean · onSaveImage: () => void (dispatch 는 넘기지 않는다). 그릴 카드가 0건이면(rows.length === 0) 저장 버튼 자체를 그리지 않는다. **저장 상태는 리듀서가 아니라 page.tsx 의 지역 useState 두 개(isSavingImage·saveImageFailed)에 두었다** — 저장은 상태도의 어떤 전이도 일으키지 않고(화면은 result 에 그대로 머문다) 실패해도 결과가 사라지면 안 되므로, 전이가 아닌 것을 전이 규칙의 자리에 넣으면 lib/session.ts 의 순수 함수 테스트가 규칙 아닌 것을 검사하게 된다. 재시도 대기 초(retryWaitSec)를 리듀서 밖에 둔 기존 판단과 같은 계열이다. 초기화는 runRecommend 진입부의 resetShareState() 한 곳 — 모든 재추천 경로가 그 함수를 지나므로 이전 묶음의 실패 문구가 새 추천 위에 남지 않는다(handleRestart 에서도 부른다). 다운로드는 URL.createObjectURL → document.createElement(\"a\") + download → click → remove → finally 에서 revokeObjectURL 로 반드시 회수한다. **파일명은 \"shelfie-recommendations.png\" 고정이고 시각을 넣지 않았다** — 초 단위를 박으면 같은 결과의 두 저장이 다른 파일이 되고 테스트가 시계에 의존한다. 저장 중에는 버튼을 감추지 않고 disabled + aria-busy=\"true\" 로 두고, role=\"status\" aria-live=\"polite\" 영역에 \"이미지를 만들고 있어요\"/\"이미지를 만들지 못했어요. 다시 시도해 주세요\"를 Notice 로 그린다(role=\"alert\"·경고색 없음, 내부 에러 원문 비노출). 저장은 dispatch 가 없어 recommendCount 를 건드리지 않고 새 이벤트도 만들지 않는다(analytics·app/api/events 무변경). lib/share-image.ts 무수정, 새 의존성 0건, 저장소·쿠키 0건, 서버 호출 0건. 테스트 12건 추가(RecommendationList 6 · page.tsx 6 — renderShareImage 를 vi.mock 으로 갈아 끼우고 URL.createObjectURL/revokeObjectURL 과 앵커 click 을 가짜로 세워 인자·파일명·회수·비활성·실패 잔존·이벤트 미발생을 단정), 전체 1158건 통과."
+      "summary": "RecommendationList 에 \"이미지로 저장\" Secondary 버튼을 sticky 하단(다시 추천받기 아래)에 붙이고, 누르면 콜백만 위로 올린다 — 캔버스·Blob·다운로드는 page.tsx 가 한다. 새 props 3종: isSavingImage: boolean · saveImageFailed: boolean · onSaveImage: () => void (dispatch 는 넘기지 않는다). 그릴 카드가 0건이면(rows.length === 0) 저장 버튼 자체를 그리지 않는다. **저장 상태는 리듀서가 아니라 page.tsx 의 지역 useState 두 개(isSavingImage·saveImageFailed)에 두었다** — 저장은 상태도의 어떤 전이도 일으키지 않고(화면은 result 에 그대로 머문다) 실패해도 결과가 사라지면 안 되므로, 전이가 아닌 것을 전이 규칙의 자리에 넣으면 lib/session.ts 의 순수 함수 테스트가 규칙 아닌 것을 검사하게 된다. 재시도 대기 초(retryWaitSec)를 리듀서 밖에 둔 기존 판단과 같은 계열이다. 초기화는 runRecommend 진입부의 resetShareState() 한 곳 — 모든 재추천 경로가 그 함수를 지나므로 이전 묶음의 실패 문구가 새 추천 위에 남지 않는다(handleRestart 에서도 부른다). 다운로드는 URL.createObjectURL → document.createElement(\"a\") + download → click → remove → finally 에서 revokeObjectURL 로 반드시 회수한다. **파일명은 \"shelfie-recommendations.png\" 고정이고 시각을 넣지 않았다** — 초 단위를 박으면 같은 결과의 두 저장이 다른 파일이 되고 테스트가 시계에 의존한다. 저장 중에는 버튼을 감추지 않고 disabled + aria-busy=\"true\" 로 두고, role=\"status\" aria-live=\"polite\" 영역에 \"이미지를 만들고 있어요\"/\"이미지를 만들지 못했어요. 다시 시도해 주세요\"를 Notice 로 그린다(role=\"alert\"·경고색 없음, 내부 에러 원문 비노출). 저장은 dispatch 가 없어 recommendCount 를 건드리지 않고 새 이벤트도 만들지 않는다(analytics·app/api/events 무변경). lib/share-image.ts 무수정, 새 의존성 0건, 저장소·쿠키 0건, 서버 호출 0건. 테스트 12건 추가(RecommendationList 6 · page.tsx 6 — renderShareImage 를 vi.mock 으로 갈아 끼우고 URL.createObjectURL/revokeObjectURL 과 앵커 click 을 가짜로 세워 인자·파일명·회수·비활성·실패 잔존·이벤트 미발생을 단정), 전체 1158건 통과.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 580,
+          "at": "2026-09-02T13:57:50+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 61067,
+          "source_chars": 16667,
+          "context_chars": 3254,
+          "prompt_chars": 85675,
+          "preamble_chars": 81798,
+          "step_body_chars": 3877,
+          "cost_usd": 5.1949,
+          "turns": 44,
+          "cache_read": 5611176,
+          "cache_write": 153770,
+          "output_tokens": 31473
+        }
+      ],
+      "completed_at": "2026-09-02T13:57:50+0900",
+      "attempts": 1
     },
     {
       "step": 4,

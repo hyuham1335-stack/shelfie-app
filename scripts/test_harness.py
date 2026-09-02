@@ -466,6 +466,58 @@ class CalibrateTest(DoctorTestBase):
         harness.run_calibrate(self.root, stage="lint", runner=runner)
         self.assertEqual({"lint"}, set(stage for stage, _ in runner.calls))
 
+    # --- 못 잰 것이 잰 것을 지우지 않는다 (파일럿 런 #5 M14) ---
+
+    def test_full_run_keeps_a_prior_scoped_measurement(self):
+        """--select 없는 전체 calibrate 가 scoped 의 실측을 덮으면 안 된다.
+
+        M9 의 형제다 — 그때는 부분이 전체를 덮었고 이번은 전체가 부분을
+        덮었다. 런 #4 의 21.81s 가 그렇게 사라졌고, 그런데도 파일은
+        partial: false 라고 적어 doctor 가 통과시켰다.
+        """
+        harness.run_calibrate(self.root, runner=self.fake_runner({"scoped": 2.0}),
+                              select="src/lib/a.test.ts", now="2026-01-01T00:00:00+0900")
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}),
+                              now="2026-02-02T00:00:00+0900")
+
+        entry = self.load()["stages"]["scoped"]
+        self.assertEqual(2.0, entry["sec"], "옛 실측이 살아 있어야 한다")
+        self.assertEqual("stale", entry["state"])
+        self.assertEqual("2026-01-01T00:00:00+0900", entry["measured_at"],
+                         "옛 값을 방금 잰 척하지 않는다")
+        self.assertIn("선택 대상", entry["stale_reason"])
+
+    def test_stale_stage_makes_the_file_partial(self):
+        harness.run_calibrate(self.root, runner=self.fake_runner({"scoped": 2.0}),
+                              select="src/lib/a.test.ts")
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        self.assertTrue(self.load()["partial"],
+                        "이번 런이 재지 못한 칸이 있으면 완전하다고 적지 않는다")
+
+    def test_three_states_are_distinguished(self):
+        """없는 것 · 모르는 것 · 옛 값을 한 칸에 뭉개지 않는다."""
+        harness.run_calibrate(self.root, runner=self.fake_runner({"scoped": 2.0}),
+                              select="src/lib/a.test.ts")
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+
+        stages = self.load()["stages"]
+        self.assertEqual("absent", stages["e2e"]["state"], "cmd:null 은 없는 것이다")
+        self.assertEqual("stale", stages["scoped"]["state"], "옛 값이 있다")
+        self.assertEqual("measured", stages["full"]["state"])
+
+    def test_unmeasured_stays_unmeasured_without_a_prior_value(self):
+        """옛 값이 없으면 되살릴 것도 없다 — 모르는 것은 모르는 것이다."""
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        entry = self.load()["stages"]["scoped"]
+        self.assertEqual("unmeasured", entry["state"])
+        self.assertIsNone(entry["sec"])
+
+    def test_stale_measurement_keeps_deriving_policy(self):
+        """살린 값은 정책 유도에도 그대로 쓰인다 — 되살리는 이유가 그것이다."""
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        harness.run_calibrate(self.root, runner=self.fake_runner({"full": 4.7}))
+        self.assertIsNotNone(self.load()["derived"]["full_timeout_sec"])
+
     def test_runner_bin_is_resolved_to_a_real_path(self):
         """Windows 에서 npm 은 npm.cmd 다.
 

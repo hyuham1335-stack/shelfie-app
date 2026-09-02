@@ -393,15 +393,35 @@ class TestCheckoutBranch:
 # _commit_step (mocked)
 # ---------------------------------------------------------------------------
 
+def _porcelain(*paths):
+    """git status --porcelain -z 출력을 흉내낸다 (NUL 구분)."""
+    return "".join(" M %s%s" % (p, chr(0)) for p in paths)
+
+
+def _git_stub(calls, changed, *, staged=True):
+    """status 는 changed 를 돌려주고 나머지는 성공하는 가짜 git."""
+    def fake_git(*args):
+        calls.append(args)
+        if args[0] == "status":
+            return MagicMock(returncode=0, stdout=_porcelain(*changed), stderr="")
+        if args[:2] == ("diff", "--cached"):
+            return MagicMock(returncode=1 if staged else 0)
+        return MagicMock(returncode=0, stdout="", stderr="")
+    return fake_git
+
+
 class TestCommitStep:
+    """실행기가 커밋할 범위는 `git add -A` 가 아니라 소유 glob 에서 온다 (M11).
+
+    런 #4 에서 `_finalize` 의 `git add -A` 가 미커밋 소스와 상태 파일을 한
+    커밋에 담고 그 런의 실측 타임스탬프를 덮었다. 다섯 런 동안 숨어 있었던
+    이유는 step 세션이 매번 스스로 커밋해 이 경로가 no-op 이었기 때문이다.
+    """
+
     def test_two_phase_commit(self, executor):
         calls = []
-        def fake_git(*args):
-            calls.append(args)
-            if args[:2] == ("diff", "--cached"):
-                return MagicMock(returncode=1)
-            return MagicMock(returncode=0, stdout="", stderr="")
-        executor._run_git = fake_git
+        executor._run_git = _git_stub(
+            calls, ["src/lib/thing.ts", "phases/0-mvp/index.json"])
 
         executor._commit_step(2, "ui")
 
@@ -411,23 +431,83 @@ class TestCommitStep:
         assert "chore(mvp):" in commit_calls[1][2]
 
     def test_no_code_changes_skips_feat_commit(self, executor):
-        call_count = {"diff": 0}
         calls = []
-        def fake_git(*args):
-            calls.append(args)
-            if args[:2] == ("diff", "--cached"):
-                call_count["diff"] += 1
-                if call_count["diff"] == 1:
-                    return MagicMock(returncode=0)
-                return MagicMock(returncode=1)
-            return MagicMock(returncode=0, stdout="", stderr="")
-        executor._run_git = fake_git
+        executor._run_git = _git_stub(calls, ["phases/0-mvp/step2-output.json"])
 
         executor._commit_step(2, "ui")
 
         commit_msgs = [c[2] for c in calls if c[0] == "commit"]
         assert len(commit_msgs) == 1
         assert "chore" in commit_msgs[0]
+
+    def test_feat_commit_carries_only_owned_paths(self, executor):
+        """소유 밖 변경은 add 인자에 들어가지 않는다."""
+        calls = []
+        executor._run_git = _git_stub(
+            calls, ["src/lib/thing.ts", "docs/TRD.md", "phases/0-mvp/index.json"])
+
+        executor._commit_step(2, "ui")
+
+        adds = [c for c in calls if c[0] == "add"]
+        added = {p for c in adds for p in c[2:]}
+        assert "src/lib/thing.ts" in added
+        assert "docs/TRD.md" not in added, "문서는 메인 소유다 — 실행기가 커밋하지 않는다"
+        assert not any(c[1] == "-A" for c in adds), "작업 트리 전체를 쓸어담지 않는다"
+
+    def test_stray_change_is_surfaced(self, executor, capsys):
+        """커밋하지 않은 소유 밖 변경은 조용히 두지 않고 드러낸다."""
+        calls = []
+        executor._run_git = _git_stub(calls, ["src/lib/thing.ts", "scripts/execute.py"])
+
+        executor._commit_step(2, "ui")
+
+        out = capsys.readouterr().out
+        assert "소유 밖 변경" in out
+        assert "scripts/execute.py" in out
+
+    def test_other_phase_metadata_is_not_committed(self, executor):
+        """다른 phase 의 상태 파일은 이 런의 커밋에 섞이지 않는다 (런 #4 사고)."""
+        calls = []
+        executor._run_git = _git_stub(
+            calls, ["phases/0-mvp/index.json", "phases/other/index.json"])
+
+        executor._commit_step(2, "ui")
+
+        added = {p for c in calls if c[0] == "add" for p in c[2:]}
+        assert "phases/0-mvp/index.json" in added
+        assert "phases/other/index.json" not in added
+
+    def test_skips_commit_when_git_cannot_answer(self, executor, capsys):
+        calls = []
+        def fake_git(*args):
+            calls.append(args)
+            if args[0] == "status":
+                return MagicMock(returncode=128, stdout="", stderr="not a repo")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        executor._run_git = fake_git
+
+        executor._commit_step(2, "ui")
+
+        assert not [c for c in calls if c[0] == "commit"]
+        assert "git status" in capsys.readouterr().out
+
+    def test_rename_carries_both_sides(self, executor):
+        """이름이 바뀐 파일은 원본 경로도 담아야 삭제가 커밋에 들어간다."""
+        calls = []
+        def fake_git(*args):
+            calls.append(args)
+            if args[0] == "status":
+                stdout = "R  src/lib/new.ts%ssrc/lib/old.ts%s" % (chr(0), chr(0))
+                return MagicMock(returncode=0, stdout=stdout, stderr="")
+            if args[:2] == ("diff", "--cached"):
+                return MagicMock(returncode=1)
+            return MagicMock(returncode=0, stdout="", stderr="")
+        executor._run_git = fake_git
+
+        executor._commit_step(2, "ui")
+
+        added = {p for c in calls if c[0] == "add" for p in c[2:]}
+        assert added == {"src/lib/new.ts", "src/lib/old.ts"}
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +911,59 @@ class TestResume:
             assert executor._execute_single_step(step, "guardrails") is True
 
         assert "재개" in fake_invoke.preamble
+
+    def test_signal_without_artifacts_is_not_a_resume(self, executor):
+        """출력 파일이 있어도 남긴 것이 없으면 재개가 아니다 (M13).
+
+        런 #5 에서 25초 만에 한도로 잘려 소스를 한 줄도 못 쓴 step 이 다음
+        실행에서 재개로 판정됐다. "돌았다"와 "남겼다"는 다른 사실이다.
+        """
+        (executor._phase_dir / "step2-output.json").write_text("{}", encoding="utf-8")
+
+        def fake_git(*args):
+            if args[0] == "status":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if args[0] == "log":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        executor._run_git = fake_git
+
+        assert executor._prior_attempt_exists(2) is False
+
+    def test_uncommitted_owned_change_counts_as_artifact(self, executor):
+        """한도가 커밋 직전에 떨어진 런 #3 의 형태 — 소스는 디스크에 있다."""
+        (executor._phase_dir / "step2-output.json").write_text("{}", encoding="utf-8")
+
+        def fake_git(*args):
+            if args[0] == "status":
+                return MagicMock(returncode=0, stdout=_porcelain("src/lib/thing.ts"),
+                                 stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        executor._run_git = fake_git
+
+        assert executor._prior_attempt_exists(2) is True
+
+    def test_step_feat_commit_counts_as_artifact(self, executor):
+        """세션이 스스로 커밋했으면 작업 트리는 깨끗하다 — 그래도 산출물이다."""
+        (executor._phase_dir / "step2-output.json").write_text("{}", encoding="utf-8")
+
+        def fake_git(*args):
+            if args[0] == "status":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if args[0] == "log":
+                return MagicMock(returncode=0, stdout="abc1234 feat(mvp): step 2 — ui",
+                                 stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        executor._run_git = fake_git
+
+        assert executor._prior_attempt_exists(2) is True
+
+    def test_unanswerable_git_falls_back_to_resume(self, executor):
+        """판정할 수 없으면 재개로 본다 — 두 오류의 값이 다르다."""
+        (executor._phase_dir / "step2-output.json").write_text("{}", encoding="utf-8")
+        executor._run_git = lambda *a: MagicMock(returncode=128, stdout="", stderr="x")
+
+        assert executor._prior_attempt_exists(2) is True
 
     def test_retry_does_not_claim_resume(self, executor):
         """같은 런의 재시도는 '중단된 step'이 아니다 — 재시도 안내가 따로 있다."""
@@ -1317,6 +1450,58 @@ class TestRunsRecorded:
 # ---------------------------------------------------------------------------
 # step 이 지목한 소스를 실행기가 실어준다 (M16)
 # ---------------------------------------------------------------------------
+
+class TestPrefixBudget:
+    """접두부를 분해해서 잰다 (ROADMAP 28).
+
+    ADR-H008 은 접두부를 줄이고 ADR-H009 는 늘리는데, 둘이 서로의 상한을
+    모른다. 예산값을 정하려면 먼저 접두부가 무엇으로 이뤄져 있는지를
+    런마다 남겨야 한다 — 실측 없는 상수를 상속하지 않는다.
+    """
+
+    def test_run_records_prefix_breakdown(self, executor):
+        step = {"step": 2, "name": "ui", "status": "pending"}
+
+        def fake_invoke(step_arg, preamble):
+            index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+            for st in index["steps"]:
+                if st["step"] == 2:
+                    st["status"] = "completed"
+                    st["summary"] = "done"
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False),
+                                            encoding="utf-8")
+            body = (executor._phase_dir / "step2.md").read_text(encoding="utf-8")
+            return {"exitCode": 0, "stdout": "{}", "stderr": "",
+                    "prompt_chars": len(preamble) + len(body),
+                    "preamble_chars": len(preamble)}
+
+        with patch.object(executor, "_invoke_claude", side_effect=fake_invoke),              patch.object(executor, "_commit_step"):
+            assert executor._execute_single_step(step, "guardrails") is True
+
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        run = next(st for st in index["steps"] if st["step"] == 2)["runs"][0]
+        assert run["preamble_chars"] > 0
+        assert run["step_body_chars"] > 0
+        assert run["prompt_chars"] == run["preamble_chars"] + run["step_body_chars"]
+        assert run["context_chars"] > 0, "완료된 step 의 summary 누적도 접두부다"
+
+    def test_prefix_breakdown_is_printed(self, executor, capsys):
+        executor._report_prefix(1000, {"guardrail_chars": 600, "source_chars": 200}, 150)
+        out = capsys.readouterr().out
+        assert "접두부 1,000자" in out
+        assert "가드레일 600" in out
+        assert "소스 200" in out
+        assert "상용구 50" in out, "분해가 합과 맞아야 예산을 어디 걸지 알 수 있다"
+
+    def test_step_body_omitted_when_prompt_chars_missing(self, executor):
+        """모르는 값을 0 으로 채우지 않는다 (ADR-H007)."""
+        index = {"steps": [{"step": 2, "name": "ui", "status": "pending"}]}
+        executor._record_run(index, 2, attempt=1, outcome="completed", elapsed=1,
+                             out={"exitCode": 0, "stdout": "{}"}, guard_info={})
+        entry = index["steps"][0]["runs"][0]
+        assert "step_body_chars" not in entry
+        assert "preamble_chars" not in entry
+
 
 class TestSourceInjection:
     """읽기 turn 336회가 유발한 접두부 재독이 전체의 44.0%였다.

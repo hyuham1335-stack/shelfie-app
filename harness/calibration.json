@@ -1,59 +1,67 @@
 {
-  "measured_at": "2026-09-02T12:22:41+0900",
+  "measured_at": "2026-09-02T13:07:46+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": false,
   "stages": {
     "compile": {
-      "sec": 3.02,
+      "sec": 4.39,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "state": "measured",
+      "measured_at": "2026-09-02T13:07:30+0900"
     },
     "lint": {
-      "sec": 8.8,
+      "sec": 9.11,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "state": "measured",
+      "measured_at": "2026-09-02T13:07:30+0900"
     },
     "check": {
-      "sec": 1.7,
+      "sec": 1.8,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "state": "measured",
+      "measured_at": "2026-09-02T13:07:30+0900"
     },
     "scoped": {
-      "sec": 3.33,
+      "sec": 2.75,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "state": "measured",
+      "measured_at": "2026-09-02T13:07:46+0900"
     },
     "full": {
-      "sec": 23.39,
+      "sec": 22.06,
       "ok": true,
       "exit_code": 0,
       "tests_ran": 1091,
       "suites": 37,
       "failures": 0,
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "state": "measured",
+      "measured_at": "2026-09-02T13:07:30+0900"
     },
     "e2e": {
       "sec": null,
       "skipped": true,
+      "state": "absent",
       "reason": "cmd:null — 이 스택에 없는 스테이지",
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "measured_at": "2026-09-02T13:07:30+0900"
     },
     "build": {
-      "sec": 8.72,
+      "sec": 8.55,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "state": "measured",
+      "measured_at": "2026-09-02T13:07:30+0900"
     },
     "docs": {
       "sec": null,
       "skipped": true,
+      "state": "absent",
       "reason": "cmd:null — 이 스택에 없는 스테이지",
-      "measured_at": "2026-09-02T12:22:41+0900"
+      "measured_at": "2026-09-02T13:07:30+0900"
     }
   },
   "retry": {

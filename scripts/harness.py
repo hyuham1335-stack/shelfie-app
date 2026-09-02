@@ -767,19 +767,40 @@ def _check_calibration(root, config, adapter, report):
         report.add("캘리브레이션 상태", "WARN", "\n".join("- " + n for n in notes))
         return
 
-    measured = [n for n, s in calibration["stages"].items() if not s.get("skipped")]
-    skipped = [n for n, s in calibration["stages"].items() if s.get("skipped")]
+    # 셋을 한 칸에 뭉개지 않는다 — 없는 것(absent) · 모르는 것(unmeasured) ·
+    # 옛 값(stale)은 다른 사실이고, 뭉개면 "이번에 못 쟀다"가 "잰 적 없다"로
+    # 읽힌다 (M14). state 가 없는 옛 파일은 skipped 로 갈라 읽는다.
+    by_state = {"measured": [], "stale": [], "unmeasured": [], "absent": []}
+    for name, entry in calibration["stages"].items():
+        state = entry.get("state")
+        if state not in by_state:
+            state = "unmeasured" if entry.get("skipped") else "measured"
+        by_state[state].append(name)
+
     derived = calibration.get("derived", {})
-    report.add("캘리브레이션 상태", "PASS",
-               "%s 기준 실측 — 측정 %d종(%s) · 미측정 %d종(%s)\n"
-               "정책: 백그라운드 전체 회귀 %s · full 타임아웃 %ss · 테스트 수 하한 %s · "
-               "재시도 상한 %s"
-               % (calibration.get("measured_at", "?"), len(measured), ", ".join(sorted(measured)),
-                  len(skipped), ", ".join(sorted(skipped)) or "없음",
-                  "ON" if derived.get("background_full_regression") else "OFF",
-                  derived.get("full_timeout_sec", "?"),
-                  derived.get("tests_ran_floor", "미측정"),
-                  derived.get("retry_budget") or "미측정(MAX_RETRIES 바닥값)"))
+
+    def _names(key):
+        return ", ".join(sorted(by_state[key])) or "없음"
+
+    body = ("%s 기준 실측 — 측정 %d종(%s) · 옛 값 %d종(%s) · 미측정 %d종(%s) · 없음 %d종(%s)\n"
+            "정책: 백그라운드 전체 회귀 %s · full 타임아웃 %ss · 테스트 수 하한 %s · "
+            "재시도 상한 %s"
+            % (calibration.get("measured_at", "?"),
+               len(by_state["measured"]), _names("measured"),
+               len(by_state["stale"]), _names("stale"),
+               len(by_state["unmeasured"]), _names("unmeasured"),
+               len(by_state["absent"]), _names("absent"),
+               "ON" if derived.get("background_full_regression") else "OFF",
+               derived.get("full_timeout_sec", "?"),
+               derived.get("tests_ran_floor", "미측정"),
+               derived.get("retry_budget") or "미측정(MAX_RETRIES 바닥값)"))
+
+    if by_state["stale"]:
+        report.add("캘리브레이션 상태", "WARN",
+                   body + "\n- 옛 값을 쓰는 스테이지가 있다 — 이번 런에서 재지 못했다. "
+                          "그 값에서 유도된 정책은 그만큼 오래된 것이다")
+        return
+    report.add("캘리브레이션 상태", "PASS", body)
 
 
 def _load_calibration(root, config):
@@ -961,6 +982,28 @@ def _probe_infra(adapter):
     return infra
 
 
+def _prior_stages(target):
+    """이전 calibration 의 스테이지 항목. 없으면 빈 dict.
+
+    옛 값을 방금 잰 척하지 않는다 — 잰 시각을 항목마다 남긴다.
+    """
+    if not target.exists():
+        return {}
+    try:
+        prior = _read_json(target)
+    except (ValueError, OSError):
+        return {}
+    if not prior:
+        return {}
+    out = {}
+    for name, entry in (prior.get("stages") or {}).items():
+        if isinstance(entry, dict):
+            entry = dict(entry)
+            entry.setdefault("measured_at", prior.get("measured_at"))
+            out[name] = entry
+    return out
+
+
 def run_calibrate(root, stage=None, select=None, runner=None, now=None, replace=False):
     root = Path(root)
     runner = runner or _subprocess_runner
@@ -987,11 +1030,11 @@ def run_calibrate(root, stage=None, select=None, runner=None, now=None, replace=
     for name in targets:
         spec = adapter["stages"][name]
         if not spec.get("cmd"):
-            stages[name] = {"sec": None, "skipped": True,
+            stages[name] = {"sec": None, "skipped": True, "state": "absent",
                             "reason": "cmd:null — 이 스택에 없는 스테이지"}
             continue
         if name == "scoped" and not select:
-            stages[name] = {"sec": None, "skipped": True,
+            stages[name] = {"sec": None, "skipped": True, "state": "unmeasured",
                             "reason": "선택 대상 없음 — 계약이 있어야 측정된다. "
                                       "--select <test-name> 으로 수동 측정할 수 있다"}
             continue
@@ -1017,33 +1060,54 @@ def run_calibrate(root, stage=None, select=None, runner=None, now=None, replace=
     stamp = now or datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
     target = root / config["calibration_file"]
 
+    # 이번에 실제로 잰 것에만 이번 시각을 단다. 못 잰 칸에 stamp 를 달면
+    # "언제 잰 값인가"가 사라진다.
+    for entry in stages.values():
+        if entry.get("skipped"):
+            entry.setdefault("state", "unmeasured")
+        else:
+            entry["state"] = "measured"
+            entry["measured_at"] = stamp
+
+    prior_stages = _prior_stages(target) if not replace else {}
+
+    # M14 — 못 잰 것이 잰 것을 지우지 않는다.
+    #
+    # `--select` 없이 전체 calibrate 를 돌리면 scoped 가 "선택 대상 없음"으로
+    # 건너뛰어지는데, 그것이 런 #4 의 실측 21.81s 를 덮었다. **M9 의 형제다**
+    # — 그때는 부분이 전체를 덮었고 이번엔 전체가 부분을 덮었다. 셋을 구분한다:
+    #   absent     — cmd:null. 이 스택에 **없는** 것
+    #   unmeasured — 이번에 못 쟀고 옛 값도 없다. **모르는** 것
+    #   stale      — 이번에 못 쟀지만 옛 실측이 있다. **옛** 값 (sec 보존)
+    for name, entry in list(stages.items()):
+        if entry.get("state") != "unmeasured":
+            continue
+        old_entry = prior_stages.get(name)
+        if not old_entry or old_entry.get("sec") is None:
+            continue
+        revived = dict(old_entry)
+        revived["skipped"] = True
+        revived["state"] = "stale"
+        revived["stale_reason"] = entry.get("reason")
+        stages[name] = revived
+
     # 부분 측정은 그 스테이지만 갱신한다. 통째로 덮어쓰면 나머지 실측이
     # 사라지고 derived 의 정책이 전부 null 이 된다 — 실측이 정책의 유일한
     # 근거인 구조에서 되돌릴 방법은 재측정뿐이다 (파일럿 런 #3 M9).
     # 전체 교체는 --replace 로 명시했을 때만 한다.
-    stages = {name: dict(entry, measured_at=stamp) for name, entry in stages.items()}
-    if stage and not replace and target.exists():
-        try:
-            prior = _read_json(target)
-        except (ValueError, OSError):
-            prior = None
-        if prior:
-            merged = {}
-            for name, entry in (prior.get("stages") or {}).items():
-                if isinstance(entry, dict):
-                    # 옛 값을 방금 잰 척하지 않는다 — 잰 시각을 항목에 남긴다.
-                    entry = dict(entry)
-                    entry.setdefault("measured_at", prior.get("measured_at"))
-                    merged[name] = entry
-            merged.update(stages)
-            stages = merged
+    if stage and prior_stages:
+        merged = dict(prior_stages)
+        merged.update(stages)
+        stages = merged
 
     retry = _collect_retry(root)
     payload = {
         "measured_at": stamp,
         "adapter": adapter["id"],
         "adapter_verified": bool(adapter.get("verified")),
-        "partial": any(name not in stages for name in STAGE_ORDER),
+        "partial": (any(name not in stages for name in STAGE_ORDER)
+                    or any((stages.get(n) or {}).get("state") == "stale"
+                           for n in STAGE_ORDER)),
         "stages": stages,
         "retry": retry,
         "report_glob_matched": report_matched,

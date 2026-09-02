@@ -20,6 +20,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness import glob_any  # noqa: E402  — 소유 판정은 doctor 와 같은 함수로 한다
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # 실행 중 상태 파일 (M10). 산출물이 아니라 실행 중 상태이므로 .gitignore 대상이다.
@@ -414,28 +417,118 @@ class StepExecutor:
 
         print(f"  Branch: {branch}", flush=True)
 
-    def _commit_step(self, step_num: int, step_name: str):
-        output_rel = f"phases/{self._phase_dir_name}/step{step_num}-output.json"
-        index_rel = f"phases/{self._phase_dir_name}/index.json"
+    def _role_owned_globs(self) -> list:
+        """워커가 소유한 경로 glob. config 의 roles[].owns 가 단일 출처다.
 
-        self._run_git("add", "-A")
-        self._run_git("reset", "HEAD", "--", output_rel)
-        self._run_git("reset", "HEAD", "--", index_rel)
+        실행기가 커밋할 범위를 여기서 유도한다. 목록을 코드에 다시 적으면
+        config 와 갈라지고, 갈라진 날 실행기는 자기가 소유하지 않은 파일을
+        조용히 커밋한다 — 그것이 M11 이다.
+        """
+        try:
+            config = self._read_json(ROOT / "harness" / "config.json")
+        except (OSError, ValueError):
+            return []
+        globs = []
+        for role in config.get("roles") or []:
+            globs.extend(role.get("owns") or [])
+        return globs
 
-        if self._run_git("diff", "--cached", "--quiet").returncode != 0:
-            msg = self.FEAT_MSG.format(phase=self._phase_name, num=step_num, name=step_name)
-            r = self._run_git("commit", "-m", msg)
-            if r.returncode == 0:
-                print(f"  Commit: {msg}", flush=True)
+    def _changed_paths(self) -> Optional[list]:
+        """작업 트리에서 변경된 경로(미추적 포함). git 이 답하지 못하면 None.
+
+        -z 로 받는다. 공백·한글 경로를 git 이 따옴표로 감싸 이스케이프하면
+        경로가 원본과 달라져 add 가 빗나간다.
+        """
+        r = self._run_git("status", "--porcelain", "-z", "--untracked-files=all")
+        if r.returncode != 0:
+            return None
+        fields = [f for f in (r.stdout or "").split(chr(0)) if f]
+        paths, i = [], 0
+        while i < len(fields):
+            entry = fields[i]
+            i += 1
+            if len(entry) < 4:
+                continue
+            code, path = entry[:2], entry[3:]
+            if code[0] in ("R", "C"):
+                # 이름이 바뀐 항목은 다음 필드가 원본 경로다. 둘 다 담는다.
+                if i < len(fields):
+                    paths.append(fields[i])
+                    i += 1
+            paths.append(path)
+        return paths
+
+    def _partition_changes(self) -> Optional[tuple]:
+        """변경 경로를 (워커 소유 · 이 phase 의 메타 · 그 밖) 셋으로 가른다.
+
+        판정은 harness.py 의 glob_any 로 한다 — doctor 가 소유 경계를 볼 때
+        쓰는 바로 그 함수다. 눈으로 접두사를 보고 가르면 `*` 가 디렉토리를
+        넘는지 같은 규칙이 두 곳에서 갈라진다.
+        """
+        changed = self._changed_paths()
+        if changed is None:
+            return None
+        owned_globs = self._role_owned_globs()
+        meta_globs = [f"phases/{self._phase_dir_name}/**"]
+        owned, meta, stray = [], [], []
+        for path in changed:
+            if glob_any(meta_globs, path):
+                meta.append(path)
+            elif owned_globs and glob_any(owned_globs, path):
+                owned.append(path)
             else:
-                print(f"  WARN: 코드 커밋 실패: {r.stderr.strip()}")
+                stray.append(path)
+        return owned, meta, stray
 
-        self._run_git("add", "-A")
-        if self._run_git("diff", "--cached", "--quiet").returncode != 0:
-            msg = self.CHORE_MSG.format(phase=self._phase_name, num=step_num)
-            r = self._run_git("commit", "-m", msg)
-            if r.returncode != 0:
-                print(f"  WARN: housekeeping 커밋 실패: {r.stderr.strip()}")
+    def _commit_paths(self, paths: list, msg: str, *, label: str) -> bool:
+        """지정한 경로만 담아 커밋한다. 담을 것이 없으면 아무것도 하지 않는다."""
+        if not paths:
+            return False
+        r = self._run_git("add", "--", *paths)
+        if r.returncode != 0:
+            print(f"  WARN: {label} add 실패: {r.stderr.strip()}")
+            return False
+        if self._run_git("diff", "--cached", "--quiet").returncode == 0:
+            return False
+        r = self._run_git("commit", "-m", msg)
+        if r.returncode != 0:
+            print(f"  WARN: {label} 커밋 실패: {r.stderr.strip()}")
+            return False
+        print(f"  Commit: {msg}", flush=True)
+        return True
+
+    def _commit_step(self, step_num: int, step_name: str):
+        """2단계 커밋 — 코드(feat)와 메타데이터(chore)를 가른다.
+
+        담을 경로는 `git add -A` 가 아니라 **소유 glob 에서 유도한다** (M11).
+        작업 트리 전체를 쓸어담으면 실행기가 소유하지 않은 변경(문서·설정·
+        다른 phase 의 상태 파일)이 step 커밋에 섞이고, 실제로 런 #4 의 실측
+        타임스탬프가 그렇게 덮였다. 소유 밖의 변경은 커밋하지 않고 드러낸다 —
+        조용히 두면 다음 커밋이 삼킨다.
+        """
+        parts = self._partition_changes()
+        if parts is None:
+            print("  WARN: git status 를 읽지 못해 커밋을 건너뛴다")
+            return
+        owned, meta, stray = parts
+
+        feat_msg = self.FEAT_MSG.format(phase=self._phase_name, num=step_num, name=step_name)
+        self._commit_paths(owned, feat_msg, label="코드")
+
+        # 메타는 이 phase 의 것만 담는다. index.json 과 출력 파일이 여기 든다.
+        chore_msg = self.CHORE_MSG.format(phase=self._phase_name, num=step_num)
+        self._commit_paths(meta, chore_msg, label="housekeeping")
+
+        self._warn_stray(stray)
+
+    @staticmethod
+    def _warn_stray(stray: list):
+        if not stray:
+            return
+        shown = ", ".join(sorted(stray)[:8])
+        more = f" 외 {len(stray) - 8}개" if len(stray) > 8 else ""
+        print(f"  ⚠ 소유 밖 변경 {len(stray)}건은 커밋하지 않았다: {shown}{more}")
+        print(f"    실행기가 커밋할 범위는 roles[].owns 와 이 phase 의 메타뿐이다 (M11).")
 
     # --- top-level index ---
 
@@ -643,10 +736,40 @@ class StepExecutor:
         도중에 죽으면 부분 수정된 소스만 남고 출력 파일이 없어 이 신호가
         비어 있었다 — M10 의 좁은 형태다. 죽은 런의 RUNNING 이 이 step 을
         지목하면 그것도 재개 신호로 본다.
+
+        다만 그 둘은 **"돌았다"의 신호이지 "남겼다"의 신호가 아니다** (M13).
+        런 #5 에서 25초 만에 한도로 잘려 소스를 한 줄도 못 쓴 step 이 다음
+        실행에서 재개로 판정됐다. 이번 런에서는 무해했지만 8페이즈
+        파이프라인은 이 신호로 페이즈 재개를 판정한다. 그래서 신호가 있으면
+        **산출물이 실제로 있는지**를 한 번 더 본다.
         """
-        if (self._phase_dir / f"step{step_num}-output.json").exists():
+        signalled = ((self._phase_dir / f"step{step_num}-output.json").exists()
+                     or self._stale_step == step_num)
+        if not signalled:
+            return False
+        produced = self._artifacts_exist(step_num)
+        if produced is None:
+            # 판정할 수 없으면 재개로 본다. 두 오류의 값이 다르다 — 재개를
+            # 놓치면 검증된 산출물이 덮이고, 헛 재개는 안내 한 문단뿐이다.
             return True
-        return self._stale_step == step_num
+        return produced
+
+    def _artifacts_exist(self, step_num: int) -> Optional[bool]:
+        """이 step 이 실제로 남긴 것이 있는가. git 이 답하지 못하면 None.
+
+        둘 중 하나면 있다고 본다 — 워커 소유 경로에 미커밋 변경이 있거나,
+        이 step 의 feat 커밋이 이미 브랜치에 있거나. 세션은 스스로 커밋하므로
+        후자가 흔하고, 한도가 커밋 직전에 떨어진 런 #3 이 전자다.
+        """
+        parts = self._partition_changes()
+        if parts is not None and parts[0]:
+            return True
+        msg = self.FEAT_MSG.format(phase=self._phase_name, num=step_num, name="")
+        r = self._run_git("log", "--oneline", "--fixed-strings",
+                          f"--grep={msg.rstrip()}", "-1")
+        if r.returncode != 0:
+            return None if parts is None else False
+        return bool((r.stdout or "").strip())
 
     def _build_preamble(self, guardrails: str, step_context: str,
                         prev_error: Optional[str] = None,
@@ -728,6 +851,7 @@ class StepExecutor:
             "step": step_num, "name": step_name,
             "exitCode": result.returncode,
             "prompt_chars": len(prompt),
+            "preamble_chars": len(preamble),
             "stdout": result.stdout, "stderr": result.stderr,
         }
         out_path = self._phase_dir / f"step{step_num}-output.json"
@@ -781,8 +905,13 @@ class StepExecutor:
         entry = {"attempt": attempt, "outcome": outcome,
                  "elapsed_sec": int(elapsed), "at": self._stamp()}
         entry.update(guard_info)
-        if isinstance(out.get("prompt_chars"), int):
-            entry["prompt_chars"] = out["prompt_chars"]
+        for key in ("prompt_chars", "preamble_chars"):
+            if isinstance(out.get(key), int):
+                entry[key] = out[key]
+        if isinstance(entry.get("prompt_chars"), int) and isinstance(entry.get("preamble_chars"), int):
+            # 접두부는 모든 turn 에 곱해지고 step 본문은 한 번만 실린다.
+            # 둘을 한 숫자로 두면 예산을 어디에 걸어야 하는지 알 수 없다.
+            entry["step_body_chars"] = entry["prompt_chars"] - entry["preamble_chars"]
         entry.update(self._extract_usage(out))
         for s in index["steps"]:
             if s["step"] == step_num:
@@ -808,6 +937,26 @@ class StepExecutor:
         if payload.get("api_error_status") != 429:
             return None
         return str(payload.get("result") or "세션 사용량 한도")
+
+    @staticmethod
+    def _report_prefix(preamble_chars: int, guard_info: dict, context_chars: int):
+        """접두부가 무엇으로 이뤄져 있는지 한 줄로 드러낸다 (ROADMAP 28).
+
+        ADR-H008 은 접두부를 줄이고(문서 선택) ADR-H009 는 늘린다(소스 첨부).
+        그런데 가드레일에는 상한이 없고 sources 의 상한은 소스만의 상한이라,
+        런 #7 step 2 는 규칙을 다 지키고도 일곱 런 최대 접두부(136,986자)를
+        만들었다. 필요한 것은 접두부 **전체**에 걸리는 하나의 예산이다.
+
+        그 예산값을 여기서 정하지 않는다 — 표본이 두 런뿐이고, 실측 없는
+        상수를 상속하지 않는 것이 이 리포의 규율이다(ROADMAP 2절). 지금
+        하는 것은 값을 정할 수 있게 **분해해서 재는 것**뿐이다.
+        """
+        guard = guard_info.get("guardrail_chars", 0)
+        src = guard_info.get("source_chars", 0)
+        boiler = preamble_chars - guard - src - context_chars
+        print(f"  접두부 {preamble_chars:,}자 = 가드레일 {guard:,} + 소스 {src:,} + "
+              f"누적 summary {context_chars:,} + 상용구 {boiler:,} — 매 turn 다시 읽힌다",
+              flush=True)
 
     # --- 헤더 & 검증 ---
 
@@ -883,6 +1032,9 @@ class StepExecutor:
             preamble = self._build_preamble(guardrails, step_context, prev_error,
                                             resumed=prior_attempt and prev_error is None,
                                             sources=source_block)
+            attempt_info = dict(guard_info, context_chars=len(step_context))
+            if attempt == 1:
+                self._report_prefix(len(preamble), guard_info, len(step_context))
 
             tag = f"Step {step_num}/{self._total - 1} ({done} done): {step_name}"
             if attempt > 1:
@@ -915,7 +1067,7 @@ class StepExecutor:
             else:
                 outcome = "error"
             self._record_run(index, step_num, attempt=attempt, outcome=outcome,
-                             elapsed=elapsed, out=out, guard_info=guard_info)
+                             elapsed=elapsed, out=out, guard_info=attempt_info)
 
             if status == "completed":
                 for s in index["steps"]:
@@ -995,12 +1147,17 @@ class StepExecutor:
         self._write_json(self._index_file, index)
         self._update_top_index("completed")
 
-        self._run_git("add", "-A")
-        if self._run_git("diff", "--cached", "--quiet").returncode != 0:
+        # phase 종료 커밋이 담는 것은 이 phase 의 상태 파일뿐이다. 여기서
+        # `git add -A` 를 쓰면 런의 마지막 커밋이 작업 트리 전체를 삼킨다 (M11).
+        parts = self._partition_changes()
+        if parts is None:
+            print("  WARN: git status 를 읽지 못해 종료 커밋을 건너뛴다")
+        else:
+            _owned, meta, stray = parts
             msg = f"chore({self._phase_name}): mark phase completed"
-            r = self._run_git("commit", "-m", msg)
-            if r.returncode == 0:
-                print(f"  ✓ {msg}")
+            if self._commit_paths(meta, msg, label="phase 종료"):
+                pass
+            self._warn_stray(stray)
 
         if self._auto_push:
             branch = f"feat-{self._phase_name}"

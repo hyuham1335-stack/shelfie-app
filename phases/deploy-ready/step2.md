@@ -13,15 +13,16 @@
 - `src/components/upload/UploadScreen.tsx` · `src/components/upload/PhotoPicker.tsx` · `src/components/upload/PhotoThumbnails.tsx` · `src/components/upload/RejectedNotice.tsx` · `src/components/upload/CaptureGuide.tsx`
 - `src/components/mood/MoodInput.tsx` · `src/components/mood/GuidedQuestions.tsx`
 - `src/components/recommend/RecommendationList.tsx` · `src/components/recommend/RecommendationCard.tsx`
-- `src/components/common/ErrorBanner.tsx` · `src/components/common/Badge.tsx` · `src/components/common/AladinLink.tsx` · `src/components/common/ClaudeText.tsx` · `src/components/common/Skeleton.tsx` · `src/components/common/Notice.tsx`
+- `src/components/common/ErrorBanner.tsx` · `src/components/common/Badge.tsx` · `src/components/common/AladinLink.tsx` · `src/components/common/Skeleton.tsx`
 
 위 소스 파일은 **프롬프트에 이미 실려 있다. 다시 읽지 마라.** 단 네가 고친 뒤의 내용은 첨부본에 반영되지 않는다.
 
-**컴포넌트 18개가 전부 실려 있다.** 이 step의 작업 대상은 그 안에 있으니, 화면 전체를 다시 훑으려고 `src/`를 뒤지지 마라.
+**컴포넌트 16개가 전부 실려 있다.** 이 step의 작업 대상은 그 안에 있으니, 화면 전체를 다시 훑으려고 `src/`를 뒤지지 마라.
 
 ## 직접 읽어라 (첨부하지 않았다)
 
-- `src/components/booklist/IdentifiedBookCard.tsx` — 첨부 상한(60,000자)에 걸려 유일하게 빠진 컴포넌트다. 접근성 5개 항목 중 이 카드에만 있는 것은 없다(`alt`는 `BookCover`, 배지는 `Badge`, 생성 텍스트는 `ClaudeText`가 그린다). **필요할 때만** 읽어라
+- `src/components/booklist/IdentifiedBookCard.tsx` — 첨부 상한(60,000자)에 걸려 빠진 컴포넌트 셋 중 하나다. 접근성 5개 항목 중 이 카드에만 있는 것은 없다(`alt`는 `BookCover`, 배지는 `Badge`, 생성 텍스트는 `ClaudeText`가 그린다). **필요할 때만** 읽어라
+- `src/components/common/ClaudeText.tsx`(1,028자) · `src/components/common/Notice.tsx`(357자) — 같은 상한에 걸려 뺐다. 접근성 5개 항목 중 이 둘에만 있는 것은 없다 — **생성 텍스트 블록의 계약은 `UI_GUIDE.md`가 들고 있고** ⑤의 대비 검사는 색 조합 목록으로 하며, `Notice`는 배지도 라이브 영역도 그리지 않는다. ⑤에서 이 둘의 실제 색 조합을 계약에 넣기로 했다면 그때 읽어라
 - 네가 고칠 컴포넌트의 기존 테스트(`*.test.tsx`)는 필요한 만큼 읽어라
 
 ## 작업

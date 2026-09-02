@@ -18,7 +18,8 @@
       "ROADMAP 28 — 접두부 통합 예산의 **값**. 이 런이 다섯 번째 표본이고 축을 가르는 첫 표본이다. 값은 다섯 번째로 정하지 않는다",
       "ROADMAP 30 — 골든 세트가 비어 있다. 사진 20장과 기대 목록은 사람이 채워야 하고 이 런의 범위가 아니다. 그때까지 npm run test:golden 은 no_set_dir 로 skip 만 하며 **skip 은 통과가 아니다**",
       "TR-011 번들 200KB(gzip) 게이트 — 측정 수단이 npm run build 출력뿐이고 검사 스크립트를 두려면 scripts/(메인 소유)여야 한다. 런 전 메인 작업에 넣지 않았으므로 이번 런에서 닫히지 않는다",
-      "src/components/booklist/IdentifiedBookCard.tsx — step 2 의 sources 상한(60,000자)에 걸려 유일하게 첨부에서 뺀 컴포넌트다. 접근성 5개 항목 중 이 카드에만 있는 것은 없다(alt 는 BookCover, 배지는 Badge, 생성 텍스트는 ClaudeText 가 그린다). 필요하면 step 이 직접 읽는다"
+      "src/components/booklist/IdentifiedBookCard.tsx — step 2 의 sources 상한(60,000자)에 걸려 유일하게 첨부에서 뺀 컴포넌트다. 접근성 5개 항목 중 이 카드에만 있는 것은 없다(alt 는 BookCover, 배지는 Badge, 생성 텍스트는 ClaudeText 가 그린다). 필요하면 step 이 직접 읽는다",
+      "src/components/common/ClaudeText.tsx · src/components/common/Notice.tsx — step 2 의 sources 합계가 60,120자로 상한 60,000자를 넘어 첨부에서 뺐다(58,735자). 런 시작 전 크기로 설계했는데 step 0 이 UploadScreen.tsx 를 484자 늘렸고, 검사는 step 시작 시점에 돈다(M18). 접근성 5개 항목 중 이 둘에만 있는 것은 없다 — 생성 텍스트 블록의 계약은 UI_GUIDE 가 들고 있고 대비는 색 조합 목록으로 검사하며 Notice 는 배지도 라이브 영역도 그리지 않는다. 필요하면 step 이 직접 읽는다(합 1,385자). **상한을 올려서 통과시키지 않았다.**"
     ]
   },
   "steps": [
@@ -154,10 +155,9 @@
         "src/components/upload/CaptureGuide.tsx",
         "src/components/common/Badge.tsx",
         "src/components/common/AladinLink.tsx",
-        "src/components/common/ClaudeText.tsx",
-        "src/components/common/Skeleton.tsx",
-        "src/components/common/Notice.tsx"
-      ]
+        "src/components/common/Skeleton.tsx"
+      ],
+      "started_at": "2026-09-02T16:50:10+0900"
     },
     {
       "step": 3,

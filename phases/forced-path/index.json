@@ -131,7 +131,31 @@
         "src/app/api/recommend/route.ts",
         "src/app/api/recommend/route.test.ts"
       ],
-      "started_at": "2026-09-02T11:59:37+0900"
+      "started_at": "2026-09-02T11:59:37+0900",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 278,
+          "at": "2026-09-02T12:04:16+0900",
+          "guardrail_docs": [
+            "ADR",
+            "API_SPEC",
+            "PRD",
+            "TRD"
+          ],
+          "guardrail_chars": 83760,
+          "source_chars": 45355,
+          "prompt_chars": 136986,
+          "cost_usd": 2.8243,
+          "turns": 17,
+          "cache_read": 2179037,
+          "cache_write": 136191,
+          "output_tokens": 11166
+        }
+      ],
+      "completed_at": "2026-09-02T12:04:16+0900",
+      "attempts": 1
     },
     {
       "step": 3,

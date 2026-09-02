@@ -38,7 +38,48 @@
         "src/types/book.ts"
       ],
       "started_at": "2026-09-02T15:24:53+0900",
-      "summary": "lib/golden-manifest.ts 신설 — goldenExpectedBookSchema·goldenPhotoSchema·goldenManifestSchema(z.infer 파생 타입 GoldenExpectedBook·GoldenPhoto·GoldenManifest), 상수 GOLDEN_MANIFEST_VERSION=1, parseGoldenManifest(raw: unknown): ParseGoldenManifestOutcome = {status:\"ok\",manifest} | {status:\"failed\",reason,detail}. reason 어휘는 GoldenManifestFailureReason = \"schema\" | \"version\" 2종이고 던지지 않는다(detail은 zod issues를 \"경로: 메시지 · …\" 한 줄로 접은 문자열). photos[].sha256은 64자리 hex 필수, books[].isbn13은 선택이되 있으면 lib/schemas.ts의 isbn13Schema를 재사용한다. lib/env.ts에 GOLDEN_MIN_RECALL=0.9 · GOLDEN_MAX_MISIDENTIFIED=0 상수와 getGoldenSetDir(): string | null 접근자(공백·미설정이면 null, 던지지 않음)를 추가했다. AC 5종 전부 통과(테스트 1216건)."
+      "summary": "lib/golden-manifest.ts 신설 — goldenExpectedBookSchema·goldenPhotoSchema·goldenManifestSchema(z.infer 파생 타입 GoldenExpectedBook·GoldenPhoto·GoldenManifest), 상수 GOLDEN_MANIFEST_VERSION=1, parseGoldenManifest(raw: unknown): ParseGoldenManifestOutcome = {status:\"ok\",manifest} | {status:\"failed\",reason,detail}. reason 어휘는 GoldenManifestFailureReason = \"schema\" | \"version\" 2종이고 던지지 않는다(detail은 zod issues를 \"경로: 메시지 · …\" 한 줄로 접은 문자열). photos[].sha256은 64자리 hex 필수, books[].isbn13은 선택이되 있으면 lib/schemas.ts의 isbn13Schema를 재사용한다. lib/env.ts에 GOLDEN_MIN_RECALL=0.9 · GOLDEN_MAX_MISIDENTIFIED=0 상수와 getGoldenSetDir(): string | null 접근자(공백·미설정이면 null, 던지지 않음)를 추가했다. AC 5종 전부 통과(테스트 1216건).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 257,
+          "at": "2026-09-02T15:29:10+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "TRD"
+          ],
+          "guardrail_chars": 73544,
+          "source_chars": 18649,
+          "context_chars": 0,
+          "prompt_chars": 97963,
+          "preamble_chars": 93003,
+          "step_body_chars": 4960,
+          "cost_usd": 2.1887,
+          "turns": 13,
+          "cache_read": 1432370,
+          "cache_write": 110825,
+          "output_tokens": 11669,
+          "session_id": "a56b5834-c08c-42c4-a7be-6a08492e21c2",
+          "tool_result_chars": 12718,
+          "tool_result_count": 12,
+          "tool_output_chars": 22778,
+          "tool_calls": {
+            "Bash": 8,
+            "Edit": 2,
+            "Write": 2
+          },
+          "tool_result_p50": 447,
+          "tool_result_p90": 2359,
+          "tool_result_max": 4597,
+          "tool_result_repeat_chars": 160,
+          "tool_result_repeat_count": 1,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T15:29:10+0900",
+      "attempts": 1
     },
     {
       "step": 1,

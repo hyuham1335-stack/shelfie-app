@@ -109,6 +109,20 @@ export const MAX_RETRY_INDEX = 4;
  */
 export const MAX_IRRELEVANT_STREAK = 2;
 
+/**
+ * 골든 인식률의 재현율 하한 (TR-003 · ADR-010).
+ *
+ * 판정 임계값도 도메인 상수다. 골든 쪽에 따로 적어 두면 TRD 8번 판정 규약 표와
+ * 코드가 갈라져도 아무도 모른다.
+ */
+export const GOLDEN_MIN_RECALL = 0.9;
+
+/**
+ * 골든 세트에서 허용되는 오확인 건수 (TR-004 · ADR-010).
+ * 0이다 — 없는 책을 있다고 보여주는 것이 이 제품의 가장 심각한 결함이다 (ADR-002).
+ */
+export const GOLDEN_MAX_MISIDENTIFIED = 0;
+
 /** 책등 추출에 쓸 모델 ID */
 export function getExtractModel(): string {
   return process.env.MODEL_EXTRACT ?? DEFAULT_MODEL;
@@ -187,6 +201,25 @@ export function getAnthropicApiKey(): string | null {
 /** 알라딘 OpenAPI TTB 키. 없으면 null — 위와 같다 */
 export function getAladinTtbKey(): string | null {
   return readOptionalSecret("ALADIN_TTB_KEY");
+}
+
+/**
+ * 골든 인식률 세트가 있는 리포 밖 디렉토리 (TRD 7번 `GOLDEN_SET_DIR`, ADR-010).
+ *
+ * 없거나 공백이면 null이다. **던지지 않는다** — 세트가 없는 것은 오류가 아니라
+ * skip 사유(`no_set_dir`)다. 여기서 던지면 세트를 갖지 않은 개발자의 로컬에서
+ * 골든 테스트가 빨간불이 되고, 그러면 아무도 안 돌리게 된다 (TRD 8번 skip 표).
+ *
+ * 이 값을 읽는 것은 테스트뿐이다. 프로덕션 코드는 골든 세트를 모른다.
+ */
+export function getGoldenSetDir(): string | null {
+  const raw = process.env.GOLDEN_SET_DIR;
+  if (raw === undefined) {
+    return null;
+  }
+
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : trimmed;
 }
 
 /**

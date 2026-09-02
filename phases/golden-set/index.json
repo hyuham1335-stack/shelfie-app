@@ -26,30 +26,68 @@
     {
       "step": 0,
       "name": "golden-manifest",
-      "status": "pending",
-      "docs": ["ARCHITECTURE", "ADR", "TRD"],
-      "sources": ["src/lib/schemas.ts", "src/lib/env.ts", "src/types/book.ts"]
+      "status": "completed",
+      "docs": [
+        "ARCHITECTURE",
+        "ADR",
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/schemas.ts",
+        "src/lib/env.ts",
+        "src/types/book.ts"
+      ],
+      "started_at": "2026-09-02T15:24:53+0900",
+      "summary": "lib/golden-manifest.ts 신설 — goldenExpectedBookSchema·goldenPhotoSchema·goldenManifestSchema(z.infer 파생 타입 GoldenExpectedBook·GoldenPhoto·GoldenManifest), 상수 GOLDEN_MANIFEST_VERSION=1, parseGoldenManifest(raw: unknown): ParseGoldenManifestOutcome = {status:\"ok\",manifest} | {status:\"failed\",reason,detail}. reason 어휘는 GoldenManifestFailureReason = \"schema\" | \"version\" 2종이고 던지지 않는다(detail은 zod issues를 \"경로: 메시지 · …\" 한 줄로 접은 문자열). photos[].sha256은 64자리 hex 필수, books[].isbn13은 선택이되 있으면 lib/schemas.ts의 isbn13Schema를 재사용한다. lib/env.ts에 GOLDEN_MIN_RECALL=0.9 · GOLDEN_MAX_MISIDENTIFIED=0 상수와 getGoldenSetDir(): string | null 접근자(공백·미설정이면 null, 던지지 않음)를 추가했다. AC 5종 전부 통과(테스트 1216건)."
     },
     {
       "step": 1,
       "name": "golden-score",
       "status": "pending",
-      "docs": ["ARCHITECTURE", "ADR", "TRD"],
-      "sources": ["src/lib/match.ts", "src/lib/golden-manifest.ts", "src/lib/env.ts", "src/types/book.ts"]
+      "docs": [
+        "ARCHITECTURE",
+        "ADR",
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/match.ts",
+        "src/lib/golden-manifest.ts",
+        "src/lib/env.ts",
+        "src/types/book.ts"
+      ]
     },
     {
       "step": 2,
       "name": "golden-report",
       "status": "pending",
-      "docs": ["ARCHITECTURE", "TRD"],
-      "sources": ["src/lib/golden-score.ts", "src/lib/golden-manifest.ts", "src/lib/env.ts"]
+      "docs": [
+        "ARCHITECTURE",
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/golden-score.ts",
+        "src/lib/golden-manifest.ts",
+        "src/lib/env.ts"
+      ]
     },
     {
       "step": 3,
       "name": "golden-runner",
       "status": "pending",
-      "docs": ["TRD", "ARCHITECTURE", "ADR", "PRD"],
-      "sources": ["src/services/aladin.ts", "src/lib/match.ts", "src/lib/golden-manifest.ts", "src/lib/golden-score.ts", "src/lib/golden-report.ts"]
+      "docs": [
+        "TRD",
+        "ARCHITECTURE",
+        "ADR",
+        "PRD"
+      ],
+      "sources": [
+        "src/services/aladin.ts",
+        "src/lib/match.ts",
+        "src/lib/golden-manifest.ts",
+        "src/lib/golden-score.ts",
+        "src/lib/golden-report.ts"
+      ]
     }
-  ]
+  ],
+  "created_at": "2026-09-02T15:24:53+0900"
 }

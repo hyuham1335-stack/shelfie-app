@@ -4,7 +4,10 @@ import {
   getAladinTtbKey,
   getAnthropicApiKey,
   isServiceEnabled,
+  getGoldenSetDir,
   DEFAULT_MODEL,
+  GOLDEN_MIN_RECALL,
+  GOLDEN_MAX_MISIDENTIFIED,
   MAX_PHOTOS,
   MAX_IDENTIFIED_BOOKS,
   MAX_UNIDENTIFIED_BOOKS,
@@ -223,5 +226,40 @@ describe("분석 재시도 간격 (FR-010)", () => {
 
   it("첫 재시도는 간격이 0이라 즉시 나간다", () => {
     expect(ANALYZE_RETRY_DELAYS_MS[0]).toBe(0);
+  });
+});
+
+describe("골든 인식률 임계값 (TRD 8번 판정 규약 · ADR-010)", () => {
+  it("재현율 하한은 0.90이다 (TR-003)", () => {
+    expect(GOLDEN_MIN_RECALL).toBe(0.9);
+  });
+
+  it("허용 오확인은 0건이다 (TR-004 — 없는 책을 있다고 보여주지 않는다)", () => {
+    expect(GOLDEN_MAX_MISIDENTIFIED).toBe(0);
+  });
+});
+
+describe("골든 세트 디렉토리 접근자 (TRD 7번 GOLDEN_SET_DIR)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("미설정이면 null이다 — 세트가 없는 것은 오류가 아니라 skip 사유다", () => {
+    vi.stubEnv("GOLDEN_SET_DIR", undefined);
+
+    expect(getGoldenSetDir()).toBeNull();
+  });
+
+  it("빈 문자열·공백만 있는 값도 null이다. 던지지 않는다", () => {
+    vi.stubEnv("GOLDEN_SET_DIR", "   ");
+
+    expect(() => getGoldenSetDir()).not.toThrow();
+    expect(getGoldenSetDir()).toBeNull();
+  });
+
+  it("값이 있으면 양끝 공백을 떼고 돌려준다", () => {
+    vi.stubEnv("GOLDEN_SET_DIR", "  /tmp/golden-set  ");
+
+    expect(getGoldenSetDir()).toBe("/tmp/golden-set");
   });
 });

@@ -32,7 +32,8 @@
     },
     {
       "dir": "forced-path",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-02T12:19:26+0900"
     }
   ]
 }

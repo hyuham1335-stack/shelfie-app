@@ -8,6 +8,7 @@
  * 모서리 반경(rounded-md)은 미확인 카드(rounded-sm)와 다르다. 색뿐 아니라 형태로도
  * 구분해야 색을 구별하지 못하는 사용자에게도 두 목록이 다른 것으로 읽힌다.
  */
+import { AladinLink } from "@/components/common/AladinLink";
 import { Badge } from "@/components/common/Badge";
 import { ClaudeText } from "@/components/common/ClaudeText";
 import type { IdentifiedBook } from "@/types/book";
@@ -51,6 +52,9 @@ export function IdentifiedBookCard({ book }: IdentifiedBookCardProps) {
               )}
             </div>
           )}
+
+          {/* 알라딘이 준 URL 그대로. 사실 층이므로 ClaudeText 블록 밖이다 (FR-013) */}
+          <AladinLink href={book.aladinLink} title={book.title} />
         </div>
 
         {/* 생성 실패 시 빈 문자열로 오며, 그때는 블록 자체가 그려지지 않는다 (TR-007) */}

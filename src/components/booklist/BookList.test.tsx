@@ -446,3 +446,62 @@ describe("BookList — AI 슬롭 안티패턴 회귀", () => {
     expect(container.querySelector("svg")).toBeNull();
   });
 });
+
+describe("BookList — 알라딘 상품 링크 (FR-013)", () => {
+  it("사진에서 온 책과 재검색으로 합류한 책이 **둘 다** 링크를 갖는다", () => {
+    const { getAllByRole } = render(
+      <BookList {...makeProps({ books: [photoBook(), resolvedBook()] })} />,
+    );
+
+    const links = getAllByRole("link", { name: /알라딘에서 보기/ });
+    expect(links).toHaveLength(2);
+    expect(links.map((node) => node.getAttribute("href"))).toEqual([
+      makeIdentified().aladinLink,
+      makeResolved().aladinLink,
+    ]);
+  });
+
+  it("재검색으로 합류한 책도 URL 을 조립하지 않고 aladinLink 를 그대로 쓴다", () => {
+    const aladinLink = "https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=777";
+    const { getByRole } = render(
+      <BookList {...makeProps({ books: [resolvedBook({ aladinLink })] })} />,
+    );
+
+    expect(getByRole("link").getAttribute("href")).toBe(aladinLink);
+  });
+
+  it("새 창으로 열고 opener 를 넘기지 않는다", () => {
+    const { getAllByRole } = render(
+      <BookList {...makeProps({ books: [photoBook(), resolvedBook()] })} />,
+    );
+
+    getAllByRole("link").forEach((link) => {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toContain("noopener");
+      expect(link.getAttribute("rel")).toContain("noreferrer");
+    });
+  });
+
+  it("접근성 이름으로 두 링크를 구분할 수 있다", () => {
+    const { getByRole } = render(
+      <BookList {...makeProps({ books: [photoBook(), resolvedBook()] })} />,
+    );
+
+    expect(getByRole("link", { name: /코스모스/ })).not.toBeNull();
+    expect(getByRole("link", { name: /데미안/ })).not.toBeNull();
+  });
+
+  it("링크는 Claude 생성 텍스트 블록 밖에 있다", () => {
+    const { container } = render(<BookList {...makeProps({ books: [photoBook()] })} />);
+
+    expect(container.querySelector(".border-l-2")?.querySelector("a")).toBeNull();
+  });
+
+  it("미확인 책에는 상품 링크가 붙지 않는다 (알라딘 대조를 통과하지 않았다)", () => {
+    const { queryAllByRole } = render(
+      <BookList {...makeProps({ books: [], unidentified: [makeUnidentified()] })} />,
+    );
+
+    expect(queryAllByRole("link")).toHaveLength(0);
+  });
+});

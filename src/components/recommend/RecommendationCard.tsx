@@ -21,6 +21,7 @@
  * 붙는 해석은 추천 이유 하나여야 한다.
  */
 import { BookCover } from "@/components/booklist/BookCover";
+import { AladinLink } from "@/components/common/AladinLink";
 import { Badge } from "@/components/common/Badge";
 import { ClaudeText } from "@/components/common/ClaudeText";
 import type { Recommendation } from "@/types/api";
@@ -77,6 +78,9 @@ export function RecommendationCard({
               )}
             </div>
           )}
+
+          {/* 알라딘 사실이므로 추천 이유 블록 밖에 둔다 (FR-013, ADR-002) */}
+          <AladinLink href={book.aladinLink} title={book.title} />
         </div>
       </div>
 

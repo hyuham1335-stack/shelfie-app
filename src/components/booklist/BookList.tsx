@@ -18,6 +18,7 @@
  *    사용자의 책장은 하나다. 다만 **출처는 숨기지 않는다** — 재검색으로 확인한 책에는
  *    사진 출처도 Claude 한줄평도 없고, 없는 것을 있는 척 채우지 않는다.
  */
+import { AladinLink } from "@/components/common/AladinLink";
 import { Badge } from "@/components/common/Badge";
 import { Notice } from "@/components/common/Notice";
 import { MAX_IDENTIFIED_BOOKS } from "@/lib/env";
@@ -197,6 +198,10 @@ function ResolvedBookCard({ book }: { book: ResolvedCandidate }) {
             {book.aladinRating !== null && <Badge kind="rating" rating={book.aladinRating} />}
           </div>
         )}
+
+        {/* 나란히 선 카드가 한쪽만 링크를 가지면 사용자는 그것을 "이 책은 알라딘에
+            없다"로 읽는다. 같은 목록에 서는 두 출처는 같은 표현을 갖는다 (FR-013) */}
+        <AladinLink href={book.aladinLink} title={book.title} />
       </div>
     </article>
   );

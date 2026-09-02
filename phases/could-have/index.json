@@ -28,8 +28,13 @@
     {
       "step": 0,
       "name": "aladin-link",
-      "status": "pending",
-      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "status": "completed",
+      "docs": [
+        "PRD",
+        "UI_GUIDE",
+        "ARCHITECTURE",
+        "ADR"
+      ],
       "sources": [
         "src/components/booklist/IdentifiedBookCard.tsx",
         "src/components/booklist/IdentifiedBookCard.test.tsx",
@@ -38,13 +43,20 @@
         "src/components/booklist/BookList.tsx",
         "src/components/booklist/BookList.test.tsx",
         "src/types/book.ts"
-      ]
+      ],
+      "started_at": "2026-09-02T13:28:50+0900",
+      "summary": "공통 AladinLink(src/components/common/AladinLink.tsx)를 만들어 세 카드 — IdentifiedBookCard·BookList 안의 ResolvedBookCard·RecommendationCard — 의 사실 층(메타 줄 아래, ClaudeText 블록 밖)에 같은 표현으로 붙였다. href 는 book.aladinLink 원본 그대로이고 ISBN 조립 경로가 없다(컴포넌트가 ISBN 을 받지 않는다). target=\"_blank\" + rel=\"noopener noreferrer\", 보이는 문구는 \"알라딘에서 보기\", 접근성 이름은 aria-label=\"{제목} — 알라딘에서 보기 (새 창)\" 로 카드마다 반복되는 같은 문구를 제목으로 구분한다. 스타일은 Text 버튼 토큰(text-subtle underline underline-offset-2 hover:text-ink) + min-h-11 터치 타깃, 아이콘·이벤트 0건. 테스트 19건 추가(AladinLink 7 · 카드 3종 12), 전체 1111건 통과."
     },
     {
       "step": 1,
       "name": "share-layout",
       "status": "pending",
-      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "docs": [
+        "PRD",
+        "UI_GUIDE",
+        "ARCHITECTURE",
+        "ADR"
+      ],
       "sources": [
         "src/types/book.ts",
         "src/types/api.ts",
@@ -55,7 +67,12 @@
       "step": 2,
       "name": "share-render",
       "status": "pending",
-      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "docs": [
+        "PRD",
+        "UI_GUIDE",
+        "ARCHITECTURE",
+        "ADR"
+      ],
       "sources": [
         "src/lib/share-image.ts",
         "src/lib/share-image.test.ts",
@@ -66,7 +83,12 @@
       "step": 3,
       "name": "share-button",
       "status": "pending",
-      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "docs": [
+        "PRD",
+        "UI_GUIDE",
+        "ARCHITECTURE",
+        "ADR"
+      ],
       "sources": [
         "src/lib/share-image.ts",
         "src/components/common/Notice.tsx"
@@ -76,11 +98,16 @@
       "step": 4,
       "name": "capture-guide",
       "status": "pending",
-      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE"],
+      "docs": [
+        "PRD",
+        "UI_GUIDE",
+        "ARCHITECTURE"
+      ],
       "sources": [
         "src/components/upload/PhotoPicker.tsx",
         "src/components/common/Notice.tsx"
       ]
     }
-  ]
+  ],
+  "created_at": "2026-09-02T13:28:50+0900"
 }

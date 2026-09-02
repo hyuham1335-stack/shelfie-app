@@ -120,3 +120,39 @@ describe("IdentifiedBookCard", () => {
     expect(container.querySelector("img")?.getAttribute("alt")).toBe("코스모스 표지");
   });
 });
+
+describe("IdentifiedBookCard — 알라딘 상품 링크 (FR-013)", () => {
+  it("알라딘이 준 aladinLink 를 그대로 href 로 쓴다", () => {
+    const { getByRole } = render(<IdentifiedBookCard book={makeBook()} />);
+
+    const link = getByRole("link", { name: /알라딘에서 보기/ });
+    expect(link.getAttribute("href")).toBe(makeBook().aladinLink);
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(link.getAttribute("rel")).toContain("noreferrer");
+  });
+
+  it("ISBN 으로 URL 을 조립하지 않는다 (ADR-002)", () => {
+    const aladinLink = "https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=999";
+    const { getByRole } = render(
+      <IdentifiedBookCard book={makeBook({ aladinLink })} />,
+    );
+
+    expect(getByRole("link").getAttribute("href")).toBe(aladinLink);
+  });
+
+  it("링크는 Claude 생성 텍스트 블록 **밖**에 있다 (사실 층위)", () => {
+    const { container, getByRole } = render(<IdentifiedBookCard book={makeBook()} />);
+
+    const block = container.querySelector(".border-l-2");
+    expect(block).not.toBeNull();
+    expect(block?.querySelector("a")).toBeNull();
+    expect(getByRole("link", { name: /알라딘에서 보기/ })).not.toBeNull();
+  });
+
+  it("접근성 이름으로 어느 책의 링크인지 알 수 있다", () => {
+    const { getByRole } = render(<IdentifiedBookCard book={makeBook()} />);
+
+    expect(getByRole("link", { name: /코스모스/ })).not.toBeNull();
+  });
+});

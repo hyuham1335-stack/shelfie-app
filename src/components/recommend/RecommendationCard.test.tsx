@@ -108,3 +108,29 @@ describe("RecommendationCard", () => {
     );
   });
 });
+
+describe("RecommendationCard — 알라딘 상품 링크 (FR-013)", () => {
+  it("알라딘이 준 aladinLink 를 그대로 href 로 쓴다", () => {
+    렌더();
+
+    const 링크 = screen.getByRole("link", { name: /알라딘에서 보기/ });
+    expect(링크.getAttribute("href")).toBe(BOOK.aladinLink);
+    expect(링크.getAttribute("target")).toBe("_blank");
+    expect(링크.getAttribute("rel")).toContain("noopener");
+    expect(링크.getAttribute("rel")).toContain("noreferrer");
+  });
+
+  it("링크는 추천 이유 블록 **밖**에 있다 — 링크는 사실이고 블록은 해석의 자리다", () => {
+    const { container } = 렌더();
+
+    const 블록 = container.querySelector(".border-l-2");
+    expect(블록).not.toBeNull();
+    expect(블록?.querySelector("a")).toBeNull();
+  });
+
+  it("접근성 이름으로 어느 책의 링크인지 알 수 있다 (같은 문구가 3장에 반복된다)", () => {
+    렌더();
+
+    expect(screen.getByRole("link", { name: /미움받을 용기/ })).toBeInTheDocument();
+  });
+});

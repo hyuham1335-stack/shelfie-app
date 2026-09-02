@@ -44,8 +44,11 @@ function 렌더(overrides: Partial<Parameters<typeof RecommendationList>[0]> = {
       books={BOOKS}
       shortfall={false}
       canRecommendAgain
+      isSavingImage={false}
+      saveImageFailed={false}
       onAccept={vi.fn()}
       onRecommendAgain={vi.fn()}
+      onSaveImage={vi.fn()}
       {...overrides}
     />,
   );
@@ -149,8 +152,11 @@ describe("RecommendationList", () => {
         books={BOOKS}
         shortfall={false}
         canRecommendAgain
+        isSavingImage={false}
+        saveImageFailed={false}
         onAccept={onAccept}
         onRecommendAgain={vi.fn()}
+        onSaveImage={vi.fn()}
       />,
     );
 
@@ -166,5 +172,68 @@ describe("RecommendationList", () => {
     expect(screen.queryAllByRole("article")).toHaveLength(0);
     expect(screen.getByText("추천한 책을 목록에서 찾지 못했어요")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "다시 추천받기" })).toBeInTheDocument();
+  });
+  /* ---------------------------------------------------------------- *
+   * 이미지로 저장 (FR-014, UI_GUIDE 저장 이미지)
+   *
+   * 이 화면은 이미지를 만들지 않는다 — 캔버스·Blob·다운로드는 전부 페이지의 일이고,
+   * 여기서 관찰할 것은 "눌렀다는 사실이 콜백으로 올라가는가"와 "표시 상태를 어떻게
+   * 그리는가" 둘뿐이다 (ARCHITECTURE 레이어 규칙).
+   * ---------------------------------------------------------------- */
+
+  it("'이미지로 저장'은 콜백으로만 위임한다 (FR-014)", () => {
+    const onSaveImage = vi.fn();
+    렌더({ onSaveImage });
+
+    fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+
+    expect(onSaveImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("저장 중에는 버튼을 숨기지 않고 비활성으로 남긴다", () => {
+    const onSaveImage = vi.fn();
+    렌더({ isSavingImage: true, onSaveImage });
+
+    const 버튼 = screen.getByRole("button", { name: "이미지로 저장" });
+
+    // 사라지는 버튼은 사용자가 자기가 뭘 눌렀는지 잃게 만든다 (UI_GUIDE 에러 배너)
+    expect(버튼).toBeInTheDocument();
+    expect(버튼).toBeDisabled();
+    fireEvent.click(버튼);
+    expect(onSaveImage).not.toHaveBeenCalled();
+  });
+
+  it("진행 상태를 눈으로만 알리지 않는다 (TRD 6.6)", () => {
+    렌더({ isSavingImage: true });
+
+    expect(screen.getByRole("button", { name: "이미지로 저장" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("이미지를 만들고 있어요");
+  });
+
+  it("저장에 실패하면 안내만 붙고 추천 목록은 그대로 남는다", () => {
+    렌더({ saveImageFailed: true });
+
+    expect(screen.getByText("이미지를 만들지 못했어요. 다시 시도해 주세요")).toBeInTheDocument();
+    // 실패는 화면 상태를 바꾸지 않는다 — 추천 결과가 사라지면 안 된다
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "이미지로 저장" })).not.toBeDisabled();
+    // 경고색도 role="alert"도 쓰지 않는다 (UI_GUIDE 안내 문구)
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("저장 실패 안내를 기본으로 그리지 않는다", () => {
+    렌더();
+
+    expect(screen.queryByText(/이미지를 만들지 못했어요/)).toBeNull();
+    expect(screen.queryByText(/이미지를 만들고 있어요/)).toBeNull();
+  });
+
+  it("그릴 수 있는 추천이 없으면 저장 버튼도 없다 — 사실 없이 그릴 그림이 없다", () => {
+    렌더({ recommendations: [] });
+
+    expect(screen.queryByRole("button", { name: "이미지로 저장" })).toBeNull();
   });
 });

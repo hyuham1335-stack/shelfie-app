@@ -25,6 +25,14 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 /**
+ * 저장 이미지 모듈은 캔버스를 만진다 — jsdom에는 canvas 구현이 없어 실물로는 한 줄도
+ * 돌지 않는다 (ADR-009). 이 파일이 검사할 것은 "무엇을 넘겨 부르는가"이므로 가짜로 건다.
+ */
+vi.mock("@/lib/share-image", () => ({
+  renderShareImage: vi.fn(),
+}));
+
+/**
  * 업로드 화면은 파일 선택·리사이즈를 스스로 하며 자기 테스트를 갖고 있다.
  * 이 파일이 검사할 것은 그 화면이 넘겨주는 값을 페이지가 어떻게 쓰는가이므로,
  * 콜백만 남긴 스텁으로 바꿔 둔다.
@@ -55,6 +63,7 @@ import {
   resolveBook,
   sendClientEvent,
 } from "@/lib/api-client";
+import { renderShareImage } from "@/lib/share-image";
 
 const IMAGES = ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"];
 
@@ -63,6 +72,7 @@ const resolveMock = vi.mocked(resolveBook);
 const questionsMock = vi.mocked(fetchMoodQuestions);
 const recommendMock = vi.mocked(requestRecommendations);
 const eventMock = vi.mocked(sendClientEvent);
+const shareMock = vi.mocked(renderShareImage);
 
 function ok<T>(data: T): ApiResult<T> {
   return { ok: true, data };
@@ -927,5 +937,190 @@ describe("세션 셸", () => {
     expect(recommendMock).toHaveBeenCalledWith(
       expect.objectContaining({ inputMode: "guided" }),
     );
+  });
+  /* ---------------------------------------------------------------- *
+   * 추천 결과 이미지 저장 (FR-014, ADR-009)
+   *
+   * 화면은 이미지를 만들지 않는다. 여기서 고정하는 것은 페이지가 **무엇을 넘겨**
+   * 부르고, 만든 `Blob`을 어떻게 내보내고 되돌려 놓는가다. 서버는 등장하지 않는다
+   * (ADR-003 — 저장 이미지는 클라이언트에만 존재한다).
+   * ---------------------------------------------------------------- */
+  describe("추천 결과 이미지 저장", () => {
+    const SHELF = [
+      makeIdentified(),
+      makeIdentified({
+        isbn13: "9788937460777",
+        title: "데미안",
+        author: "헤르만 헤세",
+        publisher: "민음사",
+        coverUrl: "https://image.aladin.co.kr/product/2/2/cover/8937460777.jpg",
+        proof: "proof-demian",
+      }),
+      makeIdentified({
+        isbn13: "9791162540640",
+        title: "달러구트 꿈 백화점",
+        author: "이미예",
+        publisher: "팩토리나인",
+        coverUrl: "https://image.aladin.co.kr/product/3/3/cover/1162540648.jpg",
+        proof: "proof-dallergut",
+      }),
+    ];
+
+    const THREE: RecommendResponse = {
+      recommendations: SHELF.map((book, index) => ({
+        bookId: book.isbn13,
+        reason: book.title + "은 지금 기분에 분량과 밀도가 맞아요",
+        position: (index + 1) as 1 | 2 | 3,
+      })),
+      shortfall: false,
+    };
+
+    const createObjectURL = vi.fn(() => "blob:shelfie");
+    const revokeObjectURL = vi.fn();
+    const clicked: { href: string; download: string }[] = [];
+    let originalCreate: typeof URL.createObjectURL;
+    let originalRevoke: typeof URL.revokeObjectURL;
+    let clickSpy: { mockRestore: () => void } | undefined;
+
+    beforeEach(() => {
+      clicked.length = 0;
+      originalCreate = URL.createObjectURL;
+      originalRevoke = URL.revokeObjectURL;
+      URL.createObjectURL = createObjectURL as unknown as typeof URL.createObjectURL;
+      URL.revokeObjectURL = revokeObjectURL;
+      // jsdom은 앵커 클릭을 실제 내비게이션으로 다루려 한다. 여기서 보고 싶은 것은
+      // "무엇을 들고 눌렸는가"뿐이므로 클릭 자체를 기록으로 바꾼다.
+      clickSpy = vi
+        .spyOn(HTMLAnchorElement.prototype, "click")
+        .mockImplementation(function (this: HTMLAnchorElement) {
+          clicked.push({ href: this.href, download: this.download });
+        });
+    });
+
+    afterEach(() => {
+      clickSpy?.mockRestore();
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    });
+
+    /** 확인된 책 3권 → 추천 3권까지 진행한다 */
+    async function reachResult(response: RecommendResponse = THREE) {
+      await analyzeInto(makeAnalyze({ identified: SHELF }));
+      fireEvent.click(screen.getByRole("button", { name: "추천받기" }));
+      await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+      recommendMock.mockResolvedValue(ok(response));
+      submitMood("번아웃이라 가볍게");
+      await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    }
+
+    function pngBlob() {
+      return new Blob(["png"], { type: "image/png" });
+    }
+
+    it("화면에 뜬 추천 3권을 그대로 넘겨 한 번만 그린다", async () => {
+      shareMock.mockResolvedValue(pngBlob());
+      await reachResult();
+
+      fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+
+      await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(1));
+      expect(shareMock.mock.calls[0][0]).toEqual(
+        SHELF.map((book, index) => ({
+          title: book.title,
+          author: book.author,
+          publisher: book.publisher,
+          coverUrl: book.coverUrl,
+          reason: book.title + "은 지금 기분에 분량과 밀도가 맞아요",
+          position: index + 1,
+        })),
+      );
+    });
+
+    it("Blob을 결정적인 파일명으로 내려받고 objectURL을 회수한다", async () => {
+      const blob = pngBlob();
+      shareMock.mockResolvedValue(blob);
+      await reachResult();
+
+      fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+
+      await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:shelfie"));
+      expect(createObjectURL).toHaveBeenCalledWith(blob);
+      // 파일명에 시각을 넣지 않는다 — 테스트가 시계에 의존하지 않아야 한다
+      expect(clicked).toEqual([
+        { href: "blob:shelfie", download: "shelfie-recommendations.png" },
+      ]);
+    });
+
+    it("저장 중에는 버튼을 숨기지 않고 비활성으로 두었다가 되돌린다", async () => {
+      let finish!: (blob: Blob) => void;
+      shareMock.mockReturnValue(
+        new Promise<Blob>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      await reachResult();
+
+      fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "이미지로 저장" })).toBeDisabled(),
+      );
+      expect(screen.getByRole("button", { name: "이미지로 저장" })).toBeInTheDocument();
+
+      await act(async () => {
+        finish(pngBlob());
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "이미지로 저장" })).not.toBeDisabled(),
+      );
+      expect(shareMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("실패하면 안내만 뜨고 추천 목록은 그대로 남는다", async () => {
+      shareMock.mockRejectedValue(new Error("캔버스 2d 컨텍스트를 얻지 못했습니다"));
+      await reachResult();
+
+      fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+
+      await screen.findByText("이미지를 만들지 못했어요. 다시 시도해 주세요");
+      expect(screen.getByRole("heading", { name: "이 책은 어때요?" })).toBeInTheDocument();
+      expect(screen.getAllByRole("article")).toHaveLength(3);
+      // 내부 에러 원문을 화면에 흘리지 않는다 (UI_GUIDE 에러 배너)
+      expect(screen.queryByText(/캔버스 2d/)).toBeNull();
+    });
+
+    it("저장은 재추천 횟수를 소모하지 않고 새 이벤트도 만들지 않는다 (FR-010·PRD 7번)", async () => {
+      shareMock.mockResolvedValue(pngBlob());
+      await reachResult();
+
+      const recommendCallsBefore = recommendMock.mock.calls.length;
+      const eventCallsBefore = eventMock.mock.calls.length;
+
+      fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+      await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+      await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(2));
+
+      // 모델을 부르지 않았으므로 재추천 상한도 그대로다
+      expect(recommendMock.mock.calls.length).toBe(recommendCallsBefore);
+      expect(eventMock.mock.calls.length).toBe(eventCallsBefore);
+      expect(screen.getByRole("button", { name: "다시 추천받기" })).not.toBeDisabled();
+    });
+
+    it("추천 묶음이 바뀌면 직전 저장 실패 안내가 남지 않는다", async () => {
+      shareMock.mockRejectedValue(new Error("실패"));
+      await reachResult();
+
+      fireEvent.click(screen.getByRole("button", { name: "이미지로 저장" }));
+      await screen.findByText("이미지를 만들지 못했어요. 다시 시도해 주세요");
+
+      fireEvent.click(screen.getByRole("button", { name: "다시 추천받기" }));
+      await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+      submitMood("이번엔 좀 묵직한 걸로");
+      await screen.findByRole("heading", { name: "이 책은 어때요?" });
+
+      expect(screen.queryByText(/이미지를 만들지 못했어요/)).toBeNull();
+    });
   });
 });

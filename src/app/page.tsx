@@ -56,11 +56,26 @@ import {
   toRecommendBooks,
 } from "@/lib/session";
 import type { InputMode, SessionState } from "@/lib/session";
-import type { ErrorCode } from "@/types/api";
-import type { AladinCandidate, ResolvedCandidate, UnidentifiedBook } from "@/types/book";
+import { renderShareImage } from "@/lib/share-image";
+import type { ShareImageBook } from "@/lib/share-image";
+import type { ErrorCode, Recommendation } from "@/types/api";
+import type {
+  AladinCandidate,
+  AladinFacts,
+  ResolvedCandidate,
+  UnidentifiedBook,
+} from "@/types/book";
 
 /** `resolveRequestSchema.query`의 상한. 넘겨 보내면 400으로 돌아온다 */
 const MAX_RESOLVE_QUERY_LENGTH = 200;
+
+/**
+ * 저장 이미지 파일명 (FR-014). **시각을 넣지 않는다** — 파일명에 초 단위를 박으면
+ * 같은 결과를 두 번 저장했을 때 서로 다른 파일이 되어 사용자가 무엇이 최신인지
+ * 알 수 없고, 테스트가 시계에 의존하게 된다. 같은 이름이면 브라우저가 알아서
+ * `(1)`을 붙인다.
+ */
+const SHARE_IMAGE_FILENAME = "shelfie-recommendations.png";
 
 /** 미확인 책을 고쳐 찾는 패널의 진행 상태 */
 type ResolveStage = "input" | "searching" | "results" | "mismatch" | "notFound" | "failed";
@@ -105,6 +120,15 @@ export default function Home() {
    */
   const [retryWaitSec, setRetryWaitSec] = useState<number | null>(null);
   const retryTimerRef = useRef<number | null>(null);
+  /**
+   * 저장 이미지의 표시 상태 (FR-014). **리듀서에 넣지 않는다** — 저장은 상태도의
+   * 어떤 전이도 일으키지 않는다. 화면은 `result`에 그대로 머물고, 실패해도 추천
+   * 결과가 사라지면 안 된다. 전이가 아닌 것을 전이 규칙의 자리에 넣으면 순수 함수
+   * 테스트가 검사할 규칙이 아닌 것을 검사하게 된다 (ARCHITECTURE 상태 관리).
+   * 대기 초(`retryWaitSec`)를 리듀서 밖에 둔 것과 같은 판단이다.
+   */
+  const [isSavingImage, setIsSavingImage] = useState(false);
+  const [saveImageFailed, setSaveImageFailed] = useState(false);
 
   // 추천 화면은 서지 사실만 필요하므로 출처 구분 없이 책만 편다. 확인된 책 목록
   // 자체는 `BookList`가 `ShelfBook`으로 통째로 받아 한 목록으로 그린다.
@@ -378,6 +402,11 @@ export default function Home() {
    * 리듀서가 센 횟수와 요청에 실린 값이 하나 어긋난다.
    */
   async function runRecommend(mood: string, inputMode: InputMode, retryCount = state.recommendCount) {
+    // 새 묶음이 오기 전에 저장 표시를 비운다. 모든 재추천 경로가 이 함수를 지나므로
+    // 여기 한 곳이면 충분하다 — 이전 묶음의 실패 문구가 새 추천 위에 남으면 사용자는
+    // 방금 뜬 결과가 실패한 줄 안다.
+    resetShareState();
+
     const result = await requestRecommendations({
       sessionId: state.sessionId,
       books: toRecommendBooks(state),
@@ -442,10 +471,55 @@ export default function Home() {
     });
   }
 
+  function resetShareState() {
+    setIsSavingImage(false);
+    setSaveImageFailed(false);
+  }
+
+  /**
+   * 추천 결과를 PNG 한 장으로 내려받는다 (FR-014).
+   *
+   * **서버가 등장하지 않는다.** 만든 `Blob`은 이 함수 안에서 태어나 이 함수 안에서
+   * 회수되고, 어디에도 올라가지 않는다 (ADR-003 · PRD 보관 기간 0). `objectURL`을
+   * 회수하지 않으면 재추천을 반복하는 세션에서 blob이 계속 쌓인다.
+   *
+   * **모델을 부르지 않으므로 재추천 횟수(FR-010)를 소모하지 않는다.** `dispatch`가
+   * 여기 없는 것이 그 사실이다.
+   *
+   * 실패는 안내로만 알리고 화면 상태를 바꾸지 않는다 — 저장 한 번 실패했다고
+   * 추천 결과가 사라지면 사용자가 잃는 것이 그림이 아니라 결과다.
+   */
+  async function handleSaveImage() {
+    if (state.status !== "result" || isSavingImage) return;
+
+    setIsSavingImage(true);
+    setSaveImageFailed(false);
+
+    let objectUrl: string | null = null;
+    try {
+      const blob = await renderShareImage(toShareImageBooks(state.recommendations, books));
+
+      objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = SHARE_IMAGE_FILENAME;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch {
+      // 내부 에러 원문은 화면에 흘리지 않는다 (UI_GUIDE 에러 배너)
+      setSaveImageFailed(true);
+    } finally {
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+      setIsSavingImage(false);
+    }
+  }
+
   function handleRestart() {
     // 사용자가 버리기로 한 작업이다. 타이머를 남기면 새 세션에서 유령 분석 호출이
     // 뜨고, 그 비용은 아무도 요청하지 않은 것이 된다.
     cancelRetryTimer();
+    resetShareState();
     setPhotos([]);
     setAnalyzeAttempts(0);
     setPanel(null);
@@ -640,8 +714,11 @@ export default function Home() {
         books={books}
         shortfall={state.shortfall}
         canRecommendAgain={canRecommendAgain(state)}
+        isSavingImage={isSavingImage}
+        saveImageFailed={saveImageFailed}
         onAccept={handleAccept}
         onRecommendAgain={() => dispatch({ type: "RECOMMEND_AGAIN" })}
+        onSaveImage={() => void handleSaveImage()}
       />
       {/* 상태도의 result → idle. 추천 화면 안에 두지 않은 것은 step 4의 판단이다 */}
       <div className="mx-auto w-full max-w-md px-4 pb-8">
@@ -656,6 +733,39 @@ export default function Home() {
 /* ------------------------------------------------------------------ *
  * 조각
  * ------------------------------------------------------------------ */
+
+/**
+ * 저장 이미지에 그릴 책을 고른다 (FR-014).
+ *
+ * 화면과 **같은 규칙으로** 고른다 — 목록에서 서지 사실을 찾지 못한 추천은 카드가
+ * 그려지지 않으므로 그림에도 들어가지 않는다. 사실 없이 그린 책은 밖으로 나가서
+ * 사실처럼 유통된다 (ADR-002).
+ *
+ * `claudeNote`는 넘기지 않는다. 이 그림에 실리는 생성 텍스트는 추천 이유 하나뿐이고,
+ * `ShareImageBook`이 그만큼만 받도록 좁혀져 있다 (ADR-009).
+ */
+function toShareImageBooks(
+  recommendations: readonly Recommendation[],
+  books: readonly AladinFacts[],
+): ShareImageBook[] {
+  const byIsbn = new Map(books.map((book) => [book.isbn13, book]));
+
+  return recommendations.flatMap((recommendation) => {
+    const book = byIsbn.get(recommendation.bookId);
+    if (book === undefined) return [];
+
+    return [
+      {
+        title: book.title,
+        author: book.author,
+        publisher: book.publisher,
+        coverUrl: book.coverUrl,
+        reason: recommendation.reason,
+        position: recommendation.position,
+      },
+    ];
+  });
+}
 
 const PRIMARY_BUTTON =
   "min-h-11 w-full rounded-md bg-accent px-5 py-3 text-white hover:bg-accent-strong";

@@ -17,6 +17,11 @@
  * ## 저장하지 않는다
  * 고른 책도 재추천 횟수도 `localStorage`에 남기지 않는다. 새로고침 시 소실은 무상태
  * 설계의 의도된 결과다 (ADR-003).
+ *
+ * ## 이미지도 여기서 만들지 않는다
+ * "이미지로 저장"(FR-014)은 누가 눌렀다는 사실만 콜백으로 올린다. 캔버스·`Blob`·
+ * `<a download>`는 브라우저 API를 만지는 부수 효과이고, 표현 층이 그것을 직접 하면
+ * 이 화면의 테스트가 매번 그 API를 흉내 내야 한다 (ARCHITECTURE 레이어 규칙).
  */
 import { useState } from "react";
 import { Notice } from "@/components/common/Notice";
@@ -32,8 +37,19 @@ export interface RecommendationListProps {
   shortfall: boolean;
   /** 재추천 상한(FR-010)이 남았는가. 판정은 `lib/session.ts`의 셀렉터가 한다 */
   canRecommendAgain: boolean;
+  /**
+   * 저장 이미지를 만드는 중인가 (FR-014).
+   *
+   * 이 화면은 이미지를 만들지 않는다 — 캔버스·`Blob`·다운로드는 브라우저 API를 만지는
+   * 부수 효과라 페이지의 일이다 (ARCHITECTURE 레이어 규칙). 여기 오는 것은 그 진행을
+   * **그리기 위한 값**뿐이다.
+   */
+  isSavingImage: boolean;
+  /** 직전 저장이 실패했는가. 실패는 안내로만 알리고 화면 상태를 바꾸지 않는다 */
+  saveImageFailed: boolean;
   onAccept: (bookId: string, position: 1 | 2 | 3) => void;
   onRecommendAgain: () => void;
+  onSaveImage: () => void;
 }
 
 export function RecommendationList({
@@ -41,8 +57,11 @@ export function RecommendationList({
   books,
   shortfall,
   canRecommendAgain,
+  isSavingImage,
+  saveImageFailed,
   onAccept,
   onRecommendAgain,
+  onSaveImage,
 }: RecommendationListProps) {
   // 추천 묶음이 바뀌면 수락 표시를 비운다. 이 화면은 "다시 추천받기" 사이에 언마운트되지만,
   // 그 전제를 화면 밖(페이지의 렌더 구조)에 두면 한 번의 배선 변경으로 조용히 깨진다 —
@@ -118,6 +137,37 @@ export function RecommendationList({
         </button>
         {/* 소진된 버튼을 숨기지 않는다 — 사라진 버튼은 왜 못 누르는지 말해 주지 않는다 */}
         {!canRecommendAgain && <Notice>기분을 바꿔 적어 보세요</Notice>}
+
+        {/*
+          그릴 카드가 없으면 저장 버튼도 없다. 사실 없이 만든 그림은 밖으로 나가서
+          사실처럼 유통된다 (ADR-002) — 그릴 것이 없을 때는 그리지 않는 것이 맞다.
+        */}
+        {rows.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              if (isSavingImage) return;
+              onSaveImage();
+            }}
+            disabled={isSavingImage}
+            aria-busy={isSavingImage}
+            className="min-h-11 w-full rounded-md border border-line bg-card px-5 py-3 text-ink hover:bg-muted-surface disabled:bg-muted-surface disabled:text-disabled"
+          >
+            이미지로 저장
+          </button>
+        )}
+
+        {/*
+          진행과 실패를 눈으로만 알리지 않는다 (TRD 6.6). 영역을 항상 세워 두어야
+          내용이 바뀔 때 보조기술이 읽는다. 실패에도 `role="alert"`를 쓰지 않는다 —
+          저장 실패는 화면을 바꾸지 않는 안내다 (UI_GUIDE 안내 문구).
+        */}
+        <div role="status" aria-live="polite">
+          {isSavingImage && <Notice>이미지를 만들고 있어요</Notice>}
+          {!isSavingImage && saveImageFailed && (
+            <Notice>이미지를 만들지 못했어요. 다시 시도해 주세요</Notice>
+          )}
+        </div>
       </div>
     </div>
   );

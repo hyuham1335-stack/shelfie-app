@@ -22,9 +22,19 @@ from execute import StepExecutor, _force_utf8_output  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# 백필이 채우는 칸. 이미 값이 있으면 하나도 건드리지 않는다.
+# 백필이 채우는 칸. **이미 값이 있는 칸은 건드리지 않고, 빠진 칸만 채운다.**
+#
+# 처음에는 "이 중 하나라도 있으면 통째로 건너뛴다"였다. 그래서 계측이 늘어
+# 새 키가 생겼을 때 41 step 이 전부 이미 옛 5종을 갖고 있어 **한 칸도
+# 채워지지 않았다.** 빈 칸을 채우는 것은 "못 잰 것이 잰 것을 지우지 않는다"
+# (M12·M14)를 깨지 않는다 — 지우는 것이 아니기 때문이다. --force 는 이번에도
+# 두지 않는다.
 PULL_KEYS = ("session_id", "tool_result_chars", "tool_result_count",
-             "tool_output_chars", "tool_calls")
+             "tool_output_chars", "tool_calls",
+             # 합계에서 분포로 (PILOT-LOG "다음에 볼 것" 1번). 같은 양을
+             # 끌어온 두 step 이 22 turn 과 44 turn 으로 갈린 이유를 가른다.
+             "tool_result_p50", "tool_result_p90", "tool_result_max",
+             "tool_result_repeat_chars", "tool_result_repeat_count")
 
 
 def _read_json(path: Path) -> dict:
@@ -71,32 +81,43 @@ def backfill_phase(phase_dir: Path, *, dry_run: bool = False,
             for key in ("turns", "cost_usd", "preamble_chars"):
                 row[key] = last.get(key)
 
-        if isinstance(last, dict) and any(k in last for k in PULL_KEYS):
-            # 이미 잰 칸이다. 못 잰 것이 잰 것을 지우지 않는다 (M12·M14).
-            row["action"] = "kept"
-            row.update({k: last.get(k) for k in PULL_KEYS if k in last})
-            rows.append(row)
-            continue
+        existing = {k: last[k] for k in PULL_KEYS
+                    if isinstance(last, dict) and k in last}
 
         pull = StepExecutor._read_session_metrics(
             _session_of(phase_dir, num), transcript_root=transcript_root)
         if not pull:
+            # 못 쟀다. 있던 값은 그대로 두고 그 사실만 적는다.
+            if existing:
+                row.update(existing, action="kept")
             rows.append(row)
             continue
 
-        row.update(pull, action="filled")
+        # 있는 칸은 그대로, 빠진 칸만. 이 한 줄이 "지우지 않는다"를 지킨다.
+        missing = {k: v for k, v in pull.items() if k not in existing}
+        row.update(existing)
+        row.update(missing)
+        if not missing:
+            row["action"] = "kept"
+            rows.append(row)
+            continue
+
+        row["action"] = "extended" if existing else "filled"
         rows.append(row)
         if dry_run:
             continue
 
         if isinstance(last, dict):
-            last.update(pull, reads_source="backfill")
+            last.update(missing)
+            # reads_source 는 그 실측이 **언제 났는지**를 말하는 칸이다.
+            # 사후로 칸을 더했다고 런 중에 잰 것이 backfill 이 되지는 않는다.
+            last.setdefault("reads_source", "backfill")
         else:
             # 런 #1~#5 의 26 step 에는 runs[] 가 없다 — M12 가 그 다음에 생겼다.
             # 시도 번호를 지어내지 않는다. outcome 도 적지 않는다: 출력 파일은
             # 마지막 세션만 증명하고 그것이 몇 번째였는지는 증명하지 않는다.
             step.setdefault("runs", []).append(
-                dict(pull, attempt=None, reads_source="backfill"))
+                dict(missing, attempt=None, reads_source="backfill"))
         changed = True
 
     if changed and not dry_run:
@@ -123,8 +144,8 @@ def _print_table(rows: list, *, dry_run: bool):
     print(f"\n{'='*88}")
     print(f"  끌어온 양 백필 — {'모의 실행 (기록하지 않는다)' if dry_run else '기록'}")
     print(f"{'='*88}")
-    head = f"{'phase':<16} {'#':>2} {'name':<16} {'끌어온 양':>10} {'원본':>10} " \
-           f"{'건':>3} {'turn':>4} {'비용':>6} {'접두부':>8}  상태"
+    head = f"{'phase':<16} {'#':>2} {'name':<16} {'끌어온 양':>10} {'건':>3} {'중앙':>7} " \
+           f"{'p90':>7} {'최대':>8} {'재수신':>8} {'재':>3} {'turn':>4} {'비용':>6} {'접두부':>8}  상태"
     print(head)
     print("-" * len(head))
     def fmt(v, w):
@@ -135,8 +156,12 @@ def _print_table(rows: list, *, dry_run: bool):
         cost_cell = "     —" if not cost else "{:>6}".format("$%.2f" % cost)
         print(f"{r['phase']:<16} {r['step']:>2} {str(r['name'])[:16]:<16} "
               f"{fmt(r.get('tool_result_chars'), 10)} "
-              f"{fmt(r.get('tool_output_chars'), 10)} "
               f"{fmt(r.get('tool_result_count'), 3)} "
+              f"{fmt(r.get('tool_result_p50'), 7)} "
+              f"{fmt(r.get('tool_result_p90'), 7)} "
+              f"{fmt(r.get('tool_result_max'), 8)} "
+              f"{fmt(r.get('tool_result_repeat_chars'), 8)} "
+              f"{fmt(r.get('tool_result_repeat_count'), 3)} "
               f"{fmt(r.get('turns'), 4)} "
               f"{cost_cell} "
               f"{fmt(r.get('preamble_chars'), 8)}  {r['action']}")
@@ -144,7 +169,8 @@ def _print_table(rows: list, *, dry_run: bool):
     measured = [r for r in rows if isinstance(r.get("tool_result_chars"), int)]
     print("-" * len(head))
     print(f"  {len(measured)}/{len(rows)} step 측정됨 "
-          f"(채움 {sum(1 for r in rows if r['action'] == 'filled')} · "
+          f"(처음 채움 {sum(1 for r in rows if r['action'] == 'filled')} · "
+          f"칸 추가 {sum(1 for r in rows if r['action'] == 'extended')} · "
           f"기존 유지 {sum(1 for r in rows if r['action'] == 'kept')} · "
           f"미측정 {sum(1 for r in rows if r['action'] == 'unmeasured')})")
     if measured:

@@ -79,7 +79,12 @@
           "tool_calls": {
             "Bash": 24
           },
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 265,
+          "tool_result_p90": 1782,
+          "tool_result_max": 5122,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ],
       "completed_at": "2026-09-02T11:52:43+0900",
@@ -127,7 +132,12 @@
             "Bash": 19,
             "Write": 2
           },
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 231,
+          "tool_result_p90": 6661,
+          "tool_result_max": 9462,
+          "tool_result_repeat_chars": 4,
+          "tool_result_repeat_count": 2
         }
       ],
       "completed_at": "2026-09-02T11:59:36+0900",
@@ -178,7 +188,12 @@
             "Edit": 5,
             "Read": 1
           },
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 206,
+          "tool_result_p90": 2295,
+          "tool_result_max": 8131,
+          "tool_result_repeat_chars": 352,
+          "tool_result_repeat_count": 2
         }
       ],
       "completed_at": "2026-09-02T12:04:16+0900",
@@ -232,7 +247,12 @@
             "Bash": 19,
             "Write": 2
           },
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 957,
+          "tool_result_p90": 9853,
+          "tool_result_max": 18723,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ],
       "completed_at": "2026-09-02T12:11:47+0900",
@@ -280,7 +300,12 @@
           "tool_calls": {
             "Bash": 26
           },
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 49,
+          "tool_result_p90": 5977,
+          "tool_result_max": 11462,
+          "tool_result_repeat_chars": 16,
+          "tool_result_repeat_count": 8
         }
       ],
       "completed_at": "2026-09-02T12:19:26+0900",

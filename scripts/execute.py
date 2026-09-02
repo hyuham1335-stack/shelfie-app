@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,33 @@ STALE_AFTER_SEC = 300
 # 슬러그 규칙은 Claude Code 구현 세부이고, 이 리포는 경로 casing 함정에
 # 두 번 물렸다. session_id 는 UUID 라 한 번의 glob 으로 유일하게 잡힌다.
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
+
+
+def _percentile(sorted_sizes: list, pct: int) -> int:
+    """최근접 순위(nearest-rank). **보간하지 않는다.**
+
+    보간하면 관측된 적 없는 숫자가 칸에 앉는다 — 100 과 300 만 왔는데
+    p50 이 200 이면, 그 200 은 이 세션이 한 번도 받아 본 적 없는 크기다.
+    유도된 값이 원자료로 오해되지 않게 실제 관측값 하나를 돌려준다.
+    """
+    rank = -(-pct * len(sorted_sizes) // 100)      # ceil, 정수만으로
+    return sorted_sizes[max(rank, 1) - 1]
+
+
+def _distribution(sizes: list, repeat_chars: int, repeat_count: int) -> dict:
+    """호출당 결과 크기의 분포와 재수신 몫.
+
+    결과가 0 건이면 **칸을 만들지 않는다** — 0 으로 채우면 "한 번도 안
+    끌어왔다"와 "안 쟀다"가 같은 칸에 들어간다 (ADR-H007).
+    """
+    if not sizes:
+        return {}
+    ordered = sorted(sizes)
+    return {"tool_result_p50": _percentile(ordered, 50),
+            "tool_result_p90": _percentile(ordered, 90),
+            "tool_result_max": ordered[-1],
+            "tool_result_repeat_chars": repeat_chars,
+            "tool_result_repeat_count": repeat_count}
 
 
 def _force_utf8_output():
@@ -934,6 +962,22 @@ class StepExecutor:
 
         못 재면 키를 만들지 않는다 — 0 으로 채우면 "재지 않았다"와 "0 이었다"가
         같은 칸에 들어간다 (ADR-H007 이 attempts 에서 겪은 실패).
+
+        **합계만으로는 부족했다.** 41 step 백필이 끌어온 양 ↔ 비용 r=0.752 를
+        냈지만 0.95 가 아니었고, 이유가 두 행에 있다 — 같은 양(≈79,800자)을
+        끌어온 booklist-props 는 22 turn, request-contract 는 44 turn 이다.
+        tool_result_count 는 15 step 전부에서 turns-1 이라 새 정보가 아니다.
+        새 정보는 **한 호출이 얼마나 큰가**(p50·p90·max)와 **그 중 몇 자가
+        이미 왔던 것인가**(repeat)뿐이다.
+
+        **중복은 명령을 파싱하지 않고 결과 내용으로 잰다.** `cat page.tsx` 와
+        `sed -n '1,80p' page.tsx` 를 같은 파일로 묶으려면 셸 명령을 해석해야
+        하는데, 그것이 이 함수가 이름으로 분류하기를 거부한 바로 그 자리다.
+        내용을 그대로 해싱하면 파싱이 없다 — 대신 부분 읽기와 파일이 바뀐 뒤의
+        재독은 안 잡히므로 **하한**이다 (tool_output_chars 와 같은 성격이다).
+
+        백분위는 **보간하지 않는다.** 최근접 순위로 실제 관측값 하나를
+        돌려준다 — 유도된 값이 원자료로 오해되지 않게 한다.
         """
         if not session_id:
             return {}
@@ -945,13 +989,13 @@ class StepExecutor:
         if not paths:
             return {}
 
-        def _block_chars(content) -> int:
+        def _block_text(content) -> str:
             if isinstance(content, str):
-                return len(content)
+                return content
             if isinstance(content, list):
-                return sum(len(b.get("text", "")) for b in content
-                           if isinstance(b, dict) and isinstance(b.get("text"), str))
-            return 0
+                return "".join(b["text"] for b in content
+                               if isinstance(b, dict) and isinstance(b.get("text"), str))
+            return ""
 
         def _raw_chars(tur) -> int:
             if isinstance(tur, str):
@@ -966,6 +1010,9 @@ class StepExecutor:
             return 0
 
         result_chars = raw_chars = result_count = 0
+        repeat_chars = repeat_count = 0
+        sizes: list = []
+        seen: set = set()
         calls: dict = {}
         for path in paths:
             try:
@@ -994,8 +1041,19 @@ class StepExecutor:
                             if isinstance(name, str):
                                 calls[name] = calls.get(name, 0) + 1
                         elif blk.get("type") == "tool_result":
-                            result_chars += _block_chars(blk.get("content"))
+                            text = _block_text(blk.get("content"))
+                            result_chars += len(text)
                             result_count += 1
+                            sizes.append(len(text))
+                            if text:
+                                # 빈 결과끼리는 중복으로 세지 않는다 — 그러면
+                                # 재수신 건수가 세션이 하지 않은 일을 말한다.
+                                digest = hashlib.sha1(text.encode("utf-8")).digest()
+                                if digest in seen:
+                                    repeat_chars += len(text)
+                                    repeat_count += 1
+                                else:
+                                    seen.add(digest)
                 if rec.get("toolUseResult") is not None:
                     raw_chars += _raw_chars(rec["toolUseResult"])
 
@@ -1008,7 +1066,8 @@ class StepExecutor:
                 # 구조화된 도구는 stdout 을 남기지 않아 여기서 세지 못한다.
                 # 예산에 쓰는 숫자는 위의 tool_result_chars 쪽이다.
                 "tool_output_chars": raw_chars,
-                "tool_calls": dict(sorted(calls.items()))}
+                "tool_calls": dict(sorted(calls.items())),
+                **_distribution(sizes, repeat_chars, repeat_count)}
 
     def _record_run(self, index: dict, step_num: int, *, attempt: int, outcome: str,
                     elapsed: float, out: dict, guard_info: dict):
@@ -1105,7 +1164,15 @@ class StepExecutor:
             return
         count = entry.get("tool_result_count", 0)
         tail = f" (접두부 {preamble_chars:,}자 밖이다)" if isinstance(preamble_chars, int) else ""
-        print(f"  도구 결과 {chars:,}자 · {count}건 — 세션이 스스로 끌어온 양{tail}",
+        # 합계가 같아도 "큰 덩어리 몇 개"와 "작은 조각 수십 개"는 다른 step 이다.
+        # 결과가 0 건이면 분포 칸 자체가 없으므로 예전과 같은 줄을 찍는다.
+        shape = ""
+        if isinstance(entry.get("tool_result_max"), int):
+            shape = (f" (중앙 {entry['tool_result_p50']:,} · "
+                     f"최대 {entry['tool_result_max']:,} · "
+                     f"동일 재수신 {entry['tool_result_repeat_chars']:,}자"
+                     f"/{entry['tool_result_repeat_count']}건)")
+        print(f"  도구 결과 {chars:,}자 · {count}건{shape} — 세션이 스스로 끌어온 양{tail}",
               flush=True)
 
     # --- 헤더 & 검증 ---

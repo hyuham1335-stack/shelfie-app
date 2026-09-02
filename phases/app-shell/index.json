@@ -54,7 +54,12 @@
             "Edit": 12
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 554,
+          "tool_result_p90": 3385,
+          "tool_result_max": 6806,
+          "tool_result_repeat_chars": 672,
+          "tool_result_repeat_count": 5
         }
       ]
     },
@@ -77,7 +82,12 @@
             "Write": 2
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 476,
+          "tool_result_p90": 4189,
+          "tool_result_max": 9936,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ]
     },
@@ -101,7 +111,12 @@
             "Write": 2
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 483,
+          "tool_result_p90": 3828,
+          "tool_result_max": 8497,
+          "tool_result_repeat_chars": 334,
+          "tool_result_repeat_count": 2
         }
       ]
     },
@@ -124,7 +139,12 @@
             "Write": 1
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 360,
+          "tool_result_p90": 6492,
+          "tool_result_max": 10289,
+          "tool_result_repeat_chars": 8,
+          "tool_result_repeat_count": 4
         }
       ]
     },
@@ -146,7 +166,12 @@
             "Bash": 31
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 866,
+          "tool_result_p90": 6272,
+          "tool_result_max": 14965,
+          "tool_result_repeat_chars": 14,
+          "tool_result_repeat_count": 7
         }
       ]
     },
@@ -169,7 +194,12 @@
             "Write": 2
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 694,
+          "tool_result_p90": 5522,
+          "tool_result_max": 14965,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ]
     }

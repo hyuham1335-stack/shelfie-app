@@ -1771,6 +1771,123 @@ class TestSessionMetrics:
         m = ex.StepExecutor._read_session_metrics("zzz", transcript_root=transcripts)
         assert m["tool_result_chars"] == 77
 
+    # --- 합계에서 분포로 (PILOT-LOG "다음에 볼 것" 1번) ---------------------
+    #
+    # 끌어온 양 ↔ 비용 r=0.752 는 합계가 후보 눈금이라는 뜻이지 예산이라는
+    # 뜻이 아니다. 같은 양(≈79,800자)을 끌어온 두 step 이 22 turn 과 44 turn
+    # 으로 갈렸다 — booklist-props 와 request-contract. 합계와 건수로는 그
+    # 차이를 볼 수 없고, tool_result_count 는 15 step 전부에서 turns-1 이라
+    # 새 정보도 아니다. 새 정보는 **한 호출이 얼마나 큰가**와 **그 중 몇 자가
+    # 이미 왔던 것인가**뿐이다.
+
+    def test_percentiles_are_observed_values_not_interpolated(self, transcripts):
+        """유도된 값이 원자료로 오해되지 않게 한다.
+
+        보간하면 관측된 적 없는 숫자가 칸에 앉는다. 최근접 순위로 뽑아
+        **실제로 온 결과 하나**를 돌려준다 — 100 과 300 의 p50 은 200 이
+        아니라 100 이다.
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("a" * 100, "t1"),
+            _tool_use("Bash", "t2"), _tool_result("b" * 300, "t2"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_p50"] == 100
+        assert m["tool_result_max"] == 300
+
+    def test_percentiles_split_a_wide_distribution(self, transcripts):
+        recs = []
+        for i in range(1, 11):
+            recs += [_tool_use("Bash", f"t{i}"), _tool_result("x" * (i * 100), f"t{i}")]
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", recs)
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert (m["tool_result_p50"], m["tool_result_p90"], m["tool_result_max"])             == (500, 900, 1000)
+
+    def test_single_result_collapses_the_percentiles(self, transcripts):
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("z" * 640, "t1"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_p50"] == m["tool_result_p90"] == m["tool_result_max"] == 640
+
+    def test_repeat_counts_only_the_second_and_later_arrivals(self, transcripts):
+        """같은 것을 또 끌어온 몫. 첫 등장은 반복이 아니다.
+
+        ADR-H009 가 "읽기 336회 중 80회(22%)는 이미 읽은 파일을 또 읽은
+        것"이라 적은 그 숫자를, 도구 이름이 아니라 **내용**으로 잰다.
+        """
+        same = "같은 결과" * 20   # 100자
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result(same, "t1"),
+            _tool_use("Bash", "t2"), _tool_result("다른 것" * 10, "t2"),
+            _tool_use("Bash", "t3"), _tool_result(same, "t3"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_repeat_count"] == 1
+        assert m["tool_result_repeat_chars"] == 100
+
+    def test_three_identical_results_count_two_repeats(self, transcripts):
+        same = "가" * 50
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result(same, "t1"),
+            _tool_use("Bash", "t2"), _tool_result(same, "t2"),
+            _tool_use("Bash", "t3"), _tool_result(same, "t3"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_repeat_count"] == 2
+        assert m["tool_result_repeat_chars"] == 100
+
+    def test_no_duplicates_means_zero_repeat(self, transcripts):
+        """0 과 미측정을 가른다 — 여기서는 **잰 결과가 0** 이므로 칸이 있어야 한다."""
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("가" * 40, "t1"),
+            _tool_use("Bash", "t2"), _tool_result("나" * 40, "t2"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_repeat_count"] == 0
+        assert m["tool_result_repeat_chars"] == 0
+
+    def test_empty_results_are_not_repeats_of_each_other(self, transcripts):
+        """빈 결과가 서로의 중복으로 세어지면 재수신 건수가 거짓말을 한다."""
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("", "t1"),
+            _tool_use("Bash", "t2"), _tool_result("", "t2"),
+            _tool_use("Bash", "t3"), _tool_result("", "t3"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_count"] == 3
+        assert m["tool_result_repeat_count"] == 0
+
+    def test_no_tool_results_yields_no_distribution_keys(self, transcripts):
+        """결과가 0 건이면 분포 칸을 만들지 않는다.
+
+        0 으로 채우면 "한 번도 안 끌어왔다"와 "안 쟀다"가 같은 칸에
+        들어간다 — ADR-H007 이 attempts 에서 겪은 실패다.
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [_tool_use("Bash", "t1")])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_count"] == 0
+        for key in ("tool_result_p50", "tool_result_p90", "tool_result_max",
+                    "tool_result_repeat_chars", "tool_result_repeat_count"):
+            assert key not in m
+
+    def test_sidechain_results_stay_out_of_the_distribution(self, transcripts):
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("가" * 100, "t1"),
+            _tool_result("나" * 90000, "t2", sidechain=True),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_max"] == 100
+
+    def test_broken_lines_do_not_poison_the_distribution(self, transcripts):
+        p = transcripts / "C--some-slug" / "abc.jsonl"
+        _jsonl(p, [_tool_use("Bash", "t1"), _tool_result("가" * 40, "t1")])
+        p.write_text(p.read_text(encoding="utf-8") + chr(10) + "{not json" + chr(10),
+                     encoding="utf-8")
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_max"] == 40
+        assert m["tool_result_repeat_count"] == 0
+
     def test_list_shaped_result_content_is_counted(self, transcripts):
         _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
             _tool_use("Bash", "t1"),
@@ -1888,8 +2005,51 @@ class TestBackfillReads:
         assert run["reads_source"] == "backfill"
         assert run["turns"] == 16, "기존 실측을 건드리지 않는다"
 
+    def _measured(self, phase_dir, **overrides):
+        """이미 전부 잰 항목을 만든다. 여기에 더할 것은 없어야 한다."""
+        idx = self._index(phase_dir)
+        run = idx["steps"][0]["runs"][-1]
+        run.update({k: 1 for k in bf.PULL_KEYS})
+        run.update(overrides)
+        (phase_dir / "index.json").write_text(json.dumps(idx, ensure_ascii=False),
+                                              encoding="utf-8")
+
     def test_does_not_overwrite_existing_measurement(self, tmp_path, transcripts):
         """못 잰 것이 잰 것을 지우면 안 된다 — M12·M14 가 두 번 열렸던 자리다."""
+        d = self._phase(tmp_path, runs=True)
+        self._measured(d, tool_result_chars=111, reads_source="live")
+        self._transcript(transcripts, "sid-1", 5000)
+        rows = bf.backfill(tmp_path, transcript_root=transcripts)
+        run = self._index(d)["steps"][0]["runs"][-1]
+        assert run["tool_result_chars"] == 111
+        assert run["reads_source"] == "live"
+        assert rows[0]["action"] == "kept"
+
+    def test_extends_an_entry_with_the_keys_it_is_missing(self, tmp_path, transcripts):
+        """계측이 늘 때마다 재발하는 자리다.
+
+        판정이 "PULL_KEYS 중 하나라도 있으면 건너뛴다"였을 때, 새 키를 더해도
+        41 step 이 전부 이미 5종을 갖고 있어 **한 칸도 채워지지 않았다.**
+        빈 칸만 채우는 것은 "못 잰 것이 잰 것을 지우지 않는다"를 깨지 않는다 —
+        지우는 것이 아니기 때문이다.
+        """
+        d = self._phase(tmp_path, runs=True)
+        idx = self._index(d)
+        idx["steps"][0]["runs"][-1].update(tool_result_chars=111, reads_source="backfill")
+        (d / "index.json").write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+        self._transcript(transcripts, "sid-1", 5000)
+        rows = bf.backfill(tmp_path, transcript_root=transcripts)
+        run = self._index(d)["steps"][0]["runs"][-1]
+        assert run["tool_result_chars"] == 111, "있던 값은 그대로다"
+        assert run["tool_result_max"] == 5000, "빠진 칸은 채운다"
+        assert run["tool_result_count"] == 1
+        assert rows[0]["action"] == "extended"
+
+    def test_extending_does_not_relabel_a_live_measurement(self, tmp_path, transcripts):
+        """reads_source 는 그 실측이 **언제 났는지**를 말하는 칸이다.
+
+        런 중에 잰 항목에 사후 칸을 더했다고 그것이 backfill 이 되지는 않는다.
+        """
         d = self._phase(tmp_path, runs=True)
         idx = self._index(d)
         idx["steps"][0]["runs"][-1].update(tool_result_chars=111, reads_source="live")
@@ -1897,8 +2057,17 @@ class TestBackfillReads:
         self._transcript(transcripts, "sid-1", 5000)
         rows = bf.backfill(tmp_path, transcript_root=transcripts)
         run = self._index(d)["steps"][0]["runs"][-1]
-        assert run["tool_result_chars"] == 111
         assert run["reads_source"] == "live"
+        assert run["tool_result_max"] == 5000
+        assert rows[0]["action"] == "extended"
+
+    def test_nothing_to_add_writes_nothing(self, tmp_path, transcripts):
+        d = self._phase(tmp_path, runs=True)
+        self._measured(d)
+        self._transcript(transcripts, "sid-1", 5000)
+        before = (d / "index.json").read_text(encoding="utf-8")
+        rows = bf.backfill(tmp_path, transcript_root=transcripts)
+        assert (d / "index.json").read_text(encoding="utf-8") == before
         assert rows[0]["action"] == "kept"
 
     def test_is_idempotent(self, tmp_path, transcripts):

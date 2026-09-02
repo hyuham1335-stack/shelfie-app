@@ -19,7 +19,12 @@
             "Bash": 15
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 970,
+          "tool_result_p90": 2129,
+          "tool_result_max": 5232,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ]
     },
@@ -40,7 +45,12 @@
             "Bash": 12
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 454,
+          "tool_result_p90": 2244,
+          "tool_result_max": 8026,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ]
     },
@@ -64,7 +74,12 @@
             "Write": 2
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 402,
+          "tool_result_p90": 5195,
+          "tool_result_max": 8523,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ]
     },
@@ -86,7 +101,12 @@
             "Write": 2
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 976,
+          "tool_result_p90": 6518,
+          "tool_result_max": 8408,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
         }
       ]
     },
@@ -110,7 +130,12 @@
             "Write": 2
           },
           "attempt": null,
-          "reads_source": "backfill"
+          "reads_source": "backfill",
+          "tool_result_p50": 1070,
+          "tool_result_p90": 8515,
+          "tool_result_max": 13094,
+          "tool_result_repeat_chars": 385,
+          "tool_result_repeat_count": 4
         }
       ]
     }

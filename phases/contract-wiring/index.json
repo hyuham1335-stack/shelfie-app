@@ -150,12 +150,14 @@
     {
       "step": 3,
       "name": "error-recovery",
-      "status": "pending",
+      "status": "completed",
+      "summary": "실패 단계 필드는 SessionData.failedStage: FailedStage | null 이고 값은 \"analyze\" | \"recommend\" 둘뿐이다(지금 error 로 들어오는 경로가 그 둘뿐이라 미래 값을 미리 넣지 않았다). error 변형을 WithStatus<\"error\", { errorCode: ErrorCode; failedStage: FailedStage }> 로 좁혀 타입 수준에서 비게 두지 못하게 했고, error 가 아닌 모든 분기와 EMPTY_SESSION_DATA 에서 null 로 지워 성공 화면까지 따라다니지 않게 했다(emptyShelf 는 errorCode 는 EMPTY_SHELF 지만 failedStage 는 null). 회복 전이 액션은 RECOMMEND_RETRIED(error → recommending, payload 없음 — mood 는 이미 상태에 있어 다시 묻지 않는다)와 MOOD_REENTERED(error → moodInput) 이며 둘 다 failedStage === \"recommend\" 에서만 유효하다. ANALYZE_RETRIED 는 failedStage === \"analyze\" 로 좁혔다(추천 실패에서 재분석 비용을 다시 내는 문을 닫음). RESTARTED 는 단계 무관 그대로. recommendCount 판단: RECOMMEND_RETRIED 에서 **올린다**(canRecommendAgain 으로 게이트, 소진되면 액션 무시) — 실패한 호출도 토큰이 청구되므로(step 2 의 recommend_failed 가 실패분 토큰을 남기는 이유) 올리지 않으면 장애가 이어질 때 유료 호출을 세는 카운터가 시스템 어디에도 없다. MAX_RECOMMEND_ATTEMPTS 의 취지가 \"실수로 인한 비용 누수 차단\"이고 장애 재시도 루프가 바로 그 누수라, 손해가 문구·힌트값 하나인 쪽을 택했다. MOOD_REENTERED 는 화면만 옮기고 모델을 부르지 않으므로 올리지 않는다. page.tsx: 에러 화면이 failedStage 로 CTA 를 가르고(분석=ErrorBanner 의 \"다시 시도\", 추천=\"같은 기분으로 다시 추천\" + \"기분 다시 입력\"), UNVERIFIED_BOOKS 는 무엇을 다시 보내도 통과하지 못해 회복 CTA 를 하나도 그리지 않는다(ADR-006). runRecommend 에 retryCount 인자를 열어 dispatch 비동기로 어긋나던 retryIndex 를 맞췄다. 이월 보고 ③: ErrorBanner.requestId 를 string | null 로 넓히고 null 이면 ID 줄·복사 버튼 자체를 렌더하지 않으며, page 의 UNKNOWN_REQUEST_ID(\"(없음)\") 상수를 삭제했다. 테스트: session.test.ts 71 → 101(상태도 전이 25개를 표로 옮겨 개수를 toHaveLength(25) 로 고정 + 단계별 좁히기·회복·failedStage 소거), 미정의 조합 스윕에 error(추천 실패) 상태와 새 액션 2개 추가, page.test.tsx +6(502 후 같은 mood 로 재호출·재분석 0건·retryIndex 1·기분 다시 입력·단계별 CTA 부재·requestId null), ErrorBanner.test.tsx +2. 전체 1011건 통과.",
       "docs": [
         "ARCHITECTURE",
         "ADR",
         "UI_GUIDE"
-      ]
+      ],
+      "started_at": "2026-09-02T10:12:27+0900"
     },
     {
       "step": 4,

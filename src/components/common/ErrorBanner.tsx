@@ -4,10 +4,16 @@
  * 에러 배너 (UI_GUIDE "에러 배너", API_SPEC 에러 응답 규약).
  *
  * 두 가지가 이 컴포넌트의 계약이다.
- * ① `requestId`를 반드시 화면에 노출한다. 서버 로그를 이 값으로 찾도록 설계돼 있으므로
- *    (TRD 6.4 상관관계 ID), 화면에 없으면 규칙 자체가 무의미해진다. 탭하면 복사된다.
+ * ① `requestId`가 **있으면** 반드시 화면에 노출한다. 서버 로그를 이 값으로 찾도록
+ *    설계돼 있으므로(TRD 6.4 상관관계 ID), 화면에 없으면 규칙 자체가 무의미해진다.
+ *    탭하면 복사된다.
  * ② 코드 → 정해진 문구 매핑만 쓴다. 모델이 생성한 문장이나 내부 에러 원문을 넣지 않는다
  *    (API_SPEC: 내부 정보 비노출).
+ *
+ * `requestId`가 `null`인 경우 — 네트워크가 끊겨 응답 본문 자체가 없었던 때 —
+ * 에는 **ID 줄을 그리지 않는다.** 없는 ID를 "(없음)" 같은 문자열로 지어내면
+ * 복사 버튼이 서버 로그에서 찾을 수 없는 값을 건네게 되고, 그것은 승격된 책에
+ * `photoIndex`를 `0`으로 지어내지 않는 것과 같은 종류의 위조다.
  */
 import { useState } from "react";
 import type { ErrorCode } from "@/types/api";
@@ -40,8 +46,12 @@ const FALLBACK_MESSAGE = "문제가 생겼어요. 잠시 후 다시 시도해 �
 
 export interface ErrorBannerProps {
   code: ErrorCode;
-  /** 에러 응답 본문의 `requestId`. 화면에서 지우지 않는다 */
-  requestId: string;
+  /**
+   * 에러 응답 본문의 `requestId`. 있으면 화면에서 지우지 않는다.
+   * `null`은 "응답 본문이 없었다"는 사실이며(`lib/api-client`가 그렇게 준다),
+   * 그 사실을 문자열로 덮지 않는다.
+   */
+  requestId: string | null;
   /** 재시도 경로가 있을 때만 넘긴다. SERVICE_DISABLED에서는 무시된다 */
   onRetry?: () => void;
   onReset?: () => void;
@@ -62,6 +72,7 @@ export function ErrorBanner({
     // 클립보드는 권한·비보안 컨텍스트·구형 브라우저에서 없을 수 있다.
     // 복사가 안 되는 것보다 배너가 사라지는 것이 훨씬 나쁘다 — 실패는 조용히 삼킨다.
     try {
+      if (requestId === null) return;
       const clipboard = navigator.clipboard as Clipboard | undefined;
       if (clipboard === undefined) return;
       void clipboard.writeText(requestId).then(
@@ -80,13 +91,15 @@ export function ErrorBanner({
     >
       <p className="text-sm text-ink">{MESSAGE[code] ?? FALLBACK_MESSAGE}</p>
 
-      <button
-        type="button"
-        onClick={handleCopy}
-        className="flex min-h-11 w-full items-center text-left font-mono text-[11px] text-disabled"
-      >
-        {copied ? "복사됨 — " : ""}오류 ID: {requestId}
-      </button>
+      {requestId !== null && (
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="flex min-h-11 w-full items-center text-left font-mono text-[11px] text-disabled"
+        >
+          {copied ? "복사됨 — " : ""}오류 ID: {requestId}
+        </button>
+      )}
 
       {(canRetry || onReset !== undefined) && (
         <div className="flex items-center gap-3">

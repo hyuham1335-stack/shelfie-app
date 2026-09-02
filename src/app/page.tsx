@@ -305,14 +305,18 @@ export default function Home() {
    * `MAX_RECOMMEND_ATTEMPTS`(5)가 0-based 상한 4보다 하나 크므로 마지막
    * 재추천에서 5가 된다. 둘 다 보내기 직전에 클램프한다 — 서명이 아니라
    * 스키마가 상한을 강제하는 값이므로, 넘기지 않는 책임이 호출부에 있다 (ADR-006).
+   *
+   * `retryCount`를 인자로 여는 것은 **회복 재추천 때문**이다. `dispatch`는 비동기라
+   * 이 함수가 보는 `state.recommendCount`는 아직 올라가기 전 값이고, 그대로 보내면
+   * 리듀서가 센 횟수와 요청에 실린 값이 하나 어긋난다.
    */
-  async function runRecommend(mood: string, inputMode: InputMode) {
+  async function runRecommend(mood: string, inputMode: InputMode, retryCount = state.recommendCount) {
     const result = await requestRecommendations({
       sessionId: state.sessionId,
       books: toRecommendBooks(state),
       mood,
       inputMode,
-      retryIndex: Math.min(state.recommendCount, MAX_RETRY_INDEX),
+      retryIndex: Math.min(retryCount, MAX_RETRY_INDEX),
       irrelevantStreak: Math.min(irrelevantCount, MAX_IRRELEVANT_STREAK),
     });
 
@@ -339,6 +343,23 @@ export default function Home() {
   function handleAnswersSubmit(mood: string) {
     dispatch({ type: "ANSWERS_SUBMITTED", mood });
     void runRecommend(mood, "guided");
+  }
+
+  /**
+   * error → recommending. **기분을 다시 묻지 않는다** — 직전 `mood`는 이미 상태에
+   * 있고, 외부 장애 한 번에 사용자가 문장을 다시 쓰게 만들 이유가 없다
+   * (ARCHITECTURE 상태 관리).
+   *
+   * 사진도 다시 올리지 않고 분석도 다시 하지 않는다. 이 경로가 없을 때 회복
+   * 수단이 전체 재분석뿐이었던 것이 이 배선이 메우는 구멍이다.
+   */
+  function handleRecommendRetry() {
+    if (state.status !== "error" || !canRecommendAgain(state)) return;
+
+    const { mood, inputMode } = state;
+    dispatch({ type: "RECOMMEND_RETRIED" });
+    // 리듀서가 재추천 횟수를 올리므로 요청에도 올라간 값을 싣는다.
+    void runRecommend(mood, inputMode, state.recommendCount + 1);
   }
 
   /**
@@ -398,22 +419,46 @@ export default function Home() {
   }
 
   if (state.status === "error") {
+    // 만료된 서명은 무엇을 다시 보내도 통과하지 못한다. 사진부터 다시 분석해야
+    // 하므로 회복 CTA를 하나도 그리지 않는다 (ADR-006).
+    const recoverable = state.errorCode !== "UNVERIFIED_BOOKS";
+    // 나가는 문은 실패 **단계**가 고른다. 분석 실패에서 추천을 다시 부를 수 없고,
+    // 추천 실패에서 사진을 다시 읽을 이유가 없다 (ARCHITECTURE 상태 관리).
+    const fromAnalyze = recoverable && state.failedStage === "analyze";
+    const fromRecommend = recoverable && state.failedStage === "recommend";
+    const canRetryRecommend = fromRecommend && canRecommendAgain(state);
+    const canRetryPhotos = fromAnalyze && canRetryAnalyze;
+
     return (
       <div className="mx-auto w-full max-w-md space-y-4 px-4 py-10">
         <ErrorBanner
           code={state.errorCode}
-          requestId={state.requestId ?? UNKNOWN_REQUEST_ID}
-          // 만료된 서명은 다시 시도해도 통과하지 못한다. 사진부터 다시 분석해야 한다 (ADR-006).
-          onRetry={
-            state.errorCode !== "UNVERIFIED_BOOKS" && canRetryAnalyze
-              ? () => handleRetryPhotos([])
-              : undefined
-          }
+          // 응답 본문이 없었으면 null이다. "(없음)"을 지어내 넘기지 않는다.
+          requestId={state.requestId}
+          onRetry={canRetryPhotos ? () => handleRetryPhotos([]) : undefined}
           onReset={handleRestart}
         />
-        {state.errorCode !== "UNVERIFIED_BOOKS" && !canRetryAnalyze && (
-          <Notice>잠시 후 다시 시도해 주세요</Notice>
+
+        {fromRecommend && (
+          <div className="flex items-center gap-3">
+            {canRetryRecommend && (
+              <button type="button" onClick={handleRecommendRetry} className={INLINE_SECONDARY_BUTTON}>
+                같은 기분으로 다시 추천
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => dispatch({ type: "MOOD_REENTERED" })}
+              className={TEXT_BUTTON}
+            >
+              기분 다시 입력
+            </button>
+          </div>
         )}
+
+        {/* 재추천 몫을 다 쓴 뒤에는 버튼 대신 무엇을 하면 되는지 말한다 (UI_GUIDE 안내 문구) */}
+        {fromRecommend && !canRetryRecommend && <Notice>기분을 바꿔 적어 보세요</Notice>}
+        {fromAnalyze && !canRetryPhotos && <Notice>잠시 후 다시 시도해 주세요</Notice>}
       </div>
     );
   }
@@ -577,9 +622,9 @@ const PRIMARY_BUTTON =
 const SECONDARY_BUTTON =
   "min-h-11 w-full rounded-md border border-line bg-card px-5 py-3 text-ink hover:bg-muted-surface";
 const TEXT_BUTTON = "min-h-11 text-sm text-subtle underline underline-offset-2 hover:text-ink";
-
-/** `requestId`가 없을 때 쓰는 표시. 없는 ID를 지어내지 않는다 (api-client는 null을 준다) */
-const UNKNOWN_REQUEST_ID = "(없음)";
+/** 에러 배너 옆에 나란히 서는 Secondary. 전폭이 아니라 내용 폭이다 (UI_GUIDE 버튼) */
+const INLINE_SECONDARY_BUTTON =
+  "min-h-11 rounded-md border border-line bg-card px-5 py-3 text-sm text-ink hover:bg-muted-surface";
 
 /**
  * `BookList`는 `/api/analyze` 응답 모양을 받는다. 세션 상태에서 그 모양을 되돌려 조립하되

@@ -120,11 +120,21 @@ function result(): SessionState {
   });
 }
 
+/** 분석 단계에서 실패해 들어온 error */
 function errorState(): SessionState {
   return sessionReducer(상태(분석시작), {
     type: "ANALYZE_FAILED",
     code: "UPSTREAM_UNAVAILABLE",
     requestId: "req-1",
+  });
+}
+
+/** 추천 단계에서 실패해 들어온 error. 기분과 책장을 그대로 들고 있다 */
+function recommendErrorState(): SessionState {
+  return sessionReducer(recommending(), {
+    type: "RECOMMEND_FAILED",
+    code: "UPSTREAM_UNAVAILABLE",
+    requestId: "req-5",
   });
 }
 
@@ -487,17 +497,18 @@ describe("전이 — 추천 (US-003, FR-010)", () => {
 });
 
 describe("정의되지 않은 전이 — 던지지 않고 상태를 그대로 돌려준다", () => {
-  const 모든상태: Array<[SessionStatus, () => SessionState]> = [
-    ["idle", () => createSessionState(SESSION_ID)],
-    ["analyzing", () => 상태(분석시작)],
-    ["reviewing", reviewing],
-    ["unidentifiedOnly", unidentifiedOnly],
-    ["emptyShelf", emptyShelf],
-    ["moodInput", moodInput],
-    ["guidedQuestions", guidedQuestions],
-    ["recommending", recommending],
-    ["result", result],
-    ["error", errorState],
+  const 모든상태: Array<[string, SessionStatus, () => SessionState]> = [
+    ["idle", "idle", () => createSessionState(SESSION_ID)],
+    ["analyzing", "analyzing", () => 상태(분석시작)],
+    ["reviewing", "reviewing", reviewing],
+    ["unidentifiedOnly", "unidentifiedOnly", unidentifiedOnly],
+    ["emptyShelf", "emptyShelf", emptyShelf],
+    ["moodInput", "moodInput", moodInput],
+    ["guidedQuestions", "guidedQuestions", guidedQuestions],
+    ["recommending", "recommending", recommending],
+    ["result", "result", result],
+    ["error(분석 실패)", "error", errorState],
+    ["error(추천 실패)", "error", recommendErrorState],
   ];
 
   const 모든액션: SessionAction[] = [
@@ -515,6 +526,8 @@ describe("정의되지 않은 전이 — 던지지 않고 상태를 그대로 �
     { type: "RECOMMEND_SUCCEEDED", recommendations: 추천, shortfall: false },
     { type: "RECOMMEND_FAILED", code: "TIMEOUT", requestId: null },
     { type: "RECOMMEND_AGAIN" },
+    { type: "RECOMMEND_RETRIED" },
+    { type: "MOOD_REENTERED" },
     { type: "RESTARTED" },
   ];
 
@@ -534,17 +547,24 @@ describe("정의되지 않은 전이 — 던지지 않고 상태를 그대로 �
     RECOMMEND_SUCCEEDED: ["recommending"],
     RECOMMEND_FAILED: ["recommending"],
     RECOMMEND_AGAIN: ["result"],
+    // 이 둘은 error에서만 나가지만 `failedStage`까지 봐야 유효하다. 단계별
+    // 좁히기는 아래 "실패 단계가 나가는 문을 고른다"가 따로 검사한다.
+    RECOMMEND_RETRIED: ["error"],
+    MOOD_REENTERED: ["error"],
     RESTARTED: ["emptyShelf", "unidentifiedOnly", "result", "error"],
   };
 
-  it.each(모든상태)("%s에서 상태도에 없는 액션은 같은 상태 객체를 그대로 돌려준다", (status, build) => {
+  it.each(모든상태)(
+    "%s에서 상태도에 없는 액션은 같은 상태 객체를 그대로 돌려준다",
+    (_label, status, build) => {
     for (const action of 모든액션) {
       if (허용된조합[action.type].includes(status)) continue;
 
       const before = build();
       expect(sessionReducer(before, action)).toBe(before);
     }
-  });
+    },
+  );
 
   it("알 수 없는 액션에도 던지지 않는다", () => {
     const before = reviewing();
@@ -553,6 +573,253 @@ describe("정의되지 않은 전이 — 던지지 않고 상태를 그대로 �
       before,
     );
   });
+});
+
+describe("전이 — 추천 실패에서의 회복 (ARCHITECTURE 상태 관리)", () => {
+  it("error → recommending: 직전 기분을 그대로 들고 간다 — 다시 묻지 않는다", () => {
+    const before = recommendErrorState();
+    const state = sessionReducer(before, { type: "RECOMMEND_RETRIED" });
+
+    expect(state.status).toBe("recommending");
+    expect(state.mood).toBe("번아웃인데 가볍게");
+    expect(state.inputMode).toBe("free_text");
+    // 책장이 그대로다 — 회복에 재분석이 끼지 않는다.
+    expect(state.books).toEqual(before.books);
+    expect(state.errorCode).toBeNull();
+    expect(state.failedStage).toBeNull();
+    expect(state.requestId).toBeNull();
+  });
+
+  it("error → recommending: 재추천 횟수를 올린다 — 실패한 호출도 청구된다", () => {
+    const state = sessionReducer(recommendErrorState(), { type: "RECOMMEND_RETRIED" });
+
+    expect(state.recommendCount).toBe(1);
+  });
+
+  it("재추천 상한을 소진하면 같은 기분 재시도도 막힌다 (FR-010)", () => {
+    let state = recommendErrorState();
+
+    for (let i = 0; i < MAX_RECOMMEND_ATTEMPTS; i += 1) {
+      state = sessionReducer(state, { type: "RECOMMEND_RETRIED" });
+      expect(state.status).toBe("recommending");
+      state = sessionReducer(state, {
+        type: "RECOMMEND_FAILED",
+        code: "UPSTREAM_UNAVAILABLE",
+        requestId: "req-loop",
+      });
+    }
+
+    expect(state.recommendCount).toBe(MAX_RECOMMEND_ATTEMPTS);
+    expect(canRecommendAgain(state)).toBe(false);
+    // 상한 없는 유료 호출 루프가 되지 않는다.
+    expect(sessionReducer(state, { type: "RECOMMEND_RETRIED" })).toBe(state);
+  });
+
+  it("error → moodInput: 기분을 다르게 쓰는 경로 — 횟수를 올리지 않는다", () => {
+    const state = sessionReducer(recommendErrorState(), { type: "MOOD_REENTERED" });
+
+    expect(state.status).toBe("moodInput");
+    expect(state.recommendCount).toBe(0);
+    expect(state.errorCode).toBeNull();
+    expect(state.failedStage).toBeNull();
+  });
+});
+
+describe("실패 단계가 나가는 문을 고른다 (error의 failedStage)", () => {
+  it("분석 실패는 analyze, 추천 실패는 recommend로 기록된다", () => {
+    expect(errorState().failedStage).toBe("analyze");
+    expect(recommendErrorState().failedStage).toBe("recommend");
+  });
+
+  it.each(["RECOMMEND_RETRIED", "MOOD_REENTERED"] as const)(
+    "분석 실패로 들어온 error에서 %s는 무시된다",
+    (type) => {
+      const before = errorState();
+
+      expect(sessionReducer(before, { type })).toBe(before);
+    },
+  );
+
+  it("추천 실패로 들어온 error에서 ANALYZE_RETRIED는 무시된다", () => {
+    const before = recommendErrorState();
+
+    // 추천 한 번의 장애에 분석 비용을 다시 내게 하는 문이다. 열려 있으면 안 된다.
+    expect(sessionReducer(before, { type: "ANALYZE_RETRIED", photoCount: 2 })).toBe(before);
+  });
+
+  it.each<[string, () => SessionState]>([
+    ["idle", () => createSessionState(SESSION_ID)],
+    ["analyzing", () => 상태(분석시작)],
+    ["reviewing", reviewing],
+    ["unidentifiedOnly", unidentifiedOnly],
+    ["emptyShelf", emptyShelf],
+    ["moodInput", moodInput],
+    ["guidedQuestions", guidedQuestions],
+    ["recommending", recommending],
+    ["result", result],
+  ])("error가 아닌 %s에서는 failedStage가 비어 있다", (_status, build) => {
+    expect(build().failedStage).toBeNull();
+  });
+
+  it("실패에서 회복한 뒤에도 failedStage가 따라다니지 않는다", () => {
+    const 회복 = sessionReducer(errorState(), { type: "ANALYZE_RETRIED", photoCount: 2 });
+    const 성공 = sessionReducer(회복, { type: "ANALYZE_SUCCEEDED", result: 분석응답() });
+
+    expect(성공.status).toBe("reviewing");
+    expect(성공.failedStage).toBeNull();
+  });
+
+  it("emptyShelf는 error가 아니므로 failedStage를 갖지 않는다", () => {
+    expect(emptyShelf().errorCode).toBe("EMPTY_SHELF");
+    expect(emptyShelf().failedStage).toBeNull();
+  });
+});
+
+/**
+ * 상태도와 리듀서가 갈라지는 것이 이 파일이 막는 결함의 원형이다 — 상태도에
+ * `error → recommending`이 없던 동안 리듀서에도 없었고, 그래서 추천 한 번의 장애에
+ * 전체 재분석을 요구했다. 아래 표는 ARCHITECTURE 상태도의 전이를 한 줄씩 옮긴 것이며
+ * **개수까지 고정한다.** 상태도가 늘면 이 표가 먼저 깨진다.
+ */
+describe("상태도 전수 대조 — 전이 25개", () => {
+  interface 전이 {
+    from: string;
+    to: SessionStatus;
+    action: SessionAction;
+    build: () => SessionState;
+  }
+
+  const 전이표: 전이[] = [
+    { from: "idle", to: "analyzing", build: () => createSessionState(SESSION_ID), action: 분석시작 },
+    {
+      from: "analyzing",
+      to: "reviewing",
+      build: () => 상태(분석시작),
+      action: { type: "ANALYZE_SUCCEEDED", result: 분석응답() },
+    },
+    {
+      from: "analyzing",
+      to: "unidentifiedOnly",
+      build: () => 상태(분석시작),
+      action: {
+        type: "ANALYZE_SUCCEEDED",
+        result: 분석응답({ identified: [], unidentified: [미확인책()] }),
+      },
+    },
+    {
+      from: "analyzing",
+      to: "emptyShelf",
+      build: () => 상태(분석시작),
+      action: { type: "ANALYZE_FAILED", code: "EMPTY_SHELF", requestId: null },
+    },
+    {
+      from: "analyzing",
+      to: "error",
+      build: () => 상태(분석시작),
+      action: { type: "ANALYZE_FAILED", code: "UPSTREAM_UNAVAILABLE", requestId: null },
+    },
+    { from: "emptyShelf", to: "idle", build: emptyShelf, action: { type: "RESTARTED" } },
+    {
+      from: "unidentifiedOnly",
+      to: "reviewing",
+      build: unidentifiedOnly,
+      action: { type: "BOOK_RESOLVED", rawText: "총균쇠", book: 승격된책() },
+    },
+    {
+      from: "unidentifiedOnly",
+      to: "analyzing",
+      build: unidentifiedOnly,
+      action: { type: "ANALYZE_RETRIED", photoCount: 1 },
+    },
+    { from: "unidentifiedOnly", to: "idle", build: unidentifiedOnly, action: { type: "RESTARTED" } },
+    {
+      from: "reviewing",
+      to: "reviewing",
+      build: reviewing,
+      action: { type: "BOOK_RESOLVED", rawText: "총균쇠", book: 승격된책() },
+    },
+    { from: "reviewing", to: "moodInput", build: reviewing, action: { type: "MOOD_STEP_ENTERED" } },
+    {
+      from: "moodInput",
+      to: "guidedQuestions",
+      build: moodInput,
+      action: { type: "GUIDED_MODE_ENTERED" },
+    },
+    {
+      from: "guidedQuestions",
+      to: "guidedQuestions",
+      build: guidedQuestions,
+      action: { type: "QUESTIONS_RECEIVED", questions: 질문 },
+    },
+    {
+      from: "guidedQuestions",
+      to: "moodInput",
+      build: guidedQuestions,
+      action: { type: "GUIDED_SKIPPED" },
+    },
+    {
+      from: "guidedQuestions",
+      to: "recommending",
+      build: guidedQuestions,
+      action: { type: "ANSWERS_SUBMITTED", mood: "가볍게 하루 안에" },
+    },
+    {
+      from: "moodInput",
+      to: "recommending",
+      build: moodInput,
+      action: { type: "MOOD_SUBMITTED", mood: "번아웃인데 가볍게" },
+    },
+    {
+      from: "recommending",
+      to: "result",
+      build: recommending,
+      action: { type: "RECOMMEND_SUCCEEDED", recommendations: 추천, shortfall: false },
+    },
+    {
+      from: "recommending",
+      to: "moodInput",
+      build: recommending,
+      action: { type: "RECOMMEND_FAILED", code: "IRRELEVANT_MOOD", requestId: null },
+    },
+    {
+      from: "recommending",
+      to: "error",
+      build: recommending,
+      action: { type: "RECOMMEND_FAILED", code: "UPSTREAM_UNAVAILABLE", requestId: null },
+    },
+    { from: "result", to: "moodInput", build: result, action: { type: "RECOMMEND_AGAIN" } },
+    { from: "result", to: "idle", build: result, action: { type: "RESTARTED" } },
+    {
+      from: "error(분석 실패)",
+      to: "analyzing",
+      build: errorState,
+      action: { type: "ANALYZE_RETRIED", photoCount: 2 },
+    },
+    {
+      from: "error(추천 실패)",
+      to: "recommending",
+      build: recommendErrorState,
+      action: { type: "RECOMMEND_RETRIED" },
+    },
+    {
+      from: "error(추천 실패)",
+      to: "moodInput",
+      build: recommendErrorState,
+      action: { type: "MOOD_REENTERED" },
+    },
+    { from: "error(분석 실패)", to: "idle", build: errorState, action: { type: "RESTARTED" } },
+  ];
+
+  it("리듀서가 아는 전이는 정확히 25개다 (상태도와 같은 수)", () => {
+    expect(전이표).toHaveLength(25);
+  });
+
+  it.each(전이표.map((t): [string, SessionStatus, 전이] => [t.from, t.to, t]))(
+    "%s → %s",
+    (_from, to, 전이) => {
+      expect(sessionReducer(전이.build(), 전이.action).status).toBe(to);
+    },
+  );
 });
 
 describe("셀렉터 — 요청 경계용 최소 형태", () => {

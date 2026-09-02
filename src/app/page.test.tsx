@@ -493,6 +493,105 @@ describe("세션 셸", () => {
     expect(analyzeMock).toHaveBeenLastCalledWith(expect.any(String), IMAGES);
   });
 
+  /* ---------------------------------------------------------------- *
+   * 실패 단계별 회복 (ARCHITECTURE 상태 관리, 상태도 error → recommending·moodInput)
+   * ---------------------------------------------------------------- */
+
+  /** 기분을 적고 추천 요청이 502로 실패해 에러 화면에 도달할 때까지 진행한다 */
+  async function failRecommend(mood: string) {
+    recommendMock.mockResolvedValue({
+      ok: false,
+      code: "UPSTREAM_UNAVAILABLE",
+      requestId: "req-502",
+      status: 502,
+    });
+    submitMood(mood);
+    await screen.findByText("지금 책을 확인할 수 없어요. 잠시 후 다시 시도해 주세요");
+  }
+
+  it("추천 실패 후 '같은 기분으로 다시 추천'은 같은 mood로 한 번 더 부른다 (재분석 없음)", async () => {
+    await reachMoodInput();
+    await failRecommend("번아웃이라 가볍게");
+
+    expect(recommendMock).toHaveBeenCalledTimes(1);
+    const analyzeCallsBefore = analyzeMock.mock.calls.length;
+
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+    fireEvent.click(screen.getByRole("button", { name: "같은 기분으로 다시 추천" }));
+
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    // 기분을 다시 묻지 않는다 — 직전 mood가 그대로 재전송된다.
+    expect(recommendMock).toHaveBeenCalledTimes(2);
+    expect(lastRecommendCall()).toMatchObject({ mood: "번아웃이라 가볍게" });
+    // 사진 재업로드도 재분석도 없다. 이 경로가 없을 때의 회복은 전체 재분석뿐이었다.
+    expect(analyzeMock.mock.calls.length).toBe(analyzeCallsBefore);
+  });
+
+  it("회복 재추천은 재추천 횟수를 올려 요청의 retryIndex에 반영한다", async () => {
+    await reachMoodInput();
+    await failRecommend("번아웃이라 가볍게");
+    expect(lastRecommendCall().retryIndex).toBe(0);
+
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+    fireEvent.click(screen.getByRole("button", { name: "같은 기분으로 다시 추천" }));
+
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    // 실패한 호출도 토큰은 청구된다. 리듀서가 센 값과 요청에 실린 값이 같아야 한다.
+    expect(lastRecommendCall().retryIndex).toBe(1);
+  });
+
+  it("추천 실패에서 '기분 다시 입력'은 입력 화면으로 되돌리고 호출하지 않는다", async () => {
+    await reachMoodInput();
+    await failRecommend("번아웃이라 가볍게");
+
+    fireEvent.click(screen.getByRole("button", { name: "기분 다시 입력" }));
+
+    await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+    expect(recommendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("추천 실패 화면에는 사진 재시도 CTA가 없다 — 분석 비용을 다시 내지 않는다", async () => {
+    await reachMoodInput();
+    await failRecommend("번아웃이라 가볍게");
+
+    expect(screen.queryByRole("button", { name: "다시 시도" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "같은 기분으로 다시 추천" })).toBeInTheDocument();
+  });
+
+  it("분석 실패 화면에는 추천 회복 CTA가 없다", async () => {
+    analyzeMock.mockResolvedValue({
+      ok: false,
+      code: "TIMEOUT",
+      requestId: "req-timeout",
+      status: 504,
+    });
+    render(<Home />);
+
+    fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+    await screen.findByText("시간이 오래 걸려 중단됐어요. 사진 장수를 줄여 다시 시도해 주세요");
+
+    expect(screen.queryByRole("button", { name: "같은 기분으로 다시 추천" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "기분 다시 입력" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다시 시도" })).toBeInTheDocument();
+  });
+
+  it("requestId가 없는 실패에서 '(없음)'을 지어내지 않는다 (회귀 — 삭제하지 마라)", async () => {
+    // 네트워크가 끊기면 api-client가 requestId: null을 준다.
+    analyzeMock.mockResolvedValue({
+      ok: false,
+      code: "INTERNAL_ERROR",
+      requestId: null,
+      status: 500,
+    });
+    render(<Home />);
+
+    fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+
+    const banner = await screen.findByRole("alert");
+    expect(banner.textContent).not.toContain("오류 ID");
+    expect(banner.textContent).not.toContain("없음");
+  });
+
   it("문답 생성이 빈 배열이면 자유 입력으로 폴백한다", async () => {
     await reachMoodInput();
     const empty: MoodQuestionsResponse = { questions: [] };

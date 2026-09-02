@@ -28,6 +28,27 @@ describe("ErrorBanner", () => {
     expect(screen.queryByText(/req-abc-123/)).not.toBeNull();
   });
 
+  it("requestId가 null이면 ID 줄 자체를 그리지 않는다 — '(없음)'을 지어내지 않는다", () => {
+    render(<ErrorBanner code="UPSTREAM_UNAVAILABLE" requestId={null} />);
+
+    const banner = screen.getByRole("alert");
+    expect(screen.queryByRole("button", { name: /오류 ID/ })).toBeNull();
+    expect(banner.textContent).not.toContain("오류 ID");
+    // 없는 ID를 문자열로 덮으면 복사 버튼이 로그에서 찾을 수 없는 값을 건넨다.
+    expect(banner.textContent).not.toContain("없음");
+    // 배너 본문은 그대로 남는다.
+    expect(banner.textContent).toContain("지금 책을 확인할 수 없어요");
+  });
+
+  it("requestId가 null이어도 재시도·처음으로는 그대로 동작한다", () => {
+    const onRetry = vi.fn();
+    render(<ErrorBanner code="TIMEOUT" requestId={null} onRetry={onRetry} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
   it("에러 코드에 대응하는 정해진 문구를 보여준다", () => {
     render(<ErrorBanner code="TIMEOUT" requestId="req-1" />);
 

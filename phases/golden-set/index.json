@@ -212,7 +212,49 @@
         "src/lib/golden-score.ts",
         "src/lib/golden-report.ts"
       ],
-      "started_at": "2026-09-02T15:43:07+0900"
+      "started_at": "2026-09-02T15:43:07+0900",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 633,
+          "at": "2026-09-02T15:53:40+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "PRD",
+            "TRD"
+          ],
+          "guardrail_chars": 94753,
+          "source_chars": 53998,
+          "context_chars": 3239,
+          "prompt_chars": 159180,
+          "preamble_chars": 152800,
+          "step_body_chars": 6380,
+          "cost_usd": 4.8536,
+          "turns": 22,
+          "cache_read": 3847272,
+          "cache_write": 192387,
+          "output_tokens": 35724,
+          "session_id": "01462d08-f1c4-40ba-aad8-73fc341e38ce",
+          "tool_result_chars": 35499,
+          "tool_result_count": 21,
+          "tool_output_chars": 50541,
+          "tool_calls": {
+            "Bash": 18,
+            "Edit": 2,
+            "Write": 1
+          },
+          "tool_result_p50": 835,
+          "tool_result_p90": 3123,
+          "tool_result_max": 11427,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T15:53:40+0900",
+      "attempts": 1
     }
   ],
   "created_at": "2026-09-02T15:24:53+0900"

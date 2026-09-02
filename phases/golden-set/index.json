@@ -97,7 +97,46 @@
         "src/types/book.ts"
       ],
       "started_at": "2026-09-02T15:29:10+0900",
-      "summary": "lib/golden-score.ts 신설 — 순수 판정 층(fs·services·process.env 모름). 내보내는 타입 GoldenMatch{expected,matched:ExtractedCandidate|null,similarity} · GoldenPhotoScore{file,matches,misidentified:IdentifiedBook[],expectedCount,matchedCount,recall} · GoldenSetScore{photos,expectedCount,matchedCount,recall,misidentifiedCount,passed}, 함수 scorePhoto(photo:GoldenPhoto, candidates:readonly ExtractedCandidate[], identified:readonly IdentifiedBook[]):GoldenPhotoScore 와 aggregateScores(photos:readonly GoldenPhotoScore[]):GoldenSetScore. 짝짓기는 match.ts의 titleSimilarity·MATCH_THRESHOLD를 재사용한 유사도 내림차순 1:1 그리디이고, 동점은 저자 일치(normalizeAuthor 겹침) → 기대 인덱스 → 후보 인덱스 순으로 결정적으로 깬다. 오확인은 기대 항목의 isbn13이 있으면 ISBN 일치가 제목 유사도를 이기고, ISBN 없는 기대 항목만 제목으로 판정한다. 세트 재현율은 사진별 평균이 아니라 전체 기대 대비 전체 매칭이며 분모 0이면 1(공허참), passed = recall >= GOLDEN_MIN_RECALL && misidentifiedCount <= GOLDEN_MAX_MISIDENTIFIED (env.ts 상수). 골든 세트 자체를 판정하는 skip 사유는 여기 없다 — step 2·3의 몫이다. AC 5종 전부 통과(테스트 1231건)."
+      "summary": "lib/golden-score.ts 신설 — 순수 판정 층(fs·services·process.env 모름). 내보내는 타입 GoldenMatch{expected,matched:ExtractedCandidate|null,similarity} · GoldenPhotoScore{file,matches,misidentified:IdentifiedBook[],expectedCount,matchedCount,recall} · GoldenSetScore{photos,expectedCount,matchedCount,recall,misidentifiedCount,passed}, 함수 scorePhoto(photo:GoldenPhoto, candidates:readonly ExtractedCandidate[], identified:readonly IdentifiedBook[]):GoldenPhotoScore 와 aggregateScores(photos:readonly GoldenPhotoScore[]):GoldenSetScore. 짝짓기는 match.ts의 titleSimilarity·MATCH_THRESHOLD를 재사용한 유사도 내림차순 1:1 그리디이고, 동점은 저자 일치(normalizeAuthor 겹침) → 기대 인덱스 → 후보 인덱스 순으로 결정적으로 깬다. 오확인은 기대 항목의 isbn13이 있으면 ISBN 일치가 제목 유사도를 이기고, ISBN 없는 기대 항목만 제목으로 판정한다. 세트 재현율은 사진별 평균이 아니라 전체 기대 대비 전체 매칭이며 분모 0이면 1(공허참), passed = recall >= GOLDEN_MIN_RECALL && misidentifiedCount <= GOLDEN_MAX_MISIDENTIFIED (env.ts 상수). 골든 세트 자체를 판정하는 skip 사유는 여기 없다 — step 2·3의 몫이다. AC 5종 전부 통과(테스트 1231건).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 322,
+          "at": "2026-09-02T15:34:33+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "TRD"
+          ],
+          "guardrail_chars": 73544,
+          "source_chars": 22046,
+          "context_chars": 724,
+          "prompt_chars": 102103,
+          "preamble_chars": 97124,
+          "step_body_chars": 4979,
+          "cost_usd": 2.4171,
+          "turns": 12,
+          "cache_read": 1417390,
+          "cache_write": 120603,
+          "output_tokens": 17061,
+          "session_id": "99a494a5-46d1-4e28-8b1a-a6b78e474be0",
+          "tool_result_chars": 15302,
+          "tool_result_count": 11,
+          "tool_output_chars": 15309,
+          "tool_calls": {
+            "Bash": 11
+          },
+          "tool_result_p50": 286,
+          "tool_result_p90": 3829,
+          "tool_result_max": 8990,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T15:34:33+0900",
+      "attempts": 1
     },
     {
       "step": 2,

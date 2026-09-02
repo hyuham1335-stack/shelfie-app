@@ -281,7 +281,7 @@ CRITICAL: 모든 API 로직은 `app/api/` 라우트 핸들러에서만 처리한
 ```json
 {
   "sessionId": "string — UUID v4",
-  "event": "string — recommend_viewed | recommend_accepted | book_resolved",
+  "event": "string — recommend_accepted | book_resolved",
   "properties": { "position": 1 }
 }
 ```
@@ -291,7 +291,7 @@ CRITICAL: 모든 API 로직은 `app/api/` 라우트 핸들러에서만 처리한
 { "accepted": true }
 ```
 
-- 허용 이벤트는 **`recommend_viewed`·`recommend_accepted`·`book_resolved` 3종뿐**이다. 나머지 이벤트는 서버가 직접 관측할 수 있으므로 이 경로로 받지 않는다. 목록 밖 이름은 400이다.
+- 허용 이벤트는 **`recommend_accepted`·`book_resolved` 2종뿐**이다. 나머지 이벤트는 서버가 직접 관측할 수 있으므로 이 경로로 받지 않는다. 목록 밖 이름은 400이다. **`recommend_viewed`는 이 목록에 없다** — `/api/recommend`가 응답 직전에 서버에서 남기며(PRD 7번), 여기서도 받으면 추천 수락률의 분모가 이중 계상된다. 보내는 클라이언트가 없다는 것과 받을 수 있다는 것은 다른 문제다.
 - 속성은 화이트리스트로 걸러 기록한다. 클라이언트가 보낸 임의의 키를 그대로 로그에 쓰면 PII가 흘러들어올 수 있다.
 - 본문은 8KB를 넘을 수 없다. 로그 한 줄로 남길 값에 그 이상이 필요할 이유가 없다.
 - **202로 응답하고 결과를 기다리지 않는다.** 로깅 실패가 사용자 화면에 영향을 주면 안 된다 (TR-012).

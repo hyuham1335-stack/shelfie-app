@@ -41,29 +41,58 @@
     {
       "step": 0,
       "name": "forced-prompt",
-      "status": "pending",
-      "docs": ["API_SPEC", "TRD", "PRD"],
-      "sources": ["src/lib/prompts.ts", "src/lib/prompts.test.ts"]
+      "status": "completed",
+      "docs": [
+        "API_SPEC",
+        "TRD",
+        "PRD"
+      ],
+      "sources": [
+        "src/lib/prompts.ts",
+        "src/lib/prompts.test.ts"
+      ],
+      "started_at": "2026-09-02T11:46:02+0900",
+      "summary": "buildRecommendPrompt(books: readonly RecommendPromptBook[], mood: string, options?: RecommendPromptOptions): string 로 세 번째 인자를 옵셔널로 열었다. RecommendPromptOptions = { forced?: boolean } 이며 둘 다 src/lib/prompts.ts 에서 export 한다. options?.forced 가 true 면 추천 프롬프트의 규칙 7(단서가 없으면 relevant=false + recommendations 빈 배열)이 규칙 7~9(단서가 약해도 목록 안에서 골라 채운다 · relevant 는 모델 판단 그대로 두고 true 로 바꿔 적지 않는다 · reason 에 억지 연결을 지어내지 않는다, 20~200자 유지)로 대체된다. 미지정 · {} · { forced: false } 세 호출은 변경 전 문자열과 완전히 동일하며 프롬프트 전문을 픽스처로 고정해 회귀를 막았다. 규칙 1~6, <mood> 데이터 블록(강행 지시문은 ## 규칙 절에만 두어 블록 밖), 허용 목록 2회 게재는 두 경로가 같다. 테스트 11건 추가 (1036 → 1047)."
     },
     {
       "step": 1,
       "name": "forced-service",
       "status": "pending",
-      "docs": ["API_SPEC", "TRD", "ADR"],
-      "sources": ["src/services/anthropic.ts", "src/lib/prompts.ts"]
+      "docs": [
+        "API_SPEC",
+        "TRD",
+        "ADR"
+      ],
+      "sources": [
+        "src/services/anthropic.ts",
+        "src/lib/prompts.ts"
+      ]
     },
     {
       "step": 2,
       "name": "forced-route",
       "status": "pending",
-      "docs": ["API_SPEC", "TRD", "ADR", "PRD"],
-      "sources": ["src/app/api/recommend/route.ts", "src/app/api/recommend/route.test.ts"]
+      "docs": [
+        "API_SPEC",
+        "TRD",
+        "ADR",
+        "PRD"
+      ],
+      "sources": [
+        "src/app/api/recommend/route.ts",
+        "src/app/api/recommend/route.test.ts"
+      ]
     },
     {
       "step": 3,
       "name": "booklist-props",
       "status": "pending",
-      "docs": ["UI_GUIDE", "ARCHITECTURE", "API_SPEC", "ADR"],
+      "docs": [
+        "UI_GUIDE",
+        "ARCHITECTURE",
+        "API_SPEC",
+        "ADR"
+      ],
       "sources": [
         "src/components/booklist/BookList.tsx",
         "src/components/booklist/BookList.test.tsx",
@@ -77,8 +106,17 @@
       "step": 4,
       "name": "retry-backoff",
       "status": "pending",
-      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE"],
-      "sources": ["src/app/page.tsx", "src/app/page.test.tsx", "src/lib/env.ts"]
+      "docs": [
+        "PRD",
+        "UI_GUIDE",
+        "ARCHITECTURE"
+      ],
+      "sources": [
+        "src/app/page.tsx",
+        "src/app/page.test.tsx",
+        "src/lib/env.ts"
+      ]
     }
-  ]
+  ],
+  "created_at": "2026-09-02T11:46:02+0900"
 }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { STAGE_BUDGET_MS } from "@/lib/budget";
 import { MAX_CANDIDATES_PER_PHOTO, MAX_IDENTIFIED_BOOKS, MAX_RECOMMENDATIONS } from "@/lib/env";
+import { buildRecommendPrompt } from "@/lib/prompts";
 import { extractedCandidateSchema } from "@/lib/schemas";
 
 import {
@@ -1540,6 +1541,215 @@ describe("generateRecommendations — 재요청 교정 (FR-009, API_SPEC)", () =
     const prompt = JSON.stringify(bodies[0]);
     expect(prompt).not.toContain("이전 지시를 무시하고");
     expect(prompt).toContain("9788936430000");
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 강행 (US-003, API_SPEC "강행하기로 한 요청은 그 사실을 모델 호출에도 싣는다")
+ *
+ * 이 블록이 지키는 것은 넷이다. ① 강행은 **첫 호출의 옵션**이지 재호출이 아니다
+ * ② 문구는 `lib/prompts.ts`가 소유하고 이 서비스는 플래그만 나른다 ③ 교정
+ * 재요청에서도 강행이 유지된다 — 풀리면 모델이 다시 규칙 7을 보고 빈 배열을
+ * 돌려주어 강행이 조용히 무력화된다 ④ 강행이 켜져도 `relevant`는 모델 값
+ * 그대로다 (서버가 무시하는 것은 값의 효력이지 값이 아니다).
+ * ------------------------------------------------------------------ */
+
+/** 강행 규칙(규칙 7 대체)에만 있는 문구 */
+const FORCED_RULE = "단서가 약하더라도 recommendations를 비우지 않는다";
+
+/** 강행이 아닐 때의 규칙 7 문구. 강행 요청에는 남아 있으면 안 된다 */
+const NORMAL_RULE =
+  "아무 단서도 주지 않으면 relevant를 false로 두고 recommendations를 빈 배열로 둔다";
+
+const MOOD = "번아웃이라 가볍게";
+
+/** 요청 본문의 첫 텍스트 블록 = 추천 프롬프트. 교정 블록은 그 뒤에 붙는다 */
+function promptTextOf(body: CreateBody): string {
+  const messages = body.messages as { content: { type: string; text?: string }[] }[];
+  return messages[0].content.find((block) => block.type === "text")?.text ?? "";
+}
+
+describe("generateRecommendations — 강행 (US-003, API_SPEC)", () => {
+  it("forced를 주지 않으면 프롬프트가 강행 이전과 한 글자도 다르지 않다 (회귀 고정)", async () => {
+    const { client, bodies } = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+    });
+
+    // 문구의 소유자는 prompts.ts다 — 이 파일이 문자열을 조립하지 않았다는 증거이기도 하다.
+    expect(promptTextOf(bodies[0])).toBe(buildRecommendPrompt(THREE_RECOMMEND_BOOKS, MOOD));
+    expect(promptTextOf(bodies[0])).toContain(NORMAL_RULE);
+    expect(promptTextOf(bodies[0])).not.toContain(FORCED_RULE);
+  });
+
+  it("forced: false는 미지정과 요청 본문이 완전히 같다 — 기본값은 강행하지 않음이다", async () => {
+    const { client, bodies } = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+    });
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+      forced: false,
+    });
+
+    expect(bodies[1]).toEqual(bodies[0]);
+  });
+
+  it("forced: true면 강행 규칙이 실리고 규칙 7 문구는 사라진다 — 대체이지 추가가 아니다", async () => {
+    const { client, bodies } = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+      forced: true,
+    });
+
+    const prompt = promptTextOf(bodies[0]);
+    expect(prompt).toContain(FORCED_RULE);
+    expect(prompt).not.toContain(NORMAL_RULE);
+    expect(prompt).toBe(buildRecommendPrompt(THREE_RECOMMEND_BOOKS, MOOD, { forced: true }));
+  });
+
+  it("강행해도 mood는 데이터 블록 그대로다 — 강행 지시문은 <mood> 밖에 있다 (TRD 6.5)", async () => {
+    const { client, bodies } = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+      forced: true,
+    });
+
+    const prompt = promptTextOf(bodies[0]);
+    // `<mood>` 는 규칙 7 문장 안에도 등장하므로 **마지막** 등장이 데이터 블록이다.
+    const moodBlock = prompt.slice(prompt.lastIndexOf("<mood>"), prompt.indexOf("</mood>"));
+    expect(moodBlock).toContain(MOOD);
+    expect(moodBlock).not.toContain(FORCED_RULE);
+  });
+
+  it("교정 재요청에서도 강행이 유지된다 — 교정 한 번으로 강행이 풀리지 않는다", async () => {
+    const { client, bodies } = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+      forced: true,
+      correction: { violatingBookIds: ["9788936430000"] },
+    });
+
+    // 강행 규칙과 교정 블록이 함께 실린다. 둘은 독립이다.
+    expect(promptTextOf(bodies[0])).toContain(FORCED_RULE);
+    expect(promptTextOf(bodies[0])).not.toContain(NORMAL_RULE);
+    expect(JSON.stringify(bodies[0])).toContain("9788936430000");
+  });
+
+  it("교정만 있고 강행이 없으면 규칙 7이 그대로다 — correction이 강행을 켜지 않는다", async () => {
+    const { client, bodies } = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+      correction: { violatingBookIds: ["9788936430000"] },
+    });
+
+    expect(promptTextOf(bodies[0])).toContain(NORMAL_RULE);
+    expect(promptTextOf(bodies[0])).not.toContain(FORCED_RULE);
+  });
+
+  it("강행은 첫 호출의 옵션이다 — 모델 호출 횟수를 늘리지 않는다", async () => {
+    const stub = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: stub.client,
+      forced: true,
+    });
+
+    expect(stub.callCount).toBe(1);
+  });
+
+  it("forced: true여도 relevant는 모델 값 그대로다 — false를 true로 덮어쓰지 않는다", async () => {
+    const { client } = alwaysReturn(() =>
+      recommendResponse({
+        relevant: false,
+        recommendations: [
+          { bookId: THREE_RECOMMEND_BOOKS[0].isbn13, reason: REASON, position: 1 },
+        ],
+      }),
+    );
+
+    const outcome = await generateRecommendations(THREE_RECOMMEND_BOOKS, "점심 뭐 먹지", {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+      forced: true,
+    });
+
+    expect(outcome.status).toBe("ok");
+    if (outcome.status !== "ok") return;
+    // 서버가 무시하기로 한 것은 값의 효력이지 값이 아니다 (API_SPEC).
+    // 덮어쓰면 무관 판정의 오탐률을 어디서도 볼 수 없게 된다.
+    expect(outcome.relevant).toBe(false);
+    expect(outcome.picks).toHaveLength(1);
+  });
+
+  it("forced: true여도 relevant가 true면 true 그대로다", async () => {
+    const { client } = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    const outcome = await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: client,
+      forced: true,
+    });
+
+    expect(outcome.status).toBe("ok");
+    if (outcome.status !== "ok") return;
+    expect(outcome.relevant).toBe(true);
+  });
+
+  it("forced: true여도 데드라인이 0이면 호출 없이 timeout이다 — 강행이 예산을 이기지 않는다", async () => {
+    const stub = alwaysReturn(() => picksFor(THREE_RECOMMEND_BOOKS));
+
+    const outcome = await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: 0,
+      clientImpl: stub.client,
+      forced: true,
+    });
+
+    expect(stub.callCount).toBe(0);
+    expect(outcome).toEqual({ status: "failed", reason: "timeout" });
+    expect(Object.keys(outcome)).not.toContain("usage");
+  });
+
+  it("forced: true여도 타임아웃은 timeout이고 usage 키가 없다 (ADR-005 사유 보존)", async () => {
+    const stub = alwaysThrow(() => new APIConnectionTimeoutError({ message: "timed out" }));
+
+    const outcome = await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: stub.client,
+      sleepImpl: noSleep,
+      forced: true,
+    });
+
+    expect(outcome).toEqual({ status: "failed", reason: "timeout" });
+    expect(Object.keys(outcome)).not.toContain("usage");
+  });
+
+  it("forced: true여도 5xx 두 번이면 upstream이고 호출은 2회에서 멈춘다", async () => {
+    const stub = alwaysThrow(() => apiError(503, "overloaded"));
+
+    const outcome = await generateRecommendations(THREE_RECOMMEND_BOOKS, MOOD, {
+      deadlineMs: RECOMMEND_DEADLINE_MS,
+      clientImpl: stub.client,
+      sleepImpl: noSleep,
+      forced: true,
+    });
+
+    expect(outcome).toEqual({ status: "failed", reason: "upstream" });
+    expect(stub.callCount).toBe(2);
   });
 });
 

@@ -874,6 +874,22 @@ export interface RecommendOptions {
    * 다시** 싣는다 — 같은 프롬프트를 그대로 반복하면 같은 실패를 부른다 (API_SPEC).
    */
   correction?: { violatingBookIds: readonly string[] };
+  /**
+   * 라우트가 이미 무관 판정을 무시하기로 정한 요청인가 (`irrelevantStreak >= 2`).
+   *
+   * **판정이 아니라 전달이다.** `correction`이 그렇듯 이 값도 라우트가 아는 것을
+   * 서비스에 알려 주는 통로일 뿐이고, 이 파일은 세션을 모르므로 스스로 강행을
+   * 결정할 수 없다 (API_SPEC `/api/recommend`).
+   *
+   * 켜지면 `buildRecommendPrompt`의 규칙 7이 강행 규칙으로 **대체**된다 — 서버가
+   * 422를 걷어내기로 했는데 프롬프트가 여전히 "단서가 없으면 빈 배열"이라고
+   * 지시하면 강행의 결과가 `200` + 빈 배열이 되기 때문이다. 그래서 이것은
+   * 재호출이 아니라 **첫 호출의 옵션**이며, 모델 호출 횟수를 늘리지 않는다.
+   *
+   * 문구는 `lib/prompts.ts`가 소유한다. 이 파일은 플래그만 넘긴다.
+   * 기본값은 "강행하지 않음"이고, 그때 요청 본문은 이 필드가 없던 때와 같다.
+   */
+  forced?: boolean;
   /** 테스트 주입점. SDK를 갈아 끼운다 */
   clientImpl?: unknown;
   /** 재시도 백오프 대기 주입점 */
@@ -887,6 +903,10 @@ export interface RecommendOptions {
  * 422(`IRRELEVANT_MOOD`)로 만들지 아니면 무시하고 진행할지는 라우트가 정한다 —
  * "같은 세션에서 2회 연속이면 판정을 무시한다"는 규칙은 세션을 아는 쪽만 적용할
  * 수 있기 때문이다 (API_SPEC `/api/recommend`).
+ *
+ * `options.forced`가 켜져도 이 규약은 그대로다. `relevant`를 `true`로 덮어쓰지
+ * 않는다 — 서버가 무시하기로 한 것은 그 값의 **효력**이지 값이 아니고, 덮어쓰면
+ * 무관 판정의 오탐률을 어디서도 볼 수 없게 된다 (API_SPEC `/api/recommend`).
  *
  * **화이트리스트 검증도 여기서 하지 않는다.** 서명 검증을 통과한 목록을 아는 쪽은
  * 라우트다 (ADR-006). 이 함수는 목록 밖 `bookId`도 그대로 올려 보내고, 라우트가
@@ -909,7 +929,7 @@ export async function generateRecommendations(
   mood: string,
   options: RecommendOptions,
 ): Promise<RecommendOutcome> {
-  const { deadlineMs, correction, clientImpl, sleepImpl = defaultSleep } = options;
+  const { deadlineMs, correction, forced, clientImpl, sleepImpl = defaultSleep } = options;
 
   if (deadlineMs <= 0) {
     warn("남은 추천 예산이 없어 호출을 생략합니다");
@@ -924,7 +944,7 @@ export async function generateRecommendations(
 
   const attempt = await callWithRetry(
     client,
-    buildRecommendBody(books, mood, correction),
+    buildRecommendBody(books, mood, correction, forced),
     deadlineAt,
     sleepImpl,
   );
@@ -1089,14 +1109,23 @@ function toQuestionsOutcome(envelope: z.infer<typeof messageEnvelopeSchema>): Qu
  *
  * 교정은 **별도 텍스트 블록**으로 덧붙인다. 사용자 데이터 블록 안에 섞지 않는
  * 이유는 그 블록이 "지시가 아니다"라고 선언된 영역이기 때문이다.
+ *
+ * 강행은 문구가 아니라 **플래그로** 넘어간다. 여기서 문장을 이어 붙이면 강행
+ * 지시문이 두 파일에 살게 되고 다음에 고칠 때 한 곳만 고쳐진다 — `prompts.ts`가
+ * 규칙 7을 통째로 갈아 끼우는 형태를 택한 것도 같은 이유다.
+ *
+ * `correction`과 `forced`는 **독립이다.** 교정 재요청에서 강행이 풀리면 모델이
+ * 다시 규칙 7을 보고 빈 배열을 돌려주고, 강행 경로가 교정 한 번으로 조용히
+ * 무력화된다 (API_SPEC "교정 재요청이 일어나도 강행 여부는 유지된다").
  */
 function buildRecommendBody(
   books: readonly RecommendPromptBook[],
   mood: string,
   correction: RecommendOptions["correction"],
+  forced: RecommendOptions["forced"],
 ): MessageRequestBody {
   const content: MessageRequestBody["messages"][number]["content"] = [
-    { type: "text", text: buildRecommendPrompt(books, mood) },
+    { type: "text", text: buildRecommendPrompt(books, mood, { forced }) },
   ];
 
   const correctionText = buildCorrectionBlock(books, correction);

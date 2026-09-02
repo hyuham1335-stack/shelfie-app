@@ -215,7 +215,7 @@ describe("세션 셸", () => {
     fireEvent.click(screen.getByRole("button", { name: /데미안/ }));
 
     // 합류한 책은 `/api/books/resolve`가 발급한 proof를 갖는다 (ADR-006).
-    await screen.findByRole("heading", { name: "직접 확인한 책 1권" });
+    await screen.findByRole("heading", { name: "확인된 책 1권" });
     expect(eventMock).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "book_resolved",
@@ -235,7 +235,7 @@ describe("세션 셸", () => {
 
     await screen.findByText("고른 책을 다시 확인하지 못했어요. 아래에서 다시 골라 주세요");
     // 다른 책을 사용자가 고른 것처럼 목록에 넣지 않는다.
-    expect(screen.queryByRole("heading", { name: /직접 확인한 책/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /확인된 책/ })).not.toBeInTheDocument();
     expect(eventMock).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "book_resolved",
@@ -260,9 +260,49 @@ describe("세션 셸", () => {
     const candidate = await screen.findByRole("button", { name: /데미안/ });
     fireEvent.click(candidate);
 
-    await screen.findByRole("heading", { name: "직접 확인한 책 1권" });
+    await screen.findByRole("heading", { name: "확인된 책 1권" });
     expect(screen.queryByText("데미ㅇ")).not.toBeInTheDocument();
     expect(resolveMock).toHaveBeenCalledWith(expect.any(String), "데미안");
+  });
+
+  it("재검색으로 합류한 책은 사진에서 온 책과 한 목록에 선다 (별도 섹션 없음)", async () => {
+    await analyzeInto(
+      makeAnalyze({
+        unidentified: [{ rawText: "데미ㅇ", reason: "no_match", candidates: [] }],
+      }),
+    );
+    resolveMock.mockResolvedValue(ok({ candidates: [makeResolved()] }));
+
+    fireEvent.click(screen.getByRole("button", { name: "제목 고쳐 재검색" }));
+    fireEvent.change(screen.getByLabelText("책 제목"), { target: { value: "데미안" } });
+    fireEvent.click(screen.getByRole("button", { name: "재검색" }));
+    fireEvent.click(await screen.findByRole("button", { name: /데미안/ }));
+
+    // 사용자의 책장은 하나다. 두 출처가 한 섹션에 서고 권수는 합계다.
+    await screen.findByRole("heading", { name: "확인된 책 2권" });
+    expect(screen.queryByRole("heading", { name: /직접 확인한 책/ })).not.toBeInTheDocument();
+    expect(screen.getByText("코스모스")).toBeInTheDocument();
+    // 한 목록에 서더라도 출처는 숨기지 않는다.
+    expect(screen.getByTestId("resolved-origin").textContent).toBe("직접 확인");
+  });
+
+  it("lookup_failed의 '다시 시도'는 재분석이 아니라 그 책의 재조회를 부른다", async () => {
+    await analyzeInto(
+      makeAnalyze({
+        unidentified: [{ rawText: "코스모ㅅ 칼세이건", reason: "lookup_failed", candidates: [] }],
+      }),
+    );
+    const analyzeCallsBefore = analyzeMock.mock.calls.length;
+    resolveMock.mockResolvedValue(ok({ candidates: [makeResolved()] }));
+
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+
+    // 알라딘 조회 한 건이 실패했을 뿐이다. 읽힌 원문 그대로 같은 질의를 다시 보낸다.
+    await waitFor(() =>
+      expect(resolveMock).toHaveBeenCalledWith(expect.any(String), "코스모ㅅ 칼세이건"),
+    );
+    // 모델에 사진을 다시 태우지 않는다 — 이 배선이 이 항목이 보고된 이유였다.
+    expect(analyzeMock.mock.calls.length).toBe(analyzeCallsBefore);
   });
 
   it("추천 요청에 proof를 실어 보내고, 수락은 recommend_accepted만 보낸다 (회귀 — 삭제하지 마라)", async () => {

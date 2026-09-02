@@ -44,8 +44,12 @@ export interface UnidentifiedBookCardProps {
   onResolve?: (book: UnidentifiedBook) => void;
   /** ambiguous 후보를 바로 고르는 경로. 재검색 없이 확인된 책으로 옮긴다 */
   onSelectCandidate?: (book: UnidentifiedBook, candidate: AladinCandidate) => void;
-  /** lookup_failed 전용 재시도 경로 */
-  onRetryLookup?: () => void;
+  /**
+   * lookup_failed 전용 재시도 경로. **그 책 한 권의 재조회**다 — 알라딘 조회가
+   * 5xx·타임아웃으로 실패했을 뿐이므로 사진을 다시 읽을 이유가 없다 (ADR-005).
+   * 어느 책인지 알아야 같은 질의를 다시 보낼 수 있어 자기 `book`을 넘긴다.
+   */
+  onRetryLookup?: (book: UnidentifiedBook) => void;
 }
 
 export function UnidentifiedBookCard({
@@ -100,7 +104,11 @@ export function UnidentifiedBookCard({
       )}
 
       {showRetry && onRetryLookup !== undefined && (
-        <button type="button" onClick={onRetryLookup} className={SECONDARY_BUTTON}>
+        <button
+          type="button"
+          onClick={() => onRetryLookup(book)}
+          className={SECONDARY_BUTTON}
+        >
           다시 시도
         </button>
       )}

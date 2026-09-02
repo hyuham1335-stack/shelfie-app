@@ -190,6 +190,20 @@ describe("UnidentifiedBookCard — 행동", () => {
     expect(queryByRole("button", { name: "제목 고쳐 재검색" })).toBeNull();
   });
 
+  it("재시도 콜백에 자기 book을 넘긴다 — 재조회는 책 단위다 (ADR-005)", () => {
+    const onRetryLookup = vi.fn();
+    const book = makeBook({ reason: "lookup_failed", rawText: "코스모ㅅ 칼세이건" });
+    const { getByRole } = render(
+      <UnidentifiedBookCard book={book} onRetryLookup={onRetryLookup} />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "다시 시도" }));
+
+    // 어느 책인지 알아야 같은 질의를 다시 보낼 수 있다. 인자가 없으면 호출부가
+    // 사진 전체 재분석 말고는 할 수 있는 일이 없다.
+    expect(onRetryLookup).toHaveBeenCalledWith(book);
+  });
+
   it("ambiguous는 재검색이 아니라 후보 선택 UI를 준다", () => {
     const onSelectCandidate = vi.fn();
     const candidate = makeCandidate();

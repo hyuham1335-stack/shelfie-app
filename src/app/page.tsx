@@ -28,7 +28,6 @@
 import { useEffect, useReducer, useState } from "react";
 import { BookCover } from "@/components/booklist/BookCover";
 import { BookList } from "@/components/booklist/BookList";
-import { Badge } from "@/components/common/Badge";
 import { ErrorBanner } from "@/components/common/ErrorBanner";
 import { Notice } from "@/components/common/Notice";
 import { Skeleton } from "@/components/common/Skeleton";
@@ -52,7 +51,7 @@ import {
   toRecommendBooks,
 } from "@/lib/session";
 import type { InputMode, SessionState } from "@/lib/session";
-import type { AnalyzeResponse, ErrorCode } from "@/types/api";
+import type { ErrorCode } from "@/types/api";
 import type { AladinCandidate, ResolvedCandidate, UnidentifiedBook } from "@/types/book";
 
 /** 분석 재시도 상한 (FR-010). 재시도는 데이터를 망가뜨리지 않지만 비용은 매번 새로 든다 */
@@ -95,13 +94,9 @@ export default function Home() {
   const [irrelevantCount, setIrrelevantCount] = useState(0);
   const [panel, setPanel] = useState<ResolvePanel | null>(null);
 
+  // 추천 화면은 서지 사실만 필요하므로 출처 구분 없이 책만 편다. 확인된 책 목록
+  // 자체는 `BookList`가 `ShelfBook`으로 통째로 받아 한 목록으로 그린다.
   const books = state.books.map((entry) => entry.book);
-  const photoBooks = state.books.flatMap((entry) =>
-    entry.origin === "photo" ? [entry.book] : [],
-  );
-  const resolvedBooks = state.books.flatMap((entry) =>
-    entry.origin === "resolved" ? [entry.book] : [],
-  );
   const canRetryAnalyze = photos.length > 0 && analyzeAttempts < MAX_ANALYZE_RETRIES;
 
   // 잃을 것이 생긴 뒤에만 되묻는다. 아무것도 없는 화면에서 확인창을 띄우면
@@ -211,6 +206,17 @@ export default function Home() {
       attempt,
       errorCode: null,
     });
+  }
+
+  /**
+   * `lookup_failed` 한 권의 재조회 (ADR-005).
+   *
+   * 알라딘 조회가 5xx·타임아웃으로 **실패**했을 뿐이므로 고칠 제목이 없다. 사용자에게
+   * 입력을 요구하지 않고 읽힌 원문 그대로 같은 질의를 다시 보낸다. **사진 재분석을
+   * 부르지 않는다** — 알라딘 한 건의 실패에 모델 비용 전체를 다시 낼 이유가 없다.
+   */
+  function handleRetryLookup(book: UnidentifiedBook) {
+    void runResolve(book, book.rawText, 1);
   }
 
   /**
@@ -464,9 +470,9 @@ export default function Home() {
   }
 
   if (state.status === "reviewing" || state.status === "unidentifiedOnly") {
-    const result = toAnalyzeView(state, photoBooks);
-
     return (
+      /* `failedPhotoCount`는 상태에 없다. 라우트가 언제나 `failedPhotoIndexes.length`로
+         채우므로(`app/api/analyze/route.ts`) 여기서 같은 방식으로 되살린다. */
       <div className="mx-auto w-full max-w-md space-y-8 px-4 py-6">
         <header className="space-y-1">
           <h1 className="text-2xl font-semibold text-ink">책장을 이렇게 읽었어요</h1>
@@ -474,57 +480,18 @@ export default function Home() {
         </header>
 
         <BookList
-          result={result}
+          books={state.books}
+          unidentified={state.unidentified}
+          overflowCount={state.overflowCount}
+          unidentifiedOverflowCount={state.unidentifiedOverflowCount}
+          failedPhotoCount={state.failedPhotoIndexes.length}
+          failedPhotoIndexes={state.failedPhotoIndexes}
           photoCount={state.photoCount}
           onResolve={openResolve}
           onSelectCandidate={(book, candidate) => void handleSelectCandidate(book, candidate)}
-          onRetryLookup={() => handleRetryPhotos([])}
+          onRetryLookup={handleRetryLookup}
           onRetryPhoto={handleRetryPhotos}
         />
-
-        {/* 재검색으로 합류한 책은 사진에서 오지 않았다. `photoIndex`가 없으므로
-            확인된 책 목록(`AnalyzeResponse.identified`)에 섞지 않고 따로 세운다 —
-            없는 값을 0으로 지어내면 출처를 위조하는 것이다 (ARCHITECTURE 상태 관리). */}
-        {resolvedBooks.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="text-base font-semibold text-ink">
-              직접 확인한 책 {resolvedBooks.length}권
-            </h2>
-            <ul className="space-y-3">
-              {resolvedBooks.map((book) => (
-                <li key={book.isbn13}>
-                  <article className="flex gap-3 rounded-md border border-line bg-card p-4">
-                    <BookCover coverUrl={book.coverUrl} title={book.title} />
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <h3
-                        title={book.title}
-                        className="line-clamp-2 text-base font-medium leading-snug text-ink"
-                      >
-                        {book.title}
-                      </h3>
-                      <p title={book.author} className="line-clamp-1 text-sm text-body">
-                        {book.author}
-                      </p>
-                      <p title={book.publisher} className="line-clamp-1 text-sm text-body">
-                        {book.publisher}
-                      </p>
-                      {(book.pages !== null || book.aladinRating !== null) && (
-                        <div className="flex items-center gap-2">
-                          {book.pages !== null && (
-                            <span className="text-xs text-subtle">{book.pages}쪽</span>
-                          )}
-                          {book.aladinRating !== null && (
-                            <Badge kind="rating" rating={book.aladinRating} />
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </article>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
 
         {panel !== null && (
           <ResolvePanelView
@@ -625,29 +592,6 @@ const TEXT_BUTTON = "min-h-11 text-sm text-subtle underline underline-offset-2 h
 /** 에러 배너 옆에 나란히 서는 Secondary. 전폭이 아니라 내용 폭이다 (UI_GUIDE 버튼) */
 const INLINE_SECONDARY_BUTTON =
   "min-h-11 rounded-md border border-line bg-card px-5 py-3 text-sm text-ink hover:bg-muted-surface";
-
-/**
- * `BookList`는 `/api/analyze` 응답 모양을 받는다. 세션 상태에서 그 모양을 되돌려 조립하되
- * **재검색으로 합류한 책은 넣지 않는다** — `identified`는 `photoIndex`를 요구하고,
- * 그 책에는 사진 출처가 없다.
- *
- * `failedPhotoCount`는 상태에 없다. 라우트가 언제나 `failedPhotoIndexes.length`로
- * 채우므로(`app/api/analyze/route.ts`) 여기서 같은 방식으로 되살린다.
- */
-function toAnalyzeView(
-  state: SessionState,
-  photoBooks: AnalyzeResponse["identified"],
-): AnalyzeResponse {
-  return {
-    sessionId: state.sessionId,
-    identified: photoBooks,
-    unidentified: state.unidentified,
-    overflowCount: state.overflowCount,
-    unidentifiedOverflowCount: state.unidentifiedOverflowCount,
-    failedPhotoCount: state.failedPhotoIndexes.length,
-    failedPhotoIndexes: state.failedPhotoIndexes,
-  };
-}
 
 interface ResolvePanelViewProps {
   panel: ResolvePanel;

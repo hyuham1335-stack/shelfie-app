@@ -160,7 +160,7 @@
     {
       "step": 3,
       "name": "booklist-props",
-      "status": "pending",
+      "status": "completed",
       "docs": [
         "UI_GUIDE",
         "ARCHITECTURE",
@@ -174,7 +174,9 @@
         "src/components/booklist/UnidentifiedBookCard.test.tsx",
         "src/app/page.tsx",
         "src/types/book.ts"
-      ]
+      ],
+      "started_at": "2026-09-02T12:04:16+0900",
+      "summary": "BookListProps 에서 result: AnalyzeResponse 를 걷어내고 books: readonly ShelfBook[] · unidentified · overflowCount · unidentifiedOverflowCount · failedPhotoCount · failedPhotoIndexes · photoCount 를 개별 prop 으로 받는다 (ShelfBook 은 @/lib/session 에서 import type 으로만 가져와 런타임 값 의존 0건). 확인된 책은 한 섹션 · 한 헤더('확인된 책 {합계}권')로 서고 origin 으로 카드를 고른다 — photo 는 기존 IdentifiedBookCard, resolved 는 BookList.tsx 안의 로컬 ResolvedBookCard 다. resolved 카드는 알라딘 사실(제목·저자·출판사·쪽수·평점)만 그리고 ClaudeText 를 아예 렌더하지 않으며(빈 claudeNote 를 지어내지 않는다, ADR-002) photoIndex 도 만들지 않는다. 출처는 중립색 라벨 '직접 확인'(data-testid=resolved-origin, text-subtle — 경고색 아님)으로 드러낸다. overflowCount 안내는 사진에서 온 책의 잘림이라는 의미 그대로 두었다. page.tsx 는 '직접 확인한 책' 우회 섹션과 toAnalyzeView · photoBooks · resolvedBooks 파생을 전부 제거하고 state.books 를 그대로 넘긴다(Badge·AnalyzeResponse import 정리). onRetryLookup 은 BookList·UnidentifiedBookCard 양쪽에서 (book: UnidentifiedBook) => void 로 넓어졌고, page 의 handleRetryLookup(book) 이 runResolve(book, book.rawText, 1) 로 그 책 한 권만 재조회한다 — handleRetryPhotos 호출을 끊어 알라딘 1건 실패에 모델 재분석 비용을 내지 않는다(ADR-005). onRetryPhoto(부분 실패 배너)와 ShelfBook 타입·API 라우트·services 는 건드리지 않았다. 테스트 12건 추가 (1068 → 1080)."
     },
     {
       "step": 4,

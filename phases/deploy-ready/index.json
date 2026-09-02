@@ -36,7 +36,46 @@
         "src/components/upload/UploadScreen.tsx"
       ],
       "started_at": "2026-09-02T16:35:12+0900",
-      "summary": "세션이 리사이즈 결과 대신 원본 File[] 을 보존하도록 업로드→페이지 경계를 바꿨다. onAnalyze 시그니처는 (files: File[], dataUris: string[]) — 앞이 세션이 보존하는 원본이고 뒤는 업로드 화면이 방금 만들어 곁들인 파생값으로 **첫 요청 한 번**에만 쓰인다(첫 요청은 두 번 리사이즈하지 않는다). page.tsx 의 상태 필드는 photos: string[] → files: File[] 로 바뀌었고, 재시도 두 경로(에러 화면 '다시 시도' · 부분 실패 배너 '이 사진만 다시 시도')는 startRetry → runFromSources → prepare() 를 지나며 **원본에서 resizeToDataUri 를 다시 태운다**. checkOutputBudget 은 두 곳에서 산다 — 첫 요청은 UploadScreen.handleAnalyze 가, 재시도는 page.tsx 의 prepare() 가 검사하고 위반은 PAYLOAD_TOO_LARGE, 리사이즈 실패는 INTERNAL_ERROR 로 ANALYZE_FAILED 한다(requestId 는 null). 리사이즈가 비동기가 되면서 runIdRef 회차 번호를 도입했다 — beginRun() 은 handleAnalyze·startRetry·handleRestart 에서 올리고, 비동기 경계마다 isCurrentRun() 으로 낡은 리사이즈·응답을 버린다. 재시도 간격(FR-010 0→5→15초)은 handleRetryPhotos 한 곳에 그대로 있고, startRetry 가 setFiles(부분집합) 하므로 photoIndex 는 계속 '이번에 보낸 배열' 기준이다. lib/session.ts·lib/image.ts 는 손대지 않았다. 다음 step 참고: reviewing 상태에서 온 ANALYZE_RETRIED 는 리듀서가 처리하지 않아(unidentifiedOnly·error 만 처리) 부분 실패 재시도가 analyzing 으로 가지 못하고 그 응답이 ANALYZE_SUCCEEDED 에서 버려진다 — step 3(edge-case-matrix)의 몫으로 남긴다."
+      "summary": "세션이 리사이즈 결과 대신 원본 File[] 을 보존하도록 업로드→페이지 경계를 바꿨다. onAnalyze 시그니처는 (files: File[], dataUris: string[]) — 앞이 세션이 보존하는 원본이고 뒤는 업로드 화면이 방금 만들어 곁들인 파생값으로 **첫 요청 한 번**에만 쓰인다(첫 요청은 두 번 리사이즈하지 않는다). page.tsx 의 상태 필드는 photos: string[] → files: File[] 로 바뀌었고, 재시도 두 경로(에러 화면 '다시 시도' · 부분 실패 배너 '이 사진만 다시 시도')는 startRetry → runFromSources → prepare() 를 지나며 **원본에서 resizeToDataUri 를 다시 태운다**. checkOutputBudget 은 두 곳에서 산다 — 첫 요청은 UploadScreen.handleAnalyze 가, 재시도는 page.tsx 의 prepare() 가 검사하고 위반은 PAYLOAD_TOO_LARGE, 리사이즈 실패는 INTERNAL_ERROR 로 ANALYZE_FAILED 한다(requestId 는 null). 리사이즈가 비동기가 되면서 runIdRef 회차 번호를 도입했다 — beginRun() 은 handleAnalyze·startRetry·handleRestart 에서 올리고, 비동기 경계마다 isCurrentRun() 으로 낡은 리사이즈·응답을 버린다. 재시도 간격(FR-010 0→5→15초)은 handleRetryPhotos 한 곳에 그대로 있고, startRetry 가 setFiles(부분집합) 하므로 photoIndex 는 계속 '이번에 보낸 배열' 기준이다. lib/session.ts·lib/image.ts 는 손대지 않았다. 다음 step 참고: reviewing 상태에서 온 ANALYZE_RETRIED 는 리듀서가 처리하지 않아(unidentifiedOnly·error 만 처리) 부분 실패 재시도가 analyzing 으로 가지 못하고 그 응답이 ANALYZE_SUCCEEDED 에서 버려진다 — step 3(edge-case-matrix)의 몫으로 남긴다.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 664,
+          "at": "2026-09-02T16:46:16+0900",
+          "guardrail_docs": [
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 48771,
+          "source_chars": 38211,
+          "context_chars": 0,
+          "prompt_chars": 92801,
+          "preamble_chars": 87798,
+          "step_body_chars": 5003,
+          "cost_usd": 4.8616,
+          "turns": 30,
+          "cache_read": 4196860,
+          "cache_write": 159155,
+          "output_tokens": 44413,
+          "session_id": "157d689a-34fe-4026-b0ab-b59e66efb86f",
+          "tool_result_chars": 53481,
+          "tool_result_count": 29,
+          "tool_output_chars": 53481,
+          "tool_calls": {
+            "Bash": 29
+          },
+          "tool_result_p50": 321,
+          "tool_result_p90": 6522,
+          "tool_result_max": 11583,
+          "tool_result_repeat_chars": 14,
+          "tool_result_repeat_count": 7,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T16:46:16+0900",
+      "attempts": 1
     },
     {
       "step": 1,

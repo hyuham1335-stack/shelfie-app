@@ -1,0 +1,84 @@
+{
+  "project": "shelfie",
+  "phase": "forced-path",
+  "carried_reports": {
+    "note": "이전 런의 미해소 보고를 어느 step 이 받는지 명시한다. 배정하지 않으면 이월된다. 이번 런의 본체는 두 가지다 — 런 #6 이 올린 보고 1건(US-003 강행이 모델 호출에 닿지 않는다)을 step 0~2 가 계층별로 나눠 닫고, 런 #5 부터 두 런째 이월된 UI 부채 3건을 step 3~4 가 닫는다. 이 런은 동시에 ADR-H009(steps[].sources)의 첫 실측이다 — 대조군은 런 #6(step당 $3.45 · turn당 cache read 106,596 · step당 turn 29.6 · source_chars 0)이다.",
+    "ab_caveat": "A/B 를 해석할 때 알아야 할 것 두 가지를 설계 시점에 미리 적어 둔다. (1) 가드레일 절감폭이 런 #6 과 다르다 — 이 런은 309,383자로 전량 대비 39.3% 절감이고 런 #6 은 54.1% 였다. 계약 층 step 이 많아 API_SPEC·TRD 를 함께 요구하기 때문이다. 즉 turn당 재독의 변화는 sources 효과와 가드레일 차이가 섞인 값이다. (2) 접두부가 커진다 — sources 를 얹으면 step당 접두부가 런 #6 의 약 54,000자에서 약 108,000자로 두 배가 되고, step 2 는 가드레일 83,671 + sources 45,134 로 접두부가 약 138,000자다. 런 #5 step 5(113,377자)보다 크고 이 리포 최대다. ADR-H009 의 내기는 '읽기 turn 이 사라져 누적 대화가 접두부 증가보다 더 줄어든다'이고, 그 내기가 틀리면 이 런은 런 #6 보다 나빠진다. 나빠지는 것도 실측이므로 그때 상한과 선택 기준을 다시 본다. step 2 는 특히 경계 사례다 — route.test.ts(29,505자)를 첨부했는데 ADR-H009 의 부등식(s·k < 2×접두부)으로 보면 k<7.4 에서만 이득이다.",
+    "resolved_by_main_before_run": [
+      "강행을 모델 호출에도 싣는다는 계약을 API_SPEC 의 POST /api/recommend 절에 규정했다 — 첫 호출부터 프롬프트가 바뀐다 · 교정 재요청에도 강행이 유지된다 · 강행 중에도 relevant 값 자체는 모델이 준 그대로 응답에 싣는다(서버가 무시하기로 한 것은 값의 효력이지 값이 아니다) · 강행 지시문은 우리가 쓴 지시문 쪽에 두고 <mood> 블록 밖에 둔다(TRD 6.5)",
+      "런 #6 실측을 PILOT-LOG 에 기록하고 ROADMAP 1·3·6 절과 DECISIONS 의 ADR-H008·H009 를 갱신했다 (ADR-H008 A/B 결론 · retry_budget 첫 유도 · sources 상한이 소스가 아니라 테스트에 걸린다는 실측)",
+      "calibrate 5회차 — --select 로 M14 를 피해 돌렸다. retry_budget 이 null 에서 2 로, tests_ran_floor 가 829 에서 932 로 갱신됐다",
+      "feat-contract-wiring 을 main 에 머지했다 — 런 #3~#6 네 런이 미머지 상태로 68 커밋 앞서 있었다. 이 런은 main 에서 갈라진다"
+    ],
+    "assigned_to_steps": {
+      "0": [
+        "런 #6 보고 — 강행이 첫 모델 호출에 반영되지 않는다. 그 프롬프트 층(src/lib/prompts.ts 의 추천 규칙 7 을 강행 시 대체한다)"
+      ],
+      "1": [
+        "런 #6 보고 — 같은 건의 서비스 층(src/services/anthropic.ts 의 RecommendOptions 에 통로를 열고 buildRecommendBody 까지 나른다). 교정 재요청에서도 강행이 유지돼야 한다"
+      ],
+      "2": [
+        "런 #6 보고 — 같은 건의 라우트 층(src/app/api/recommend/route.ts 이 irrelevantStreak >= 2 를 첫 호출의 옵션으로 넘긴다). 이 step 이 US-003 의 마지막 AC 를 실환경에서 닫는다. 모델 호출 횟수를 늘리지 않는다"
+      ],
+      "3": [
+        "런 #5 보고 ① — BookList.result 가 AnalyzeResponse 라 재검색 승격분을 담지 못한다. props 를 ShelfBook[] 로 넓혀 한 목록으로 만들고 page.tsx 의 '직접 확인한 책' 우회 섹션을 걷어낸다",
+        "런 #5 보고 ② — UnidentifiedBookCard.onRetryLookup 이 책 인자를 받지 않아 전체 재분석에 배선돼 있다. (book) => void 로 넓히고 책 단위 재조회에 잇는다"
+      ],
+      "4": [
+        "런 #5 보고 ⑤ — FR-010 재시도 간격 백오프(0초 → 5초 → 15초) 미구현. 상한 3회는 이미 지켜진다"
+      ]
+    },
+    "not_assigned_this_run": [
+      "런 #5 보고 ⑦ — 재시도가 원본 File 이 아니라 리사이즈된 data URI 를 들고 있다. '재업로드를 요구하지 않는다'는 목적은 이미 충족돼 있고, EXIF·품질을 다시 고르는 것은 별개의 기능 결정이다",
+      "런 #3 보고 — 알라딘 호출 상한 260회. 메인이 TRD 에서 이미 갱신했고 코드 쪽 소비처가 없다. 이번 런은 services/aladin 을 건드리지 않는다",
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡다. step 1 이 services/anthropic.ts 를 건드리지만 SDK 버전 변경은 새 의존성 판단이라 ADR 이 먼저다 (CLAUDE.md CRITICAL). step 1 의 금지사항에 명시했다",
+      "ROADMAP 12 — 3단계 게이트의 두 번째 스택(gradle-java) 대상 리포가 이 머신에 없다. 사람이 정한다",
+      "ROADMAP 14 — 어댑터 verified:true 승격은 04-gate 가 어댑터를 소비한 뒤다",
+      "ROADMAP 18·21·22 (M11 남은 절반 · M13 재개 신호 · M14 calibrate 덮어쓰기) — scripts/** 는 main_owned_paths 다. step 에 주지 않는다. M14 는 이 런 전의 calibrate 에서 --select 로 손수 피해 갔다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "forced-prompt",
+      "status": "pending",
+      "docs": ["API_SPEC", "TRD", "PRD"],
+      "sources": ["src/lib/prompts.ts", "src/lib/prompts.test.ts"]
+    },
+    {
+      "step": 1,
+      "name": "forced-service",
+      "status": "pending",
+      "docs": ["API_SPEC", "TRD", "ADR"],
+      "sources": ["src/services/anthropic.ts", "src/lib/prompts.ts"]
+    },
+    {
+      "step": 2,
+      "name": "forced-route",
+      "status": "pending",
+      "docs": ["API_SPEC", "TRD", "ADR", "PRD"],
+      "sources": ["src/app/api/recommend/route.ts", "src/app/api/recommend/route.test.ts"]
+    },
+    {
+      "step": 3,
+      "name": "booklist-props",
+      "status": "pending",
+      "docs": ["UI_GUIDE", "ARCHITECTURE", "API_SPEC", "ADR"],
+      "sources": [
+        "src/components/booklist/BookList.tsx",
+        "src/components/booklist/BookList.test.tsx",
+        "src/components/booklist/UnidentifiedBookCard.tsx",
+        "src/components/booklist/UnidentifiedBookCard.test.tsx",
+        "src/app/page.tsx",
+        "src/types/book.ts"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "retry-backoff",
+      "status": "pending",
+      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE"],
+      "sources": ["src/app/page.tsx", "src/app/page.test.tsx", "src/lib/env.ts"]
+    }
+  ]
+}

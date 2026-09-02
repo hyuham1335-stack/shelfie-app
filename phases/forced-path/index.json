@@ -217,7 +217,30 @@
         "src/lib/env.ts"
       ],
       "started_at": "2026-09-02T12:11:47+0900",
-      "summary": "FR-010 의 분석 재시도 간격(0초 → 5초 → 15초)을 구현했다. 스케줄은 src/lib/env.ts 의 ANALYZE_RETRY_DELAYS_MS = [0, 5_000, 15_000] as const 배열 하나이고, 상한은 별도 리터럴이 아니라 MAX_ANALYZE_RETRIES = ANALYZE_RETRY_DELAYS_MS.length 로 스케줄에서 유도한다 — 둘이 갈라지면 마지막 재시도의 간격이 undefined 가 되므로 관계를 구조로 고정했고(page.tsx 안에 있던 로컬 상수 3 은 걷어냈다) env.test.ts 에 회귀 테스트 3건으로도 묶었다. page.tsx 는 재시도 회차(analyzeAttempts, 0-based)로 스케줄을 인덱싱해 handleRetryPhotos 한 곳에서만 간격을 건다 — 에러 화면의 '다시 시도'와 부분 실패 배너의 '이 사진만 다시 시도'가 둘 다 이 합류점을 지나므로 같은 간격을 따르고, 두 군데에 각각 넣어 한쪽만 고쳐지는 경로를 만들지 않았다. 간격 0(1회차)은 즉시 실행되고 '0초 남았어요'를 띄우지 않는다. 대기는 retryWaitSec(number|null) state + retryTimerRef 의 1초 setInterval 틱 카운트다(Date 의존 없음, 새 의존성 0건, localStorage·쿠키 미사용 — ADR-003). 상태 갱신 함수 안에서 분석 호출을 내지 않으려고 남은 초는 클로저 지역 변수로 깎는다. 대기 중에는 두 버튼을 감추지 않고 비활성으로 남기고(ErrorBanner.retryDisabled · BookList.retryPhotoDisabled, 둘 다 옵셔널이라 기존 호출부 무변경) '{n}초 뒤에 다시 시도할게요'를 Notice(text-subtle)로 띄운다 — 경고색도 role=\"alert\"도 쓰지 않는다. 타이머는 cancelRetryTimer 로 RESTARTED(handleRestart)·언마운트에서 정리하고, handleRetryPhotos 가 isWaitingRetry 로 재진입을 상태로도 막아 타이머가 겹치지 않는다. 상한 3회와 소진 후 화면(버튼 없음 + '잠시 후 다시 시도해 주세요')은 그대로다. 재추천(recommendCount, 상한 5회) 경로에는 간격을 넣지 않았다 — FR-010 이 간격을 붙인 것은 분석 재시도뿐이다. 테스트는 가짜 타이머로 advanceTimersByTimeAsync 를 쓰며(실시간 대기 0초), 4999ms 에 안 불리고 5000ms 에 불린다는 짝 단정으로 간격 0 회귀를 막았다. 테스트 11건 추가 (1080 → 1091)."
+      "summary": "FR-010 의 분석 재시도 간격(0초 → 5초 → 15초)을 구현했다. 스케줄은 src/lib/env.ts 의 ANALYZE_RETRY_DELAYS_MS = [0, 5_000, 15_000] as const 배열 하나이고, 상한은 별도 리터럴이 아니라 MAX_ANALYZE_RETRIES = ANALYZE_RETRY_DELAYS_MS.length 로 스케줄에서 유도한다 — 둘이 갈라지면 마지막 재시도의 간격이 undefined 가 되므로 관계를 구조로 고정했고(page.tsx 안에 있던 로컬 상수 3 은 걷어냈다) env.test.ts 에 회귀 테스트 3건으로도 묶었다. page.tsx 는 재시도 회차(analyzeAttempts, 0-based)로 스케줄을 인덱싱해 handleRetryPhotos 한 곳에서만 간격을 건다 — 에러 화면의 '다시 시도'와 부분 실패 배너의 '이 사진만 다시 시도'가 둘 다 이 합류점을 지나므로 같은 간격을 따르고, 두 군데에 각각 넣어 한쪽만 고쳐지는 경로를 만들지 않았다. 간격 0(1회차)은 즉시 실행되고 '0초 남았어요'를 띄우지 않는다. 대기는 retryWaitSec(number|null) state + retryTimerRef 의 1초 setInterval 틱 카운트다(Date 의존 없음, 새 의존성 0건, localStorage·쿠키 미사용 — ADR-003). 상태 갱신 함수 안에서 분석 호출을 내지 않으려고 남은 초는 클로저 지역 변수로 깎는다. 대기 중에는 두 버튼을 감추지 않고 비활성으로 남기고(ErrorBanner.retryDisabled · BookList.retryPhotoDisabled, 둘 다 옵셔널이라 기존 호출부 무변경) '{n}초 뒤에 다시 시도할게요'를 Notice(text-subtle)로 띄운다 — 경고색도 role=\"alert\"도 쓰지 않는다. 타이머는 cancelRetryTimer 로 RESTARTED(handleRestart)·언마운트에서 정리하고, handleRetryPhotos 가 isWaitingRetry 로 재진입을 상태로도 막아 타이머가 겹치지 않는다. 상한 3회와 소진 후 화면(버튼 없음 + '잠시 후 다시 시도해 주세요')은 그대로다. 재추천(recommendCount, 상한 5회) 경로에는 간격을 넣지 않았다 — FR-010 이 간격을 붙인 것은 분석 재시도뿐이다. 테스트는 가짜 타이머로 advanceTimersByTimeAsync 를 쓰며(실시간 대기 0초), 4999ms 에 안 불리고 5000ms 에 불린다는 짝 단정으로 간격 0 회귀를 막았다. 테스트 11건 추가 (1080 → 1091).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 458,
+          "at": "2026-09-02T12:19:26+0900",
+          "guardrail_docs": [
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 41323,
+          "source_chars": 55668,
+          "prompt_chars": 105553,
+          "cost_usd": 3.7756,
+          "turns": 27,
+          "cache_read": 3201534,
+          "cache_write": 140837,
+          "output_tokens": 28072
+        }
+      ],
+      "completed_at": "2026-09-02T12:19:26+0900",
+      "attempts": 1
     }
   ],
   "created_at": "2026-09-02T11:46:02+0900"

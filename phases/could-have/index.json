@@ -135,7 +135,34 @@
         "src/components/booklist/BookCover.tsx"
       ],
       "started_at": "2026-09-02T13:42:02+0900",
-      "summary": "src/lib/share-image.ts 에 그리기 층을 덧붙였다(레이아웃 층은 한 줄도 고치지 않았다). 최종 시그니처는 `renderShareImage(books: readonly ShareImageBook[], options?: RenderShareImageOptions): Promise<Blob>` 이고 `RenderShareImageOptions{ createCanvas?: () => HTMLCanvasElement; loadImage?: (src: string) => Promise<CanvasImageSource | null> }` 두 개가 유일한 주입 지점이다 — createCanvas 기본값은 document.createElement(\"canvas\"), loadImage 기본값은 새 Image 에 crossOrigin=\"anonymous\" 를 먼저 세우고 src 를 지정하는 offscreen 로더(화면의 <img> 를 재사용하지 않는다, BookCover.tsx 무수정). 순서는 canvas 생성 → getContext(\"2d\")(null 이면 Error(\"캔버스 2d 컨텍스트를 얻지 못했습니다\") 로 reject) → measure=(text,font)=>{ctx.font=font; return ctx.measureText(text).width} 를 넘겨 buildShareImageLayout 호출 → canvas.width/height 를 layout 값으로 설정 → 표지 URL 을 Set 으로 중복 제거해 Promise.all 로 **함께** 로드(실패는 개별로 삼킨다, 빈 src 는 요청조차 만들지 않는다) → 명령을 순서대로 적용(rect=fillStyle+fillRect, text=font+fillStyle+fillText, cover=drawImage) → toBlob(cb,\"image/png\"). **표지 실패 시 동작**: reject·null·빈 URL 어느 쪽이든 그 책만 cover 명령에 미리 실려 온 fallback(무채 블록 + 제목 첫 글자)을 그대로 실행하고 저장은 그대로 성공한다 — 3장 중 1장 실패해도 나머지 2장은 drawImage 로 그려진다. toBlob 이 null 이면 Error 로 reject(절반 그려진 캔버스를 성공으로 돌려주지 않는다). Blob 은 값으로만 반환하고 서버 전송·저장 경로가 없다(다운로드 배선은 step 3). 좌표·크기 판단 0건(모두 레이아웃 층), 새 의존성 0건, lib→services import 0건. 테스트는 src/lib/share-image.render.test.ts 13건 신설(가짜 canvas·ctx·loadImage 주입, 명령 전량·순서 일치를 기대 명령 목록과 toEqual 로 단정), 전체 1146건 통과."
+      "summary": "src/lib/share-image.ts 에 그리기 층을 덧붙였다(레이아웃 층은 한 줄도 고치지 않았다). 최종 시그니처는 `renderShareImage(books: readonly ShareImageBook[], options?: RenderShareImageOptions): Promise<Blob>` 이고 `RenderShareImageOptions{ createCanvas?: () => HTMLCanvasElement; loadImage?: (src: string) => Promise<CanvasImageSource | null> }` 두 개가 유일한 주입 지점이다 — createCanvas 기본값은 document.createElement(\"canvas\"), loadImage 기본값은 새 Image 에 crossOrigin=\"anonymous\" 를 먼저 세우고 src 를 지정하는 offscreen 로더(화면의 <img> 를 재사용하지 않는다, BookCover.tsx 무수정). 순서는 canvas 생성 → getContext(\"2d\")(null 이면 Error(\"캔버스 2d 컨텍스트를 얻지 못했습니다\") 로 reject) → measure=(text,font)=>{ctx.font=font; return ctx.measureText(text).width} 를 넘겨 buildShareImageLayout 호출 → canvas.width/height 를 layout 값으로 설정 → 표지 URL 을 Set 으로 중복 제거해 Promise.all 로 **함께** 로드(실패는 개별로 삼킨다, 빈 src 는 요청조차 만들지 않는다) → 명령을 순서대로 적용(rect=fillStyle+fillRect, text=font+fillStyle+fillText, cover=drawImage) → toBlob(cb,\"image/png\"). **표지 실패 시 동작**: reject·null·빈 URL 어느 쪽이든 그 책만 cover 명령에 미리 실려 온 fallback(무채 블록 + 제목 첫 글자)을 그대로 실행하고 저장은 그대로 성공한다 — 3장 중 1장 실패해도 나머지 2장은 drawImage 로 그려진다. toBlob 이 null 이면 Error 로 reject(절반 그려진 캔버스를 성공으로 돌려주지 않는다). Blob 은 값으로만 반환하고 서버 전송·저장 경로가 없다(다운로드 배선은 step 3). 좌표·크기 판단 0건(모두 레이아웃 층), 새 의존성 0건, lib→services import 0건. 테스트는 src/lib/share-image.render.test.ts 13건 신설(가짜 canvas·ctx·loadImage 주입, 명령 전량·순서 일치를 기대 명령 목록과 toEqual 로 단정), 전체 1146건 통과.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 367,
+          "at": "2026-09-02T13:48:10+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 61067,
+          "source_chars": 23705,
+          "context_chars": 1856,
+          "prompt_chars": 91250,
+          "preamble_chars": 87438,
+          "step_body_chars": 3812,
+          "cost_usd": 2.4129,
+          "turns": 14,
+          "cache_read": 1459009,
+          "cache_write": 113881,
+          "output_tokens": 19136
+        }
+      ],
+      "completed_at": "2026-09-02T13:48:10+0900",
+      "attempts": 1
     },
     {
       "step": 3,

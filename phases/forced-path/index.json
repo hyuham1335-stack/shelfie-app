@@ -52,7 +52,30 @@
         "src/lib/prompts.test.ts"
       ],
       "started_at": "2026-09-02T11:46:02+0900",
-      "summary": "buildRecommendPrompt(books: readonly RecommendPromptBook[], mood: string, options?: RecommendPromptOptions): string 로 세 번째 인자를 옵셔널로 열었다. RecommendPromptOptions = { forced?: boolean } 이며 둘 다 src/lib/prompts.ts 에서 export 한다. options?.forced 가 true 면 추천 프롬프트의 규칙 7(단서가 없으면 relevant=false + recommendations 빈 배열)이 규칙 7~9(단서가 약해도 목록 안에서 골라 채운다 · relevant 는 모델 판단 그대로 두고 true 로 바꿔 적지 않는다 · reason 에 억지 연결을 지어내지 않는다, 20~200자 유지)로 대체된다. 미지정 · {} · { forced: false } 세 호출은 변경 전 문자열과 완전히 동일하며 프롬프트 전문을 픽스처로 고정해 회귀를 막았다. 규칙 1~6, <mood> 데이터 블록(강행 지시문은 ## 규칙 절에만 두어 블록 밖), 허용 목록 2회 게재는 두 경로가 같다. 테스트 11건 추가 (1036 → 1047)."
+      "summary": "buildRecommendPrompt(books: readonly RecommendPromptBook[], mood: string, options?: RecommendPromptOptions): string 로 세 번째 인자를 옵셔널로 열었다. RecommendPromptOptions = { forced?: boolean } 이며 둘 다 src/lib/prompts.ts 에서 export 한다. options?.forced 가 true 면 추천 프롬프트의 규칙 7(단서가 없으면 relevant=false + recommendations 빈 배열)이 규칙 7~9(단서가 약해도 목록 안에서 골라 채운다 · relevant 는 모델 판단 그대로 두고 true 로 바꿔 적지 않는다 · reason 에 억지 연결을 지어내지 않는다, 20~200자 유지)로 대체된다. 미지정 · {} · { forced: false } 세 호출은 변경 전 문자열과 완전히 동일하며 프롬프트 전문을 픽스처로 고정해 회귀를 막았다. 규칙 1~6, <mood> 데이터 블록(강행 지시문은 ## 규칙 절에만 두어 블록 밖), 허용 목록 2회 게재는 두 경로가 같다. 테스트 11건 추가 (1036 → 1047).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 400,
+          "at": "2026-09-02T11:52:43+0900",
+          "guardrail_docs": [
+            "API_SPEC",
+            "PRD",
+            "TRD"
+          ],
+          "guardrail_chars": 74865,
+          "source_chars": 25363,
+          "prompt_chars": 105708,
+          "cost_usd": 3.2187,
+          "turns": 25,
+          "cache_read": 2920839,
+          "cache_write": 126775,
+          "output_tokens": 16577
+        }
+      ],
+      "completed_at": "2026-09-02T11:52:43+0900",
+      "attempts": 1
     },
     {
       "step": 1,

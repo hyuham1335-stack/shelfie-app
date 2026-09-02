@@ -285,4 +285,49 @@
 
 ---
 
+### ADR-H013: 파이프라인 레이아웃을 이 리포에 맞춰 재조정하고, 3단계 G3 게이트를 재정의한다
+
+**결정**: 두 가지를 한 결정으로 묶는다. 둘 다 8페이즈 명세를 이식하면서 **정본 설계와 이 리포의 실물이 어긋난 지점**이고, 따로 정하면 서로 모순되기 때문이다.
+
+**결정 1 — 레이아웃 재조정.** 정본이 그린 `.agents/skills/feature-pipeline/**` 배치를 쓰지 않는다. 이 리포의 자리는 이렇다:
+
+| 정본 | 이 리포 |
+|---|---|
+| `.agents/skills/feature-pipeline/{execute,state,attribution,adapters,ledger}.py` | `scripts/pipeline/{cli,state,attribution,adapters,ledger}.py` |
+| `.agents/skills/feature-pipeline/phases/01~08.md` | `harness/phases/01~08.md` |
+| `.agents/skills/feature-pipeline/templates/contract.md` | `harness/templates/contract.md` (이미 있다) |
+| `profiles/{stack}/` | `harness/profiles/{stack}/` (이미 있다) |
+| `.claude/commands/feature.md` · `.claude/agents/{role}.md` | 같다 (신설) |
+| `docs/harness/pipeline/{team-spec.md, ledger/, runs/}` | 같다 |
+
+**결정 2 — G3 게이트 재정의.** 원래 게이트는 **"두 스택에서 완주 + 코어 파일에 스택 고유명사 grep 0건"**이었고, 두 번째 스택(`gradle-java`) 대상 리포가 이 머신에 없어 아홉 런 내내 열려 있었다([ROADMAP](ROADMAP.md) 6절 12번). 다섯 줄로 바꾼다:
+
+| # | 새 게이트 | 검사 방법 |
+|---|---|---|
+| 1 | 코어에 스택 고유명사 **0건** | `scripts/pipeline/**` · `harness/phases/**` · `harness/templates/**` · `docs/harness/pipeline/team-spec.md` · `.claude/commands/**` · `.claude/agents/**`에 grep. 예외는 `harness/adapters/`·`harness/profiles/`·`harness/config.schema.json`, 그리고 team-spec이 검수 목록 자체를 싣는 자리 |
+| 2 | 스택 교체가 **코어 무변경** | `_template.json`에서 두 번째 어댑터를 작성하고 `config.adapter`만 바꿔 `doctor` + `lint-phases` + `gate --replay <픽스처>` 통과 |
+| 3 | 언어 교체가 **코어 무변경** | `project.language` + `contract.sections` + 템플릿만 바꿔 `doctor` 통과 |
+| 4 | **그린필드 §P1** — 테스트 0개가 초록불이 아니다 | 빈 디렉토리에서 `04-gate`가 `PASS_WITH_GAPS`(초록불 아님)로 끝나는가 |
+| 5 | 실물 완주 | 파일럿 기능 1건을 01~04로 완주. 열 런의 순차 실행기 결과가 대조군이다 |
+
+**이유**:
+
+- **레이아웃 쪽**: 이 리포는 계약 계층을 이미 `scripts/harness.py`와 `harness/`에 지었고([ADR-H003](DECISIONS.md)), `config.main_owned_paths`가 그 경로를 이미 덮는다. 정본 배치를 따르면 소유 경계를 새로 뚫어야 하고, `doctor`가 쓰는 glob 판정이 두 트리를 걸치게 된다 — 같은 규칙이 두 곳에서 갈라지는 것이 [ROADMAP](ROADMAP.md) 6절 15번이 기록한 실패다. 정본이 새 리포를 전제했을 뿐이고, 배치는 정본이 지키려던 것(코어에 고유명사 0건)과 무관하다.
+- **게이트 쪽**: **게이트의 목적은 "두 리포를 돌리는 것"이 아니라 "코어에 스택이 박히지 않았음"을 보이는 것이다.** 대상 리포가 없다는 이유로 게이트를 아홉 런째 열어 두는 것은, 통과할 수 없는 조건을 걸어 3단계를 영구히 막는 것과 같다. 목적을 실물 없이 검사 가능한 형태로 옮긴다.
+- 5번(실물 완주)을 남기는 것이 핵심이다. 1~4번은 전부 정적 검사이고, **정적 검사만으로 통과시키면 이 리포가 열 런 내내 지킨 "검증한 것만 승격한다"가 무너진다.**
+
+**트레이드오프 — 무엇을 잃는가**:
+
+- 원래 게이트가 주던 것은 **두 번째 스택의 실물 실행**이었다. 대체안이 주는 것은 **replay 픽스처와 정적 검사**뿐이다.
+- 그래서 **어댑터의 `attribution` 정규식이 진짜 다른 스택의 출력에 맞는지는 여전히 검증되지 않는다.** 픽스처는 내가 만든 출력이고, 진짜 러너가 내는 출력이 아니다.
+- 그 대가로 **두 번째 어댑터는 `verified: false`로 남는다.** `nextjs-ts`만 5번을 통과했을 때 `true`로 올린다. 이것이 [ADR-H001](DECISIONS.md)의 규율("검증한 것만 승격한다")을 게이트를 바꾸면서도 지키는 방법이다.
+- 레이아웃 쪽의 비용: 정본과 경로가 다르므로 **정본을 읽고 온 사람이 파일을 못 찾는다.** `docs/harness/pipeline/team-spec.md` 10절에 대응표를 두어 완화한다. 다만 team-spec이 정본이 된 뒤에는 이 비용이 사라진다.
+- **`scripts/execute.py`는 남긴다.** 01~04가 기능 1건을 완주할 때까지 회귀 안전망이고, 통합·폐기 판단은 그 뒤다 — [ADR-H003](DECISIONS.md)이 "통합은 3단계에서 `execute.py`가 어차피 재작성될 때"라고 적은 자리다.
+
+**재검토 시점**: 5번을 통과한 직후. 그때 어댑터 `verified: true` 승격([ROADMAP](ROADMAP.md) 6절 14번)과 `harness-template` 추출 여부를 함께 판단한다. 두 번째 스택 리포가 생기면 1~4번을 폐기하지 않고 **그 위에 실물 완주를 더한다** — 정적 검사는 실물이 있어도 값이 있다.
+
+관련: [[ADR-H001]](단계적 승격) · [[ADR-H002]](하네스 문서 층) · [[ADR-H003]](이 리포에 짓는 이유) · [[ADR-H004]](소유 판정)
+
+---
+
 ### ADR-H00N: {다음 결정}

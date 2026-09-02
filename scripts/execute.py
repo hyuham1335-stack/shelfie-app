@@ -469,7 +469,11 @@ class StepExecutor:
         if changed is None:
             return None
         owned_globs = self._role_owned_globs()
-        meta_globs = [f"phases/{self._phase_dir_name}/**"]
+        # 실행기가 **쓰는** 것이 실행기가 커밋할 것이다. 이 phase 의 상태 파일과
+        # 상위 인덱스(`_update_top_index` 가 phase 의 status·completed_at 을
+        # 적는 곳) 둘 다 실행기 소유다. 상위 인덱스를 빼 두면 실행기가 자기가
+        # 고친 파일을 "소유 밖"이라고 경고하며 남긴다 — 런 #8 에서 실제로 그랬다.
+        meta_globs = [f"phases/{self._phase_dir_name}/**", "phases/index.json"]
         owned, meta, stray = [], [], []
         for path in changed:
             if glob_any(meta_globs, path):

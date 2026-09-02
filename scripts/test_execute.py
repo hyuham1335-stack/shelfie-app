@@ -465,6 +465,21 @@ class TestCommitStep:
         assert "소유 밖 변경" in out
         assert "scripts/execute.py" in out
 
+    def test_top_level_index_is_committed(self, executor):
+        """실행기가 쓰는 파일은 실행기가 커밋한다 (런 #8 에서 드러났다).
+
+        `_update_top_index` 가 phases/index.json 에 phase 의 status 와
+        completed_at 을 적는다. 소유 필터가 그것을 빼면 실행기가 자기가 고친
+        파일을 "소유 밖"이라고 경고하며 커밋하지 않고 남긴다.
+        """
+        calls = []
+        executor._run_git = _git_stub(calls, ["phases/index.json"])
+
+        executor._commit_step(2, "ui")
+
+        added = {p for c in calls if c[0] == "add" for p in c[2:]}
+        assert "phases/index.json" in added
+
     def test_other_phase_metadata_is_not_committed(self, executor):
         """다른 phase 의 상태 파일은 이 런의 커밋에 섞이지 않는다 (런 #4 사고)."""
         calls = []

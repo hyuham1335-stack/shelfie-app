@@ -37,7 +37,8 @@
     },
     {
       "dir": "could-have",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-02T14:03:26+0900"
     }
   ]
 }

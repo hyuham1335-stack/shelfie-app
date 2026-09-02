@@ -52,7 +52,30 @@
         "ARCHITECTURE"
       ],
       "started_at": "2026-09-02T09:50:46+0900",
-      "summary": "recommendRequestSchema 에 retryIndex(number int 0~4, 필수 평면) · irrelevantStreak(number int 0~2, 필수 평면) 추가. 상한 상수는 lib/env.ts 의 MAX_RETRY_INDEX=4 · MAX_IRRELEVANT_STREAK=2 이고 스키마와 화면이 같은 값을 쓴다. 값의 출처는 src/app/page.tsx 의 runRecommend — retryIndex ← state.recommendCount, irrelevantStreak ← irrelevantCount state. 클램프는 두 값 모두 runRecommend 의 requestRecommendations 호출 인자에서 Math.min 으로 건다 (api-client 와 라우트는 손대지 않음). retryIndex 도 클램프한 이유: session.ts 의 MAX_RECOMMEND_ATTEMPTS=5 가 recommendCount 를 5 까지 올려 스키마 상한 4 를 넘기므로 마지막 재추천이 400 이 된다 — step 설명은 클램프가 불필요하다고 봤으나 실제로는 필요했고, 두 클램프 모두 테스트로 고정했다(제거하면 실패). clientEventSchema 에서 recommend_viewed 제거(허용 2종) + events 라우트의 propertiesSchema · switch 분기 제거, 해당 테스트는 400 기대로 뒤집음. lib/analytics.ts 의 AnalyticsEvent 는 미변경."
+      "summary": "recommendRequestSchema 에 retryIndex(number int 0~4, 필수 평면) · irrelevantStreak(number int 0~2, 필수 평면) 추가. 상한 상수는 lib/env.ts 의 MAX_RETRY_INDEX=4 · MAX_IRRELEVANT_STREAK=2 이고 스키마와 화면이 같은 값을 쓴다. 값의 출처는 src/app/page.tsx 의 runRecommend — retryIndex ← state.recommendCount, irrelevantStreak ← irrelevantCount state. 클램프는 두 값 모두 runRecommend 의 requestRecommendations 호출 인자에서 Math.min 으로 건다 (api-client 와 라우트는 손대지 않음). retryIndex 도 클램프한 이유: session.ts 의 MAX_RECOMMEND_ATTEMPTS=5 가 recommendCount 를 5 까지 올려 스키마 상한 4 를 넘기므로 마지막 재추천이 400 이 된다 — step 설명은 클램프가 불필요하다고 봤으나 실제로는 필요했고, 두 클램프 모두 테스트로 고정했다(제거하면 실패). clientEventSchema 에서 recommend_viewed 제거(허용 2종) + events 라우트의 propertiesSchema · switch 분기 제거, 해당 테스트는 400 기대로 뒤집음. lib/analytics.ts 의 AnalyticsEvent 는 미변경.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 564,
+          "at": "2026-09-02T10:00:10+0900",
+          "guardrail_docs": [
+            "ADR",
+            "API_SPEC",
+            "ARCHITECTURE"
+          ],
+          "guardrail_chars": 39476,
+          "source_chars": 0,
+          "prompt_chars": 46737,
+          "cost_usd": 4.0854,
+          "turns": 44,
+          "cache_read": 4175152,
+          "cache_write": 125698,
+          "output_tokens": 28205
+        }
+      ],
+      "completed_at": "2026-09-02T10:00:10+0900",
+      "attempts": 1
     },
     {
       "step": 1,

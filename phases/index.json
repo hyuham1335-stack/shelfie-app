@@ -39,6 +39,10 @@
       "dir": "could-have",
       "status": "completed",
       "completed_at": "2026-09-02T14:03:26+0900"
+    },
+    {
+      "dir": "golden-set",
+      "status": "pending"
     }
   ]
 }

@@ -1,0 +1,55 @@
+{
+  "project": "shelfie",
+  "phase": "golden-set",
+  "carried_reports": {
+    "note": "런 #8 의 step 들이 올린 새 보고는 0건이라(두 런 연속) 이번 런이 받을 이월 코드 부채는 없다. 이 런의 본체는 TRD 8번이 [MVP] 로 규정했으나 코드도 실행 명령도 없던 골든 인식률 하네스다. PRD MoSCoW 의 Must·Should·Could 가 런 #7·#8 에서 전부 닫혀 FR 이 남지 않았고, 남은 [MVP] 미구현분이 이것이다. 세트 위치·측정 축·빈 세트 처리 3건은 런 전에 사람이 결정해 ADR-010 과 TRD 8번에 못 박았다.",
+    "measurement_design": "이 런은 [[ADR-H011]] 의 계측이 런 중에 도는 첫 실물이다. 백필된 41 step 은 전부 reads_source: backfill 이고 live 표본은 0개다. 그리고 [[ADR-H010]] 이 축을 크기로 확정한 뒤 재정식화한 첨부 기준(안 첨부하면 대략 크기 ÷ 1,700 turn)을 처음 시험한다 — A/B 는 하지 않는다. 런 #8 이 축을 이미 갈랐으므로 대조군을 또 만들 이유가 없고, 이번에 필요한 것은 어림과 실측의 대조다.",
+    "estimate_under_test": "step 3 이 관측점이다. src/services/anthropic.ts(39,233자 · 어림 23.1 turn)를 **일부러 첨부하지 않았다.** 규칙 4 는 큰 파일부터 넣으라고 하지만 규칙 5(읽지도 않을 파일은 넣지 마라)가 이긴다 — 러너가 anthropic 에서 쓰는 것은 extractFromPhoto 하나이고, aladin 쪽은 searchByTitle · createRequestBreaker · LookupOutcome 형태까지 필요하다. 어림은 **통독**을 가정하는데 시그니처만 필요한 파일에는 과대평가다. 실측 조각 수가 23 turn 근처면 어림이 맞고, 2~3 turn 이면 어림에 축(무엇을 위해 읽는가)이 하나 빠진 것이다. 런 #8 capture-guide 가 어림의 1.9배로 나온 것과 반대 방향의 반례를 찾는 셈이다.",
+    "resolved_by_main_before_run": [
+      "ADR-010 을 썼다 — 골든 세트를 리포 밖에 두고 GOLDEN_SET_DIR 로 가리킨다. 판정 규약(재현율 0.90 · 오확인 0 · 유사도 내림차순 1:1 그리디)과 skip 사유 3종도 여기 있다. 이 문서가 없으면 step 이 임계값과 매칭 규칙을 지어내고 다음 런이 '문서대로' 되돌린다",
+      "TRD 8번에 골든 인식률 계약 절을 신설했다 — 매니페스트 형식(version · setId · photos[].sha256 · books[].isbn13 선택), 판정 규약 표, skip 사유 3종 표, 결과 기록 위치, 실행 명령. 4번 환경변수 표에 GOLDEN_SET_DIR 을 넣었다",
+      "TRD 8번 범위 표의 인식률 행을 '축 둘'(TR-003 재현율 + TR-004 오확인)로 고쳤다 — 원래 문언은 추출만 적고 있었는데 TR-004 의 '골든 세트에서 오확인 0건'이 갈 곳이 없었다",
+      "ARCHITECTURE 에 lib/golden-{manifest,score,report}.ts 노드 3개와 '골든 러너는 프로덕션 코드가 아니라 테스트 코드다' 레이어 규칙을 넣었다. 러너가 services 둘을 부르는데 lib -> services 는 금지라, 순수 부품만 lib 에 두고 오케스트레이션은 *.golden.test.ts 가 한다 (ADR-009 와 같은 분리)",
+      "package.json 에 test:golden 을, 루트에 vitest.golden.config.ts 를 만들었다. 골든 config 는 junit 리포터를 쓰지 않는다 — 하네스 게이트가 reports/junit/vitest.xml 에서 테스트 수를 읽으므로 골든이 그 파일을 덮으면 tests_ran_floor 1064 가 사진 20장짜리 숫자와 대조된다",
+      "CLAUDE.md 명령어 절에 npm run test:golden 을 넣었다"
+    ],
+    "not_assigned_this_run": [
+      "런 #5 보고 ⑦ — 재시도가 원본 File 이 아니라 리사이즈된 data URI 를 들고 있다. 이번 런은 lib/image.ts · app/page.tsx 를 건드리지 않는다. 다섯 런째 이월된다",
+      "런 #3 보고 — 알라딘 호출 상한 260회. 메인이 TRD 에서 이미 갱신했고 코드 쪽 소비처가 없다. 이번 런이 aladin 을 **부르기는** 하지만 그 상한을 코드로 강제하는 것은 프로덕션 라우트의 일이고 골든 러너의 일이 아니다",
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡다. SDK 버전 변경은 새 의존성 판단이라 ADR 이 먼저다 (CLAUDE.md CRITICAL)",
+      "ROADMAP 12 — 3단계 게이트의 두 번째 스택(gradle-java) 대상 리포가 이 머신에 없다. 사람이 정한다",
+      "ROADMAP 14 — 어댑터 verified:true 승격은 04-gate 가 어댑터를 소비한 뒤다. 아홉 런 모두 execute.py 로 돈다",
+      "ROADMAP 28 — 접두부 통합 예산의 **값**. 이 런이 네 번째 표본이고 첫 live 표본이다. 값은 여전히 정하지 않는다 — R² 가 0.71 이고, 실행기가 런 중에 재는 경로가 이번에 처음 돈다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "golden-manifest",
+      "status": "pending",
+      "docs": ["ARCHITECTURE", "ADR", "TRD"],
+      "sources": ["src/lib/schemas.ts", "src/lib/env.ts", "src/types/book.ts"]
+    },
+    {
+      "step": 1,
+      "name": "golden-score",
+      "status": "pending",
+      "docs": ["ARCHITECTURE", "ADR", "TRD"],
+      "sources": ["src/lib/match.ts", "src/lib/golden-manifest.ts", "src/lib/env.ts", "src/types/book.ts"]
+    },
+    {
+      "step": 2,
+      "name": "golden-report",
+      "status": "pending",
+      "docs": ["ARCHITECTURE", "TRD"],
+      "sources": ["src/lib/golden-score.ts", "src/lib/golden-manifest.ts", "src/lib/env.ts"]
+    },
+    {
+      "step": 3,
+      "name": "golden-runner",
+      "status": "pending",
+      "docs": ["TRD", "ARCHITECTURE", "ADR", "PRD"],
+      "sources": ["src/services/aladin.ts", "src/lib/match.ts", "src/lib/golden-manifest.ts", "src/lib/golden-score.ts", "src/lib/golden-report.ts"]
+    }
+  ]
+}

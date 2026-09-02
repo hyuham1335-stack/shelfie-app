@@ -7,6 +7,8 @@ import {
   reduceBeforeLookup,
 } from "./merge";
 import {
+  ALADIN_CALLS_PER_LOOKUP,
+  MAX_ALADIN_CALLS_PER_SESSION,
   MAX_CANDIDATES_FOR_LOOKUP,
   MAX_IDENTIFIED_BOOKS,
   MAX_UNIDENTIFIED_BOOKS,
@@ -36,6 +38,49 @@ type 확인된책 = { isbn13: string; aladinRating: number | null; photoIndex: n
 function 확인(overrides: Partial<확인된책> & { isbn13: string }): 확인된책 {
   return { aladinRating: null, photoIndex: 0, ...overrides };
 }
+
+/**
+ * 세션당 알라딘 호출 상한 — **이 describe는 지우지 않는다.**
+ *
+ * TRD 10번이 세션당 260회를 적고 있지만, 그 값을 실제로 만드는 것은 산문이 아니라
+ * `lib/env.ts`의 상수들이다. 누군가 `MAX_CANDIDATES_FOR_LOOKUP`을 80에서 200으로
+ * 올리면 알라딘 일일 한도(5,000회)가 세션 8회에 소진되는데, 그것을 막는 것이
+ * 문서뿐이라면 그 상한은 검증되지 않은 상한이다. 그래서 여기서 **선언(상한)과
+ * 유도값(현재 구성이 내는 값)의 관계**를 잠근다. 값을 복창하는 테스트가 아니라
+ * 관계를 검사하는 테스트이며, 상한을 올려서 이 테스트를 통과시키는 것은 발견을
+ * 지우는 일이다 (TRD 8번의 "삭제하지 않는다" 목록과 같은 성격).
+ */
+describe("세션당 알라딘 호출 상한 (TRD 10번 — 문서에만 있는 상한은 검증되지 않은 상한이다)", () => {
+  it("유도값이 선언된 상한을 넘지 않는다 — 조회 전 후보 상한을 올리면 여기서 깨진다", () => {
+    const 유도값 = (MAX_CANDIDATES_FOR_LOOKUP + MAX_IDENTIFIED_BOOKS) * ALADIN_CALLS_PER_LOOKUP;
+
+    expect(유도값).toBeLessThanOrEqual(MAX_ALADIN_CALLS_PER_SESSION);
+  });
+
+  it("한 조회는 최대 2회의 HTTP 호출을 낸다 — services/aladin.ts의 호출 1회 + 조건부 재시도 1회", () => {
+    expect(ALADIN_CALLS_PER_LOOKUP).toBe(2);
+  });
+
+  it("reduceBeforeLookup이 실제로 그 상한 안에서 자른다 — 후보 300건도 조회는 80건뿐이다", () => {
+    const 후보들 = Array.from({ length: 300 }, (_, i) =>
+      추출({ title: `서로 다른 책 ${i}`, confidence: 0.3 + (i % 70) / 100, photoIndex: i % MAX_PHOTOS }),
+    );
+
+    const { toLookup } = reduceBeforeLookup(후보들);
+
+    expect(toLookup.length).toBeLessThanOrEqual(MAX_CANDIDATES_FOR_LOOKUP);
+    // 조회 대상에서 유도한 ItemSearch 호출 수도 상한 안이어야 한다.
+    expect(toLookup.length * ALADIN_CALLS_PER_LOOKUP).toBeLessThanOrEqual(
+      MAX_ALADIN_CALLS_PER_SESSION,
+    );
+  });
+
+  it("확인 상한도 유도식의 항이다 — 50을 올리면 유도값이 함께 오른다", () => {
+    expect(MAX_IDENTIFIED_BOOKS).toBeLessThanOrEqual(
+      MAX_ALADIN_CALLS_PER_SESSION / ALADIN_CALLS_PER_LOOKUP - MAX_CANDIDATES_FOR_LOOKUP,
+    );
+  });
+});
 
 describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () => {
   it("confidence 0.29는 강등되고 0.30은 조회 대상이다 (경계값)", () => {

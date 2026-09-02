@@ -69,6 +69,26 @@ export const MAX_CANDIDATES_PER_PHOTO = 60;
 /** 알라딘 조회 전 후보 총량 상한. confidence 내림차순으로 자른다 (TR-005) */
 export const MAX_CANDIDATES_FOR_LOOKUP = 80;
 
+/**
+ * 한 요청(세션 1회 분석)이 알라딘에 낼 수 있는 호출 수의 **상한** (TRD 10번).
+ *
+ * 이것은 **선언**이다 — 우리가 알라딘 일일 한도(5,000회)에 대해 감수하기로 한
+ * 세션당 최악값이고, 이 값에서 "하루 약 19세션"이라는 실질 상한이 나온다.
+ * 현재 구성이 실제로 내는 값(유도값)은 아래 상수들에서 계산되며, **유도값이 이
+ * 선언을 넘지 않는지는 상수가 아니라 회귀 테스트가 잠근다**(`merge.test.ts`).
+ * 260을 손으로 적은 상수와 계산한 상수를 둘 다 두면 한쪽만 고쳐지는 날이 온다.
+ */
+export const MAX_ALADIN_CALLS_PER_SESSION = 260;
+
+/**
+ * 조회 한 건이 낼 수 있는 최대 HTTP 호출 수 — ItemSearch/ItemLookUp 각각의 재시도 포함.
+ *
+ * `services/aladin.ts`의 `requestWithRetry`가 호출 1회 + 5xx·타임아웃일 때의
+ * 조건부 재시도 1회로 끝나므로 2다. 재시도 정책이 바뀌면 이 값도 함께 바뀌어야
+ * 하고, 그러면 아래 유도값이 상한을 넘는지 테스트가 즉시 알려 준다.
+ */
+export const ALADIN_CALLS_PER_LOOKUP = 2;
+
 /** 사용자에게 제시하는 알라딘 후보 수. ambiguous 후보와 resolve 결과에 같은 값을 쓴다 (API_SPEC) */
 export const MAX_ALADIN_CANDIDATES = 5;
 

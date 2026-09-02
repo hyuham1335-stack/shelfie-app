@@ -77,7 +77,8 @@
     {
       "step": 1,
       "name": "share-layout",
-      "status": "pending",
+      "status": "completed",
+      "summary": "src/lib/share-image.ts 에 레이아웃 층(순수)만 만들었다. export 는 `buildShareImageLayout(books: readonly ShareImageBook[], measure: MeasureText): ShareImageLayout` 하나와 규격 상수 `SHARE_IMAGE_WIDTH = 1080`, 타입 `ShareImageBook{title,author,publisher,coverUrl:string,reason,position:1|2|3}` · `MeasureText=(text,font)=>number` · `ShareImageLayout{width,height,commands:readonly DrawCommand[]}` · `RectCommand` · `TextCommand` · `CoverCommand` · `DrawCommand` 다. DrawCommand 최종 형태는 3종: `{kind:'rect',x,y,width,height,color}` · `{kind:'text',x,y,text,font,color}`(y 는 **베이스라인**, 줄바꿈·말줄임 완료) · `{kind:'cover',x,y,width,height,src,fallback:readonly (RectCommand|TextCommand)[]}`. 표지 폴백은 별도 분기가 아니라 **cover 명령 안의 fallback 배열**로 미리 실려 있다 — src 가 빈 문자열이거나 로드에 실패하면 그리기 층이 fallback(무채 블록 #F5F2ED + 제목 첫 글자 가운데 정렬 텍스트)을 그대로 실행하면 되고 레이아웃을 다시 계산하지 않는다. 명령 순서는 [배경 rect(페이지 톤, 전체 크기)] → 책마다 [cover, '추천 n', 제목 최대 2줄, 저자, 출판사, 이유 세로선 rect(rgba(47,93,80,0.4), 폭 4), '추천 이유' 라벨, 이유 최대 4줄] → [워터마크 'Shelfie' #8C8681]. 사실은 x=256(TEXT_X)·ink/body 색·sans-serif, 해석은 x=276·#6B6560·italic 글꼴로 갈라진다. 폭은 전부 주입받은 measure 로만 재고 높이는 내용이 정한다(3권/1권/0권이 서로 다르며 0권도 던지지 않는다). MAX_RECOMMENDATIONS 를 lib/env.ts 에서 import 해 3 을 리터럴로 박지 않았다. document·canvas·toBlob 미사용, 새 의존성 0건. 테스트 22건 추가, 전체 1133건 통과.",
       "docs": [
         "PRD",
         "UI_GUIDE",
@@ -88,7 +89,8 @@
         "src/types/book.ts",
         "src/types/api.ts",
         "src/lib/env.ts"
-      ]
+      ],
+      "started_at": "2026-09-02T13:34:00+0900"
     },
     {
       "step": 2,

@@ -3,13 +3,15 @@
  *
  * ## 왜 이 엔드포인트가 있어야 하는가
  * North Star 지표인 추천 수락률의 **분자(`recommend_accepted`)는 순수한 클릭
- * 이벤트라 서버가 알 수 없다.** `recommend_viewed`·`book_resolved`도 마찬가지다.
- * 이 셋을 받을 경로가 없으면 지표의 분자·분모가 서로 다른 곳에 흩어져
+ * 이벤트라 서버가 알 수 없다.** `book_resolved`도 마찬가지다.
+ * 이 둘을 받을 경로가 없으면 지표의 분자·분모가 서로 다른 곳에 흩어져
  * **가설 검증 자체가 성립하지 않는다** (PRD 7번).
  *
- * ## 받는 것은 3종뿐이다
- * 나머지 5종은 라우트 핸들러가 직접 남긴다. 그것들을 이 경로로도 받으면 같은
+ * ## 받는 것은 2종뿐이다
+ * 나머지는 라우트 핸들러가 직접 남긴다. 그것들을 이 경로로도 받으면 같은
  * 이벤트가 두 번 집계되어 지표가 조용히 부풀어 오른다. 목록 밖 이름은 400이다.
+ * **분모인 `recommend_viewed`가 대표적이다** — `app/api/recommend/route.ts`가
+ * 응답 직전에 남기므로 여기서도 받으면 수락률의 분모가 이중 계상된다.
  *
  * ## 속성은 화이트리스트로만 통과한다
  * 클라이언트가 보낸 임의의 키를 그대로 로그에 쓰면 **PII·판독 원문이 흘러
@@ -75,14 +77,6 @@ const countSchema = z.number().int().min(0);
  * 적지 않는다.
  */
 const propertiesSchema = {
-  recommend_viewed: z.object({
-    recommended_count: countSchema,
-    duration_ms: countSchema,
-    // 토큰은 옵셔널이 아니다. 하나라도 빠지면 세션당 비용이 실제보다 낮게
-    // 집계되어 "300원" 가드레일이 통과할 수 없는 조건에서도 통과한다 (PRD 2번).
-    input_tokens: countSchema,
-    output_tokens: countSchema,
-  }),
   recommend_accepted: z.object({
     position: recommendationSchema.shape.position,
   }),
@@ -106,7 +100,7 @@ type EventsErrorCode = Extract<
   "INVALID_REQUEST" | "SERVICE_DISABLED" | "INTERNAL_ERROR"
 >;
 
-/** 허용 3종. 나머지는 서버가 직접 관측하므로 이 경로로 받지 않는다 */
+/** 허용 2종. 나머지는 서버가 직접 관측하므로 이 경로로 받지 않는다 */
 type ClientEventName = z.infer<typeof clientEventSchema>;
 
 export async function POST(request: Request): Promise<Response> {
@@ -217,10 +211,6 @@ function toAnalyticsEvent(
   properties: Record<string, string | number | boolean> | undefined,
 ): Extract<AnalyticsEvent, { event: ClientEventName }> | null {
   switch (name) {
-    case "recommend_viewed": {
-      const parsed = propertiesSchema.recommend_viewed.safeParse(properties);
-      return parsed.success ? { event: name, session_id: sessionId, ...parsed.data } : null;
-    }
     case "recommend_accepted": {
       const parsed = propertiesSchema.recommend_accepted.safeParse(properties);
       return parsed.success ? { event: name, session_id: sessionId, ...parsed.data } : null;

@@ -43,6 +43,7 @@ import {
   resolveBook,
   sendClientEvent,
 } from "@/lib/api-client";
+import { MAX_IRRELEVANT_STREAK, MAX_RETRY_INDEX } from "@/lib/env";
 import {
   canRecommendAgain,
   createSessionState,
@@ -294,12 +295,25 @@ export default function Home() {
     void loadQuestions(state);
   }
 
+  /**
+   * 세션 진행 상태를 요청에 싣는다. 무상태라 서버는 이 둘을 셀 수 없고, 그래서
+   * 세는 쪽은 화면이고 판정하는 쪽은 서버다 (API_SPEC /api/recommend).
+   *
+   * **계약의 상한은 화면이 지킨다.** 두 값 모두 스키마 상한을 넘으면 400인데,
+   * 400은 사용자에게 아무 의미가 없는 실패다. `irrelevantStreak`는
+   * `nextIrrelevantCount`에 상한이 없어 3회째에 3이 되고, `retryIndex`는
+   * `MAX_RECOMMEND_ATTEMPTS`(5)가 0-based 상한 4보다 하나 크므로 마지막
+   * 재추천에서 5가 된다. 둘 다 보내기 직전에 클램프한다 — 서명이 아니라
+   * 스키마가 상한을 강제하는 값이므로, 넘기지 않는 책임이 호출부에 있다 (ADR-006).
+   */
   async function runRecommend(mood: string, inputMode: InputMode) {
     const result = await requestRecommendations({
       sessionId: state.sessionId,
       books: toRecommendBooks(state),
       mood,
       inputMode,
+      retryIndex: Math.min(state.recommendCount, MAX_RETRY_INDEX),
+      irrelevantStreak: Math.min(irrelevantCount, MAX_IRRELEVANT_STREAK),
     });
 
     if (result.ok) {

@@ -106,6 +106,9 @@ function bodyOf(overrides: Record<string, unknown> = {}): Record<string, unknown
     books: [bookOf(1), bookOf(2), bookOf(3)],
     mood: MOOD,
     inputMode: "free_text",
+    // 필수 평면 필드다. 기본값이 없으므로 픽스처가 채운다 (API_SPEC /api/recommend)
+    retryIndex: 0,
+    irrelevantStreak: 0,
     ...overrides,
   };
 }

@@ -45,32 +45,55 @@
     {
       "step": 0,
       "name": "request-contract",
-      "status": "pending",
-      "docs": ["API_SPEC", "ADR", "ARCHITECTURE"]
+      "status": "completed",
+      "docs": [
+        "API_SPEC",
+        "ADR",
+        "ARCHITECTURE"
+      ],
+      "started_at": "2026-09-02T09:50:46+0900",
+      "summary": "recommendRequestSchema 에 retryIndex(number int 0~4, 필수 평면) · irrelevantStreak(number int 0~2, 필수 평면) 추가. 상한 상수는 lib/env.ts 의 MAX_RETRY_INDEX=4 · MAX_IRRELEVANT_STREAK=2 이고 스키마와 화면이 같은 값을 쓴다. 값의 출처는 src/app/page.tsx 의 runRecommend — retryIndex ← state.recommendCount, irrelevantStreak ← irrelevantCount state. 클램프는 두 값 모두 runRecommend 의 requestRecommendations 호출 인자에서 Math.min 으로 건다 (api-client 와 라우트는 손대지 않음). retryIndex 도 클램프한 이유: session.ts 의 MAX_RECOMMEND_ATTEMPTS=5 가 recommendCount 를 5 까지 올려 스키마 상한 4 를 넘기므로 마지막 재추천이 400 이 된다 — step 설명은 클램프가 불필요하다고 봤으나 실제로는 필요했고, 두 클램프 모두 테스트로 고정했다(제거하면 실패). clientEventSchema 에서 recommend_viewed 제거(허용 2종) + events 라우트의 propertiesSchema · switch 분기 제거, 해당 테스트는 400 기대로 뒤집음. lib/analytics.ts 의 AnalyticsEvent 는 미변경."
     },
     {
       "step": 1,
       "name": "analytics-event",
       "status": "pending",
-      "docs": ["PRD", "ARCHITECTURE"]
+      "docs": [
+        "PRD",
+        "ARCHITECTURE"
+      ]
     },
     {
       "step": 2,
       "name": "recommend-route",
       "status": "pending",
-      "docs": ["API_SPEC", "PRD", "ADR", "TRD"]
+      "docs": [
+        "API_SPEC",
+        "PRD",
+        "ADR",
+        "TRD"
+      ]
     },
     {
       "step": 3,
       "name": "error-recovery",
       "status": "pending",
-      "docs": ["ARCHITECTURE", "ADR", "UI_GUIDE"]
+      "docs": [
+        "ARCHITECTURE",
+        "ADR",
+        "UI_GUIDE"
+      ]
     },
     {
       "step": 4,
       "name": "mood-forced-path",
       "status": "pending",
-      "docs": ["UI_GUIDE", "PRD", "API_SPEC"]
+      "docs": [
+        "UI_GUIDE",
+        "PRD",
+        "API_SPEC"
+      ]
     }
-  ]
+  ],
+  "created_at": "2026-09-02T09:50:46+0900"
 }

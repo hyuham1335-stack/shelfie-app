@@ -13,8 +13,10 @@ import {
   MAX_ALADIN_CANDIDATES,
   MAX_CANDIDATES_PER_PHOTO,
   MAX_IDENTIFIED_BOOKS,
+  MAX_IRRELEVANT_STREAK,
   MAX_PHOTOS,
   MAX_RECOMMENDATIONS,
+  MAX_RETRY_INDEX,
   MAX_UNIDENTIFIED_BOOKS,
 } from "./env";
 
@@ -227,11 +229,28 @@ export const recommendBookSchema = identifiedBookSchema.pick({
   proof: true,
 });
 
+/**
+ * 추천 요청.
+ *
+ * `retryIndex`·`irrelevantStreak`는 **옵셔널도 기본값도 아니다.** 기본값을 주면
+ * "보내지 않았다"와 "0이다"가 구분되지 않고, 클라이언트가 배선을 잊어도 지표가
+ * 조용히 0으로 채워진다 — `mood_submitted.retry_index`가 언제나 0이던 원인이
+ * 정확히 그것이다. 버저닝이 없고 클라이언트와 서버가 같은 배포 단위라 버전
+ * 스큐가 없으므로 필수로 두는 비용도 없다 (API_SPEC /api/recommend).
+ *
+ * 두 값에 `proof` 서명을 붙이지 않는다. 서명은 **사실인 척할 수 있는 값**(책)에만
+ * 붙는다 — 이 둘은 위조해도 얻는 것이 원래 허용된 동작 하나뿐이고, 전부 서명하면
+ * 무상태 설계가 세션 상태를 서버로 되가져오는 방향으로 밀린다 (ADR-006).
+ */
 export const recommendRequestSchema = z.object({
   sessionId: sessionIdSchema,
   books: z.array(recommendBookSchema).min(1).max(MAX_IDENTIFIED_BOOKS),
   mood: z.string().min(2).max(500),
   inputMode: z.enum(["free_text", "guided"]),
+  /** "다시 추천받기" 횟수. `mood_submitted.retry_index`가 되는 값 (FR-010) */
+  retryIndex: z.number().int().min(0).max(MAX_RETRY_INDEX),
+  /** 직전까지 **연속으로** 받은 `IRRELEVANT_MOOD` 횟수. 무상태라 화면이 센다 */
+  irrelevantStreak: z.number().int().min(0).max(MAX_IRRELEVANT_STREAK),
 });
 
 export const recommendResponseSchema = z.object({
@@ -240,11 +259,15 @@ export const recommendResponseSchema = z.object({
 });
 
 /**
- * 클라이언트에서만 관측 가능한 이벤트 3종.
+ * 클라이언트에서만 관측 가능한 이벤트 2종.
  * 나머지는 서버가 직접 관측하므로 이 경로로 받지 않는다 (TR-014).
+ *
+ * **`recommend_viewed`는 여기 없다.** 추천 수락률의 분모는
+ * `app/api/recommend/route.ts`가 응답 직전에 서버에서 남기며, 이 경로로도 받으면
+ * 같은 조회가 두 번 집계된다. 보내는 클라이언트가 없다는 것과 받을 수 있다는
+ * 것은 다른 문제다 (API_SPEC /api/events).
  */
 export const clientEventSchema = z.enum([
-  "recommend_viewed",
   "recommend_accepted",
   "book_resolved",
 ]);

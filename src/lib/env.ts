@@ -75,6 +75,18 @@ export const MAX_ALADIN_CANDIDATES = 5;
 /** 한 번에 추천하는 책 수 (FR-006) */
 export const MAX_RECOMMENDATIONS = 3;
 
+/**
+ * `retryIndex`의 상한. FR-010의 "세션당 5회"를 0-based로 센 값이다.
+ * 넘겨 보내면 400이므로 요청을 조립하는 화면이 이 값으로 클램프한다.
+ */
+export const MAX_RETRY_INDEX = 4;
+
+/**
+ * `irrelevantStreak`의 상한. 2회 연속 무관 판정이면 서버가 판정을 무시하고
+ * 추천을 진행하므로(API_SPEC /api/recommend) 그보다 큰 값에는 의미가 없다.
+ */
+export const MAX_IRRELEVANT_STREAK = 2;
+
 /** 책등 추출에 쓸 모델 ID */
 export function getExtractModel(): string {
   return process.env.MODEL_EXTRACT ?? DEFAULT_MODEL;

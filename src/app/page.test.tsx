@@ -337,6 +337,142 @@ describe("세션 셸", () => {
     expect(screen.getByRole("heading", { name: "지금 어떤 기분이세요?" })).toBeInTheDocument();
   });
 
+  /* ---------------------------------------------------------------- *
+   * 세션 진행 상태 배선 (API_SPEC /api/recommend)
+   * ---------------------------------------------------------------- */
+
+  /** 기분을 적고 추천 버튼을 누른다. `moodInput` 화면에 있어야 한다 */
+  function submitMood(mood: string) {
+    fireEvent.change(screen.getByLabelText("지금 기분이나 상황"), { target: { value: mood } });
+    fireEvent.click(screen.getByRole("button", { name: "추천받기" }));
+  }
+
+  /** 마지막 추천 요청에 실린 본문 */
+  function lastRecommendCall(): { retryIndex: number; irrelevantStreak: number } {
+    const calls = recommendMock.mock.calls;
+    return calls[calls.length - 1][0];
+  }
+
+  const IRRELEVANT: ApiResult<RecommendResponse> = {
+    ok: false,
+    code: "IRRELEVANT_MOOD",
+    requestId: "req-irrelevant",
+    status: 422,
+  };
+
+  it("첫 추천은 retryIndex 0 · irrelevantStreak 0을 싣는다", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+
+    submitMood("번아웃이라 가볍게");
+
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    expect(lastRecommendCall()).toMatchObject({ retryIndex: 0, irrelevantStreak: 0 });
+  });
+
+  it("재추천 2회 후 요청의 retryIndex가 2다 — 하드코딩된 0이 아니다", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+
+    submitMood("번아웃이라 가볍게");
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+
+    for (const expected of [1, 2]) {
+      fireEvent.click(screen.getByRole("button", { name: "다시 추천받기" }));
+      await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+      submitMood("이번엔 좀 묵직한 걸로");
+      await screen.findByRole("heading", { name: "이 책은 어때요?" });
+
+      expect(lastRecommendCall().retryIndex).toBe(expected);
+    }
+  });
+
+  it("재추천 상한까지 눌러도 retryIndex가 4를 넘지 않는다 (스키마 상한)", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+
+    submitMood("번아웃이라 가볍게");
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+
+    // 버튼이 비활성이 될 때까지 누른다. 리듀서의 세션당 상한(FR-010)이 먼저 막는다.
+    for (let i = 0; i < 10; i += 1) {
+      const again = screen.queryByRole("button", { name: "다시 추천받기" });
+      if (again === null || (again as HTMLButtonElement).disabled) break;
+
+      fireEvent.click(again);
+      await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+      submitMood("또 다른 기분으로");
+      await screen.findByRole("heading", { name: "이 책은 어때요?" });
+
+      expect(lastRecommendCall().retryIndex).toBeLessThanOrEqual(4);
+    }
+
+    expect(recommendMock.mock.calls.length).toBeGreaterThan(1);
+    for (const [payload] of recommendMock.mock.calls) {
+      expect(payload.retryIndex).toBeLessThanOrEqual(4);
+      expect(payload.retryIndex).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  /** 기분을 제출하고 요청이 한 번 더 나가 화면이 입력으로 되돌아올 때까지 기다린다 */
+  async function submitMoodAndSettle(mood: string) {
+    const before = recommendMock.mock.calls.length;
+    submitMood(mood);
+    await waitFor(() => expect(recommendMock.mock.calls.length).toBe(before + 1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "추천받기" })).not.toBeDisabled(),
+    );
+  }
+
+  it("무관 판정 2회 후 요청의 irrelevantStreak가 2다 — 연속만 센다", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(IRRELEVANT);
+
+    for (const expected of [0, 1, 2]) {
+      await submitMoodAndSettle("점심 뭐 먹지");
+
+      expect(lastRecommendCall().irrelevantStreak).toBe(expected);
+    }
+  });
+
+  it("무관 판정 3회째에도 irrelevantStreak가 2를 넘지 않는다 (클램프)", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(IRRELEVANT);
+
+    // 화면의 연속 카운터에는 상한이 없다. 계약의 상한(0~2)은 보내기 직전에
+    // 지킨다 — 넘겨 보내면 400이고, 400은 사용자에게 아무 의미가 없는 실패다.
+    for (let i = 0; i < 5; i += 1) {
+      await submitMoodAndSettle("점심 뭐 먹지");
+    }
+
+    expect(recommendMock).toHaveBeenCalledTimes(5);
+    for (const [payload] of recommendMock.mock.calls) {
+      expect(payload.irrelevantStreak).toBeLessThanOrEqual(2);
+      expect(payload.irrelevantStreak).toBeGreaterThanOrEqual(0);
+    }
+    expect(lastRecommendCall().irrelevantStreak).toBe(2);
+  });
+
+  it("추천에 성공하면 irrelevantStreak가 0으로 되돌아간다", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(IRRELEVANT);
+
+    submitMood("점심 뭐 먹지");
+    await screen.findByText("책 고르는 데 참고할 내용을 적어 주세요");
+
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+    submitMood("번아웃이라 가볍게");
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    expect(lastRecommendCall().irrelevantStreak).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "다시 추천받기" }));
+    await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+    submitMood("이번엔 묵직하게");
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+
+    expect(lastRecommendCall().irrelevantStreak).toBe(0);
+  });
+
   it("분석 실패 후 재시도는 재업로드를 요구하지 않는다", async () => {
     analyzeMock.mockResolvedValue({
       ok: false,

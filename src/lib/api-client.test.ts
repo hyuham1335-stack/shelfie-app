@@ -79,6 +79,10 @@ const RECOMMEND_INPUT: RecommendRequest = {
   ],
   mood: "번아웃이라 가볍게",
   inputMode: "free_text",
+  // 세션 진행 상태는 필수 평면 필드다. 값을 아는 것은 화면이고,
+  // 이 래퍼는 받은 입력을 그대로 실어 보내기만 한다 (API_SPEC /api/recommend).
+  retryIndex: 0,
+  irrelevantStreak: 0,
 };
 
 const IMAGE = "data:image/jpeg;base64,AAAA";

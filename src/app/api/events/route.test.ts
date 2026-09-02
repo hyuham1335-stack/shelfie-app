@@ -40,7 +40,12 @@ function eventsRequest(body: unknown, headers: Record<string, string> = {}): Req
   });
 }
 
-/** 허용 3종의 정상 본문 */
+/**
+ * **거부돼야 하는 본문이다.** `recommend_viewed`는 추천 수락률의 분모이고
+ * `app/api/recommend/route.ts`가 응답 직전에 서버에서 남긴다. 이 경로로도 받으면
+ * 같은 조회가 두 번 집계된다 (API_SPEC /api/events). 픽스처를 지우지 않는 이유는
+ * 이중 계상을 다시 열었을 때 아무도 모르는 상태가 되기 때문이다.
+ */
 function viewedBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     sessionId: SESSION_ID,
@@ -55,6 +60,7 @@ function viewedBody(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
+/** 허용 2종의 정상 본문 */
 function acceptedBody(
   properties: Record<string, unknown> = { position: 2 },
 ): Record<string, unknown> {
@@ -97,8 +103,8 @@ describe("POST /api/events — 계약", () => {
     expect(runtime).toBe("nodejs");
   });
 
-  it("허용 3종이 각각 202와 { accepted: true }를 돌려준다", async () => {
-    for (const body of [viewedBody(), acceptedBody(), resolvedBody()]) {
+  it("허용 2종이 각각 202와 { accepted: true }를 돌려준다", async () => {
+    for (const body of [acceptedBody(), resolvedBody()]) {
       const response = await POST(eventsRequest(body));
 
       expect(response.status).toBe(202);
@@ -108,22 +114,23 @@ describe("POST /api/events — 계약", () => {
   });
 
   it("이벤트를 PRD 7번 표의 속성 그대로 한 줄로 남긴다", async () => {
-    await POST(eventsRequest(viewedBody()));
     await POST(eventsRequest(acceptedBody({ position: 3 })));
     await POST(eventsRequest(resolvedBody({ resolve_attempt: 2, matched: false })));
 
     expect(loggedLines()).toEqual([
-      {
-        event: "recommend_viewed",
-        session_id: SESSION_ID,
-        recommended_count: 3,
-        duration_ms: 14_200,
-        input_tokens: 1800,
-        output_tokens: 260,
-      },
       { event: "recommend_accepted", session_id: SESSION_ID, position: 3 },
       { event: "book_resolved", session_id: SESSION_ID, resolve_attempt: 2, matched: false },
     ]);
+  });
+
+  it("recommend_viewed는 400으로 거부한다 — 분모를 이중 계상하지 않는다", async () => {
+    // 속성까지 완전한 본문이어도 이름이 목록 밖이면 받지 않는다. 보내는
+    // 클라이언트가 없다는 것과 받을 수 있다는 것은 다른 문제다 (API_SPEC).
+    const response = await POST(eventsRequest(viewedBody()));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
   it("이벤트마다 표준 출력에 정확히 한 줄만 쓴다", async () => {
@@ -241,9 +248,8 @@ describe("POST /api/events — 속성 화이트리스트 (PII 회귀, 삭제 금
     expect(logSpy).not.toHaveBeenCalled();
   });
 
-  it("정의된 속성이 빠지면 400이다 — 토큰이 빠지면 비용 가드레일이 낮게 집계된다", async () => {
+  it("정의된 속성이 빠지면 400이다 — 빠진 채 기록되면 지표가 조용히 어긋난다", async () => {
     const bodies = [
-      { sessionId: SESSION_ID, event: "recommend_viewed", properties: { recommended_count: 3 } },
       { sessionId: SESSION_ID, event: "recommend_accepted" },
       { sessionId: SESSION_ID, event: "book_resolved", properties: { resolve_attempt: 1 } },
     ];
@@ -321,7 +327,7 @@ describe("POST /api/events — 본문 크기", () => {
   });
 
   it("8KB 이하 본문은 정상 처리한다", async () => {
-    const response = await POST(eventsRequest(viewedBody()));
+    const response = await POST(eventsRequest(acceptedBody()));
 
     expect(response.status).toBe(202);
   });
@@ -363,7 +369,6 @@ describe("POST /api/events — 로깅 실패와 무상태", () => {
 
     await POST(eventsRequest(acceptedBody()));
     await POST(eventsRequest(resolvedBody()));
-    await POST(eventsRequest(viewedBody()));
 
     expect(Object.keys(globalThis).length).toBe(before);
 

@@ -45,6 +45,12 @@ export interface BookListProps {
   onRetryLookup?: (book: UnidentifiedBook) => void;
   /** 실패한 사진만 골라 다시 시도한다 (`failedPhotoIndexes`를 그대로 넘긴다) */
   onRetryPhoto?: (photoIndexes: number[]) => void;
+  /**
+   * 재시도 간격을 기다리는 중이라 지금은 누를 수 없다 (FR-010).
+   * 감추지 않고 비활성으로 남긴다 — 이 경로도 결국 분석을 다시 태우므로
+   * 에러 화면의 "다시 시도"와 같은 간격을 따른다.
+   */
+  retryPhotoDisabled?: boolean;
 }
 
 export function BookList({
@@ -59,6 +65,7 @@ export function BookList({
   onSelectCandidate,
   onRetryLookup,
   onRetryPhoto,
+  retryPhotoDisabled = false,
 }: BookListProps) {
   // 후보는 있었으나 확인 0건인 상태. 빈 상태로 보내지 않고 미확인 목록을 그대로 남긴다
   // (API_SPEC: EMPTY_SHELF가 아니라 unidentifiedOnly 분기).
@@ -76,7 +83,8 @@ export function BookList({
             <button
               type="button"
               onClick={() => onRetryPhoto([...failedPhotoIndexes])}
-              className="min-h-11 text-sm text-subtle underline underline-offset-2 hover:text-ink"
+              disabled={retryPhotoDisabled}
+              className="min-h-11 text-sm text-subtle underline underline-offset-2 hover:text-ink disabled:text-disabled disabled:no-underline disabled:hover:text-disabled"
             >
               이 사진만 다시 시도
             </button>

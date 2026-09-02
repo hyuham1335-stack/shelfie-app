@@ -76,6 +76,28 @@ export const MAX_ALADIN_CANDIDATES = 5;
 export const MAX_RECOMMENDATIONS = 3;
 
 /**
+ * 분석 재시도의 **간격 스케줄** (FR-010: "세션당 3회(간격 0초 → 5초 → 15초)").
+ *
+ * PRD 한 줄과 눈으로 대조되도록 조건문 사다리가 아니라 **값**으로 둔다. 재시도
+ * 회차(0-based)를 그대로 인덱스로 쓴다 — 첫 재시도는 0초라 즉시 나가고, 그
+ * 다음부터 벌어진다.
+ *
+ * 간격이 있는 이유는 남용 방어가 아니다. 업스트림 5xx·타임아웃에서 **즉시 재시도는
+ * 같은 실패를 부르고 모델 비용만 새로 든다**(FR-010). 벌려 두면 그 사이에 상황이
+ * 바뀔 여지가 생긴다.
+ */
+export const ANALYZE_RETRY_DELAYS_MS = [0, 5_000, 15_000] as const;
+
+/**
+ * 분석 재시도 상한 (FR-010).
+ *
+ * **스케줄 길이가 곧 상한이다.** 둘을 따로 적으면 갈라질 수 있고, 갈라지는 순간
+ * 마지막 재시도의 간격이 `undefined`가 된다. 그래서 별도 리터럴을 두지 않고
+ * 스케줄에서 유도한다.
+ */
+export const MAX_ANALYZE_RETRIES: number = ANALYZE_RETRY_DELAYS_MS.length;
+
+/**
  * `retryIndex`의 상한. FR-010의 "세션당 5회"를 0-based로 센 값이다.
  * 넘겨 보내면 400이므로 요청을 조립하는 화면이 이 값으로 클램프한다.
  */

@@ -10,8 +10,8 @@
  *    둘 다 보내면 North Star의 분모가 이중 계상된다 (PRD 7번).
  * ③ 부분 실패 배너의 분모(`photoCount`)는 응답이 아니라 업로드에서 온다.
  */
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ApiResult } from "@/lib/api-client";
 import type { AnalyzeResponse, MoodQuestionsResponse, RecommendResponse } from "@/types/api";
 import type { IdentifiedBook, ResolvedCandidate, UnidentifiedBook } from "@/types/book";
@@ -715,6 +715,193 @@ describe("세션 셸", () => {
 
     await waitFor(() => expect(questionsMock).toHaveBeenCalled());
     expect(screen.getByRole("heading", { name: "지금 어떤 기분이세요?" })).toBeInTheDocument();
+  });
+
+  /* ---------------------------------------------------------------- *
+   * 분석 재시도 간격 (FR-010 — 0초 → 5초 → 15초)
+   *
+   * **가짜 타이머로 쓴다.** 실제로 5초·15초를 기다리면 이 리포의 모든 실행에
+   * 그 비용이 곱해진다. 에러 화면까지는 실제 타이머로 가고(`findBy*`가 가짜
+   * 타이머 아래서 멈춘다), 재시도 버튼을 누르기 직전에 갈아 끼운다.
+   * ---------------------------------------------------------------- */
+
+  describe("재시도 간격", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** 마이크로태스크만 흘린다. 타이머는 건드리지 않는다 */
+    async function settle() {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+
+    /** 가짜 시계를 ms만큼 민다 */
+    async function advance(ms: number) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    }
+
+    /** 분석이 502로 실패한 에러 화면까지 진행한 뒤 가짜 타이머로 갈아 끼운다 */
+    async function reachAnalyzeError() {
+      analyzeMock.mockResolvedValue({
+        ok: false,
+        code: "UPSTREAM_UNAVAILABLE",
+        requestId: "req-502",
+        status: 502,
+      });
+      render(<Home />);
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByText("지금 책을 확인할 수 없어요. 잠시 후 다시 시도해 주세요");
+      vi.useFakeTimers();
+    }
+
+    function retryButton(): HTMLButtonElement {
+      return screen.getByRole("button", { name: "다시 시도" }) as HTMLButtonElement;
+    }
+
+    /** 간격만큼 밀어 재시도를 한 번 끝낸다. 응답은 다시 502라 에러 화면으로 돌아온다 */
+    async function retryOnce(delayMs: number) {
+      fireEvent.click(retryButton());
+      if (delayMs > 0) await advance(delayMs);
+      await settle();
+    }
+
+    it("1회차 재시도는 간격이 0초라 즉시 분석을 부른다", async () => {
+      await reachAnalyzeError();
+      const before = analyzeMock.mock.calls.length;
+
+      fireEvent.click(retryButton());
+
+      // 타이머를 하나도 밀지 않았는데 이미 나갔다.
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
+      // 0초 대기에 "0초 남았어요"를 띄우지 않는다.
+      expect(screen.queryByText(/뒤에 다시 시도할게요/)).toBeNull();
+      await settle();
+    });
+
+    it("2회차 재시도는 5초 전에는 부르지 않고 5초에 부른다", async () => {
+      await reachAnalyzeError();
+      await retryOnce(0);
+      const before = analyzeMock.mock.calls.length;
+
+      fireEvent.click(retryButton());
+
+      await advance(4999);
+      // 이 단정이 없으면 간격이 0이어도 아래 단정만으로 통과한다.
+      expect(analyzeMock.mock.calls.length).toBe(before);
+
+      await advance(1);
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
+      await settle();
+    });
+
+    it("3회차 재시도는 15초 전에는 부르지 않고 15초에 부른다", async () => {
+      await reachAnalyzeError();
+      await retryOnce(0);
+      await retryOnce(5_000);
+      const before = analyzeMock.mock.calls.length;
+
+      fireEvent.click(retryButton());
+
+      await advance(14_999);
+      expect(analyzeMock.mock.calls.length).toBe(before);
+
+      await advance(1);
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
+      await settle();
+    });
+
+    it("대기 중에는 재시도 버튼이 비활성이고 남은 시간이 보인다", async () => {
+      await reachAnalyzeError();
+      await retryOnce(0);
+
+      fireEvent.click(retryButton());
+
+      expect(retryButton()).toBeDisabled();
+      const notice = screen.getByText("5초 뒤에 다시 시도할게요");
+      // 우리가 간격을 두는 것이지 사용자의 잘못이 아니다 (UI_GUIDE).
+      expect(notice.closest('[role="alert"]')).toBeNull();
+
+      await advance(1_000);
+      expect(screen.getByText("4초 뒤에 다시 시도할게요")).toBeInTheDocument();
+
+      await advance(4_000);
+      await settle();
+    });
+
+    it("대기 중 버튼을 다시 눌러도 타이머가 겹치지 않는다", async () => {
+      await reachAnalyzeError();
+      await retryOnce(0);
+      const before = analyzeMock.mock.calls.length;
+
+      fireEvent.click(retryButton());
+      // 비활성이라 눌리지 않지만, 상태로도 막혀 있어야 한다.
+      fireEvent.click(retryButton());
+      fireEvent.click(retryButton());
+
+      await advance(5_000);
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
+      await settle();
+    });
+
+    it("대기 중 처음으로 돌아가면 타이머가 취소되고 분석이 불리지 않는다", async () => {
+      await reachAnalyzeError();
+      await retryOnce(0);
+      const before = analyzeMock.mock.calls.length;
+
+      fireEvent.click(retryButton());
+      expect(screen.getByText("5초 뒤에 다시 시도할게요")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "처음으로" }));
+      expect(screen.getByText("업로드 화면")).toBeInTheDocument();
+
+      // 사용자가 버리기로 한 작업이다. 유령 호출에 비용을 내지 않는다.
+      await advance(20_000);
+      expect(analyzeMock.mock.calls.length).toBe(before);
+    });
+
+    it("상한 3회를 소진하면 버튼 없이 기존 안내만 남는다", async () => {
+      await reachAnalyzeError();
+      await retryOnce(0);
+      await retryOnce(5_000);
+      await retryOnce(15_000);
+
+      expect(screen.queryByRole("button", { name: "다시 시도" })).not.toBeInTheDocument();
+      expect(screen.getByText("잠시 후 다시 시도해 주세요")).toBeInTheDocument();
+      expect(screen.queryByText(/뒤에 다시 시도할게요/)).toBeNull();
+    });
+
+    it("부분 실패 배너의 '이 사진만 다시 시도'도 같은 간격을 따른다", async () => {
+      analyzeMock.mockResolvedValue(ok(makeAnalyze({ failedPhotoCount: 1, failedPhotoIndexes: [1] })));
+      render(<Home />);
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByRole("heading", { name: "책장을 이렇게 읽었어요" });
+      vi.useFakeTimers();
+
+      const partialRetry = () =>
+        screen.getByRole("button", { name: "이 사진만 다시 시도" }) as HTMLButtonElement;
+      const before = analyzeMock.mock.calls.length;
+
+      // 1회차는 즉시.
+      fireEvent.click(partialRetry());
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
+      await settle();
+
+      // 2회차는 5초. 비용이 드는 쪽이 같으므로 간격도 같다.
+      fireEvent.click(partialRetry());
+      expect(partialRetry()).toBeDisabled();
+      expect(screen.getByText("5초 뒤에 다시 시도할게요")).toBeInTheDocument();
+
+      await advance(4_999);
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
+
+      await advance(1);
+      expect(analyzeMock.mock.calls.length).toBe(before + 2);
+      await settle();
+    });
   });
 
   it("문답에 답하면 합성된 기분 텍스트가 guided로 나간다", async () => {

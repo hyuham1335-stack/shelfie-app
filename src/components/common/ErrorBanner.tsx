@@ -54,6 +54,12 @@ export interface ErrorBannerProps {
   requestId: string | null;
   /** 재시도 경로가 있을 때만 넘긴다. SERVICE_DISABLED에서는 무시된다 */
   onRetry?: () => void;
+  /**
+   * 재시도 경로는 있으나 **지금은 누를 수 없는** 상태 (FR-010 재시도 간격).
+   * 감추지 않고 비활성으로 남긴다 — 버튼이 사라지면 회복 경로가 없어진 것처럼
+   * 읽히고, 대기 안내(남은 시간)가 무엇에 딸린 문장인지도 알 수 없어진다.
+   */
+  retryDisabled?: boolean;
   onReset?: () => void;
 }
 
@@ -61,6 +67,7 @@ export function ErrorBanner({
   code,
   requestId,
   onRetry,
+  retryDisabled = false,
   onReset,
 }: ErrorBannerProps) {
   const [copied, setCopied] = useState(false);
@@ -107,7 +114,8 @@ export function ErrorBanner({
             <button
               type="button"
               onClick={onRetry}
-              className="min-h-11 rounded-md border border-line bg-card px-5 py-3 text-sm text-ink hover:bg-muted-surface"
+              disabled={retryDisabled}
+              className="min-h-11 rounded-md border border-line bg-card px-5 py-3 text-sm text-ink hover:bg-muted-surface disabled:text-disabled disabled:hover:bg-card"
             >
               다시 시도
             </button>

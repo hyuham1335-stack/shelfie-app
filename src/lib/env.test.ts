@@ -11,6 +11,8 @@ import {
   MAX_CANDIDATES_PER_PHOTO,
   MAX_CANDIDATES_FOR_LOOKUP,
   MAX_ALADIN_CANDIDATES,
+  ANALYZE_RETRY_DELAYS_MS,
+  MAX_ANALYZE_RETRIES,
 } from "./env";
 
 describe("환경 상수", () => {
@@ -202,5 +204,24 @@ describe("모듈 최상위 부수효과 금지 (회귀)", () => {
     await expect(import("./env")).resolves.toBeDefined();
 
     vi.unstubAllEnvs();
+  });
+});
+
+describe("분석 재시도 간격 (FR-010)", () => {
+  it("스케줄이 PRD 한 줄 그대로다 — 0초 → 5초 → 15초", () => {
+    expect([...ANALYZE_RETRY_DELAYS_MS]).toEqual([0, 5_000, 15_000]);
+  });
+
+  it("상한과 스케줄 길이가 갈라지지 않는다 (회귀 — 삭제하지 마라)", () => {
+    // 갈라지는 순간 마지막 재시도의 간격이 undefined가 된다.
+    expect(MAX_ANALYZE_RETRIES).toBe(3);
+    expect(ANALYZE_RETRY_DELAYS_MS.length).toBe(MAX_ANALYZE_RETRIES);
+    for (let attempt = 0; attempt < MAX_ANALYZE_RETRIES; attempt += 1) {
+      expect(typeof ANALYZE_RETRY_DELAYS_MS[attempt]).toBe("number");
+    }
+  });
+
+  it("첫 재시도는 간격이 0이라 즉시 나간다", () => {
+    expect(ANALYZE_RETRY_DELAYS_MS[0]).toBe(0);
   });
 });

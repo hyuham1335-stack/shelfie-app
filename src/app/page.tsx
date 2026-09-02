@@ -25,7 +25,7 @@
  * 사용자가 고르지 않은 책을 고른 것처럼 만드는 것은 없는 책을 보여주는 것과 같은 종류의
  * 결함이다 (ADR-002).
  */
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { BookCover } from "@/components/booklist/BookCover";
 import { BookList } from "@/components/booklist/BookList";
 import { ErrorBanner } from "@/components/common/ErrorBanner";
@@ -42,7 +42,12 @@ import {
   resolveBook,
   sendClientEvent,
 } from "@/lib/api-client";
-import { MAX_IRRELEVANT_STREAK, MAX_RETRY_INDEX } from "@/lib/env";
+import {
+  ANALYZE_RETRY_DELAYS_MS,
+  MAX_ANALYZE_RETRIES,
+  MAX_IRRELEVANT_STREAK,
+  MAX_RETRY_INDEX,
+} from "@/lib/env";
 import {
   canRecommendAgain,
   createSessionState,
@@ -53,9 +58,6 @@ import {
 import type { InputMode, SessionState } from "@/lib/session";
 import type { ErrorCode } from "@/types/api";
 import type { AladinCandidate, ResolvedCandidate, UnidentifiedBook } from "@/types/book";
-
-/** 분석 재시도 상한 (FR-010). 재시도는 데이터를 망가뜨리지 않지만 비용은 매번 새로 든다 */
-const MAX_ANALYZE_RETRIES = 3;
 
 /** `resolveRequestSchema.query`의 상한. 넘겨 보내면 400으로 돌아온다 */
 const MAX_RESOLVE_QUERY_LENGTH = 200;
@@ -93,11 +95,30 @@ export default function Home() {
   /** 무관 판정의 **연속** 횟수. 서버는 무상태라 셀 수 없어 화면이 센다 (API_SPEC /api/recommend) */
   const [irrelevantCount, setIrrelevantCount] = useState(0);
   const [panel, setPanel] = useState<ResolvePanel | null>(null);
+  /**
+   * 재시도 간격을 기다리는 동안 **남은 초** (FR-010). `null`이면 대기 중이 아니다.
+   *
+   * ref가 아니라 state인 것은 이 값이 화면에 그려지기 때문이다 — 버튼이 눌리는데
+   * 아무 일도 일어나지 않으면 사용자는 간격이 아니라 고장으로 읽는다.
+   * **저장소에 남기지 않는다** — 새로고침하면 세션이 통째로 사라지므로 대기만
+   * 살아남을 이유가 없다 (ADR-003).
+   */
+  const [retryWaitSec, setRetryWaitSec] = useState<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
 
   // 추천 화면은 서지 사실만 필요하므로 출처 구분 없이 책만 편다. 확인된 책 목록
   // 자체는 `BookList`가 `ShelfBook`으로 통째로 받아 한 목록으로 그린다.
   const books = state.books.map((entry) => entry.book);
   const canRetryAnalyze = photos.length > 0 && analyzeAttempts < MAX_ANALYZE_RETRIES;
+  const isWaitingRetry = retryWaitSec !== null;
+
+  // 언마운트에서 타이머를 정리한다. 남겨 두면 사라진 화면이 분석을 부른다.
+  useEffect(
+    () => () => {
+      if (retryTimerRef.current !== null) window.clearInterval(retryTimerRef.current);
+    },
+    [],
+  );
 
   // 잃을 것이 생긴 뒤에만 되묻는다. 아무것도 없는 화면에서 확인창을 띄우면
   // 경고가 소음이 되고, 정작 결과를 들고 있을 때의 경고까지 무시하게 된다.
@@ -134,19 +155,17 @@ export default function Home() {
     void runAnalyze(dataUris);
   }
 
-  /**
-   * 실패한 사진만 골라 다시 보낸다. 인덱스가 비어 있으면(전체 실패·조회 실패 재시도)
-   * 갖고 있는 사진 전부를 보낸다.
-   */
-  function handleRetryPhotos(photoIndexes: number[]) {
-    if (!canRetryAnalyze) return;
+  /** 대기 중인 재시도를 취소한다. 취소하면 예약된 분석 호출도 함께 사라진다 */
+  function cancelRetryTimer() {
+    if (retryTimerRef.current !== null) {
+      window.clearInterval(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    setRetryWaitSec(null);
+  }
 
-    const picked = photoIndexes
-      .map((index) => photos[index])
-      .filter((uri): uri is string => uri !== undefined);
-    const images = picked.length > 0 ? picked : photos;
-    if (images.length === 0) return;
-
+  /** 실제로 분석을 다시 태운다. 재시도 회차를 올리는 자리도 여기 하나다 */
+  function startRetry(images: string[]) {
     // 다음 응답의 photoIndex는 이번에 보낸 배열을 기준으로 매겨진다. 보낸 것을
     // 그대로 들고 있어야 그 인덱스로 다시 사진을 찾을 수 있다.
     setPhotos(images);
@@ -154,6 +173,48 @@ export default function Home() {
     setPanel(null);
     dispatch({ type: "ANALYZE_RETRIED", photoCount: images.length });
     void runAnalyze(images);
+  }
+
+  /**
+   * 실패한 사진만 골라 다시 보낸다. 인덱스가 비어 있으면(전체 실패·조회 실패 재시도)
+   * 갖고 있는 사진 전부를 보낸다.
+   *
+   * **간격은 여기서 한 번만 건다** (FR-010). 에러 화면의 "다시 시도"와 부분 실패
+   * 배너의 "이 사진만 다시 시도"가 둘 다 이 함수로 합류하고, 비용이 드는 쪽은
+   * 같으므로 간격도 같다. 두 군데에 각각 넣으면 한쪽만 고쳐지는 날이 온다.
+   */
+  function handleRetryPhotos(photoIndexes: number[]) {
+    // 대기 중 재진입을 상태로도 막는다. 버튼 비활성화만으로는 두 경로 중 하나가
+    // 빠지는 날에 타이머가 겹친다.
+    if (!canRetryAnalyze || isWaitingRetry) return;
+
+    const picked = photoIndexes
+      .map((index) => photos[index])
+      .filter((uri): uri is string => uri !== undefined);
+    const images = picked.length > 0 ? picked : photos;
+    if (images.length === 0) return;
+
+    // 이번이 몇 번째 재시도인가(0-based). 첫 재시도는 간격 0초라 즉시 나간다 —
+    // 0초 대기에 "0초 남았어요"를 띄우지 않는다.
+    const delayMs = ANALYZE_RETRY_DELAYS_MS[analyzeAttempts] ?? 0;
+    if (delayMs <= 0) {
+      startRetry(images);
+      return;
+    }
+
+    // 1초마다 남은 초를 깎는다. `remaining`은 클로저 지역 변수다 — 상태 갱신
+    // 함수 안에서 부수효과(분석 호출)를 내지 않으려는 것이다.
+    let remaining = Math.ceil(delayMs / 1000);
+    setRetryWaitSec(remaining);
+    retryTimerRef.current = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setRetryWaitSec(remaining);
+        return;
+      }
+      cancelRetryTimer();
+      startRetry(images);
+    }, 1000);
   }
 
   /* ---------------------------------------------------------------- *
@@ -382,6 +443,9 @@ export default function Home() {
   }
 
   function handleRestart() {
+    // 사용자가 버리기로 한 작업이다. 타이머를 남기면 새 세션에서 유령 분석 호출이
+    // 뜨고, 그 비용은 아무도 요청하지 않은 것이 된다.
+    cancelRetryTimer();
     setPhotos([]);
     setAnalyzeAttempts(0);
     setPanel(null);
@@ -442,8 +506,14 @@ export default function Home() {
           // 응답 본문이 없었으면 null이다. "(없음)"을 지어내 넘기지 않는다.
           requestId={state.requestId}
           onRetry={canRetryPhotos ? () => handleRetryPhotos([]) : undefined}
+          // 간격을 기다리는 동안은 감추지 않고 비활성으로 남긴다 (FR-010).
+          retryDisabled={isWaitingRetry}
           onReset={handleRestart}
         />
+
+        {/* 우리가 간격을 두는 것이지 사용자의 잘못이 아니다 — 경고색도
+            role="alert"도 쓰지 않는다 (UI_GUIDE 안내 문구) */}
+        {isWaitingRetry && <Notice>{retryWaitSec}초 뒤에 다시 시도할게요</Notice>}
 
         {fromRecommend && (
           <div className="flex items-center gap-3">
@@ -479,6 +549,8 @@ export default function Home() {
           <p className="text-sm text-body">알라딘에서 확인한 책만 추천 후보가 돼요</p>
         </header>
 
+        {isWaitingRetry && <Notice>{retryWaitSec}초 뒤에 다시 시도할게요</Notice>}
+
         <BookList
           books={state.books}
           unidentified={state.unidentified}
@@ -491,6 +563,7 @@ export default function Home() {
           onSelectCandidate={(book, candidate) => void handleSelectCandidate(book, candidate)}
           onRetryLookup={handleRetryLookup}
           onRetryPhoto={handleRetryPhotos}
+          retryPhotoDisabled={isWaitingRetry}
         />
 
         {panel !== null && (

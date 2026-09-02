@@ -1,46 +1,48 @@
 {
-  "measured_at": "2026-09-02T14:09:59+0900",
+  "measured_at": "2026-09-02T15:57:54+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
-  "partial": false,
+  "partial": true,
   "stages": {
     "compile": {
-      "sec": 5.28,
+      "sec": 3.86,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T14:09:59+0900"
+      "measured_at": "2026-09-02T15:57:54+0900"
     },
     "lint": {
-      "sec": 11.3,
+      "sec": 11.45,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T14:09:59+0900"
+      "measured_at": "2026-09-02T15:57:54+0900"
     },
     "check": {
-      "sec": 2.19,
+      "sec": 2.2,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T14:09:59+0900"
+      "measured_at": "2026-09-02T15:57:54+0900"
     },
     "scoped": {
       "sec": 4.33,
       "ok": true,
       "exit_code": 0,
-      "state": "measured",
-      "measured_at": "2026-09-02T14:09:59+0900"
+      "state": "stale",
+      "measured_at": "2026-09-02T14:09:59+0900",
+      "skipped": true,
+      "stale_reason": "선택 대상 없음 — 계약이 있어야 측정된다. --select <test-name> 으로 수동 측정할 수 있다"
     },
     "full": {
-      "sec": 39.67,
+      "sec": 41.86,
       "ok": true,
       "exit_code": 0,
-      "tests_ran": 1183,
-      "suites": 41,
+      "tests_ran": 1257,
+      "suites": 44,
       "failures": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T14:09:59+0900"
+      "measured_at": "2026-09-02T15:57:54+0900"
     },
     "e2e": {
       "sec": null,
@@ -49,11 +51,11 @@
       "reason": "cmd:null — 이 스택에 없는 스테이지"
     },
     "build": {
-      "sec": 10.89,
+      "sec": 11.28,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T14:09:59+0900"
+      "measured_at": "2026-09-02T15:57:54+0900"
     },
     "docs": {
       "sec": null,
@@ -63,7 +65,7 @@
     }
   },
   "retry": {
-    "steps_recorded": 21,
+    "steps_recorded": 25,
     "steps_unrecorded": 20,
     "steps_retried": 0,
     "max_attempts_observed": 1
@@ -77,7 +79,7 @@
     "background_threshold_sec": 180,
     "background_full_regression": false,
     "full_timeout_sec": 300,
-    "tests_ran_floor": 1064,
+    "tests_ran_floor": 1131,
     "retry_budget": 2
   }
 }

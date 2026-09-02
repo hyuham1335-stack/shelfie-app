@@ -446,3 +446,162 @@ export function buildShareImageLayout(
     ],
   };
 }
+
+/* ================================================================== *
+ * 그리기 층
+ *
+ * 여기는 **판단하지 않는다.** 좌표·줄바꿈·잘림·캔버스 크기는 위층이 이미 정했고,
+ * 이 층이 하는 일은 명령 목록을 받은 순서대로 `CanvasRenderingContext2D`에 옮기는
+ * 것뿐이다. 여기서 `if`로 위치를 조정하기 시작하면 그 판단은 jsdom이 검사할 수 없는
+ * 곳으로 옮겨간 것이고, 두 겹으로 가른 이유가 사라진다 (ADR-009).
+ *
+ * 만든 `Blob`은 값으로만 돌려준다 — 서버로 보내지도 저장하지도 않는다
+ * (ADR-003, 보관 기간 0). 다운로드 배선은 이 파일 밖의 일이다.
+ * ================================================================== */
+
+/**
+ * 그리기에 필요한 바깥 세계 둘. 기본값은 브라우저의 것이고, 테스트는 여기에
+ * 가짜를 끼운다 — jsdom에는 canvas 구현이 없으므로 이 주입 지점이 없으면
+ * 이 층은 한 줄도 검사할 수 없다.
+ */
+export interface RenderShareImageOptions {
+  /** 캔버스를 만드는 방법. 기본은 `document.createElement("canvas")` */
+  createCanvas?: () => HTMLCanvasElement;
+  /** 표지 한 장을 불러온다. 실패하면 reject 또는 `null` — 어느 쪽이든 저장은 계속된다 */
+  loadImage?: (src: string) => Promise<CanvasImageSource | null>;
+}
+
+const BLOB_TYPE = "image/png";
+
+function createDefaultCanvas(): HTMLCanvasElement {
+  return document.createElement("canvas");
+}
+
+/**
+ * 저장용 표지를 **화면의 `<img>`와 별도로** 받는다.
+ *
+ * 화면의 `BookCover`에 `crossOrigin="anonymous"`를 붙이면 CORS 헤더를 주지 않는
+ * 호스트의 표지가 그 순간부터 화면에서도 안 뜬다 — 지금 잘 뜨는 표지를 저장 기능
+ * 때문에 잃는 것은 명백한 회귀다. 반대로 `crossOrigin` 없이 그린 이미지는 캔버스를
+ * 오염시켜 `toBlob`이 SecurityError로 죽는다. 그래서 저장용은 따로 받는 것 말고
+ * 다른 답이 없다 (ADR-009).
+ *
+ * 실패를 던지지 않고 `null`로 돌려준다 — 표지는 이 그림의 목적이 아니다.
+ */
+function loadCoverImage(src: string): Promise<CanvasImageSource | null> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    // src보다 먼저 세워야 한다. 뒤에 세우면 이미 시작된 요청에 적용되지 않는다
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = src;
+  });
+}
+
+/**
+ * 표지를 **함께** 기다린다. 한 장씩 순차로 기다리면 저장이 눈에 띄게 느려지고,
+ * 한 장의 실패가 나머지를 무너뜨려서도 안 된다 — 그래서 실패를 개별로 삼킨다.
+ * 같은 URL은 한 번만 받는다.
+ */
+async function loadCovers(
+  commands: readonly DrawCommand[],
+  loadImage: (src: string) => Promise<CanvasImageSource | null>,
+): Promise<Map<string, CanvasImageSource>> {
+  const sources = new Set<string>();
+  for (const command of commands) {
+    // 빈 문자열은 불러올 것이 없다는 뜻이다 — 요청조차 만들지 않는다
+    if (command.kind === "cover" && command.src !== "") sources.add(command.src);
+  }
+
+  const results = await Promise.all(
+    Array.from(sources, async (src) => {
+      try {
+        return [src, await loadImage(src)] as const;
+      } catch {
+        return [src, null] as const;
+      }
+    }),
+  );
+
+  const loaded = new Map<string, CanvasImageSource>();
+  for (const [src, image] of results) {
+    if (image !== null) loaded.set(src, image);
+  }
+  return loaded;
+}
+
+/** 명령 하나를 옮긴다. 분기는 명령 종류와 "표지를 얻었는가" 둘뿐이다 */
+function applyCommand(
+  ctx: CanvasRenderingContext2D,
+  command: DrawCommand,
+  covers: ReadonlyMap<string, CanvasImageSource>,
+): void {
+  if (command.kind === "rect") {
+    ctx.fillStyle = command.color;
+    ctx.fillRect(command.x, command.y, command.width, command.height);
+    return;
+  }
+
+  if (command.kind === "text") {
+    ctx.font = command.font;
+    ctx.fillStyle = command.color;
+    ctx.fillText(command.text, command.x, command.y);
+    return;
+  }
+
+  const image = command.src === "" ? undefined : covers.get(command.src);
+  if (image === undefined) {
+    // 폴백은 위층이 미리 실어 보냈다. 레이아웃을 다시 계산하지 않는다
+    for (const fallback of command.fallback) applyCommand(ctx, fallback, covers);
+    return;
+  }
+
+  ctx.drawImage(image, command.x, command.y, command.width, command.height);
+}
+
+/** `toBlob`이 `null`이면 실패다 — 절반만 그려진 캔버스를 성공으로 돌려주지 않는다 */
+function toPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob === null) {
+        reject(new Error("저장 이미지를 PNG로 인코딩하지 못했습니다"));
+        return;
+      }
+      resolve(blob);
+    }, BLOB_TYPE);
+  });
+}
+
+/**
+ * 추천 결과를 PNG `Blob` 한 장으로 그린다 (FR-014).
+ *
+ * 폭 측정기로 `ctx.measureText`를 넘겨 **실제 글꼴 폭**으로 줄바꿈·잘림이 정해지게
+ * 한다. 표지는 따로 받고, 못 얻은 책은 위층이 실어 보낸 폴백으로 그린 뒤 계속
+ * 진행한다 — 표지 때문에 저장이 실패하지 않는 것이 여기서 더 중요하다.
+ */
+export async function renderShareImage(
+  books: readonly ShareImageBook[],
+  options: RenderShareImageOptions = {},
+): Promise<Blob> {
+  const canvas = (options.createCanvas ?? createDefaultCanvas)();
+  const ctx = canvas.getContext("2d");
+  if (ctx === null) {
+    throw new Error("캔버스 2d 컨텍스트를 얻지 못했습니다");
+  }
+
+  const measure: MeasureText = (text, font) => {
+    ctx.font = font;
+    return ctx.measureText(text).width;
+  };
+
+  const layout = buildShareImageLayout(books, measure);
+  canvas.width = layout.width;
+  canvas.height = layout.height;
+
+  const covers = await loadCovers(layout.commands, options.loadImage ?? loadCoverImage);
+
+  for (const command of layout.commands) applyCommand(ctx, command, covers);
+
+  return toPngBlob(canvas);
+}

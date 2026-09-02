@@ -34,17 +34,12 @@ jobs:
           node-version: "20"
           cache: npm
 
-      # lockfile 을 만든 로컬 npm 과 같은 메이저를 쓴다. npm 10 은
-      # @tailwindcss/oxide-wasm32-wasi · @img/sharp-wasm32 가 끌어오는
-      # 번들·wasm 의존성(@emnapi/core·runtime)이 lock 의 최상위에 있어야
-      # 한다고 요구하는데 npm 11 은 그것을 쓰지 않는다. 같은 lock 이 npm 11
-      # 에서는 통과하고 npm 10 에서는 EUSAGE 로 죽는 이유가 이것이다.
-      # Node 메이저는 20 그대로다 — ADR-005 의 전제는 런타임 메이저지
-      # 패키지 매니저 버전이 아니다.
-      - name: npm 메이저를 로컬과 맞춘다
-        run: npm i -g npm@11
-
       - name: install
+        # lockfile 은 npm 10 으로 만든다 (`npx npm@10 install --package-lock-only`).
+        # npm 11 이 Windows 에서 만든 lock 은 wasm 계열 optional 의존성
+        # (@emnapi/core · @emnapi/runtime)의 최상위 항목을 빠뜨려 리눅스 러너의
+        # `npm ci` 가 EUSAGE 로 죽는다. 로컬에서 `npx npm@10 ci --dry-run` 으로
+        # 먼저 확인할 것.
         run: npm ci
 
       # 아래 다섯 줄이 한 세트다 (TRD 8번). 순서는 싼 게이트부터 —

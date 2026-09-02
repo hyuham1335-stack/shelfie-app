@@ -1,63 +1,63 @@
 {
-  "measured_at": "2026-09-02T11:29:58+0900",
+  "measured_at": "2026-09-02T12:22:41+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": false,
   "stages": {
     "compile": {
-      "sec": 3.03,
+      "sec": 3.02,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     },
     "lint": {
-      "sec": 9.2,
+      "sec": 8.8,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     },
     "check": {
-      "sec": 1.8,
+      "sec": 1.7,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     },
     "scoped": {
-      "sec": 3.48,
+      "sec": 3.33,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     },
     "full": {
-      "sec": 23.72,
+      "sec": 23.39,
       "ok": true,
       "exit_code": 0,
-      "tests_ran": 1036,
+      "tests_ran": 1091,
       "suites": 37,
       "failures": 0,
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     },
     "e2e": {
       "sec": null,
       "skipped": true,
       "reason": "cmd:null — 이 스택에 없는 스테이지",
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     },
     "build": {
-      "sec": 9.08,
+      "sec": 8.72,
       "ok": true,
       "exit_code": 0,
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     },
     "docs": {
       "sec": null,
       "skipped": true,
       "reason": "cmd:null — 이 스택에 없는 스테이지",
-      "measured_at": "2026-09-02T11:29:58+0900"
+      "measured_at": "2026-09-02T12:22:41+0900"
     }
   },
   "retry": {
-    "steps_recorded": 11,
+    "steps_recorded": 16,
     "steps_unrecorded": 20,
     "steps_retried": 0,
     "max_attempts_observed": 1
@@ -71,7 +71,7 @@
     "background_threshold_sec": 180,
     "background_full_regression": false,
     "full_timeout_sec": 300,
-    "tests_ran_floor": 932,
+    "tests_ran_floor": 981,
     "retry_budget": 2
   }
 }

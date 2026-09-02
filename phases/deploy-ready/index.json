@@ -1,0 +1,265 @@
+{
+  "project": "shelfie",
+  "phase": "deploy-ready",
+  "carried_reports": {
+    "note": "런 #9 의 step 들이 올린 새 보고는 0건이라(세 런 연속) 이번 런이 받을 이월 코드 부채는 런 #5 보고 ⑦(다섯 런째)과 런 #3 알라딘 상한 둘이다. PRD MoSCoW 의 Must·Should·Could 와 TRD 의 [MVP] 가 런 #9 에서 전부 닫혀 FR 이 남지 않았으므로, 이 런의 계약은 새 기능이 아니라 **배포 가능 상태**다 — 이월 부채를 닫고, 문서에만 있고 회귀로 고정되지 않은 계약(TRD 6.6 접근성 · TR-011 의 'Edge Cases 표와 1:1 대응')을 실행 가능한 테스트로 잠근다.",
+    "measurement_design": "이 런은 런 #9 가 남긴 측정 숙제 둘을 **같은 런 안에서** 푼다. ① [[ADR-H012]] 의 두 줄 표가 n=2 에 서 있고 통독 1건(런 #8 capture-guide)·호출 1건(런 #9 golden-runner)이 서로 다른 런이라 작업 성격이 교란 변수다 — 두 유형을 한 런에 두면 교란 없이 비교된다. ② 접두부 ↔ 비용 상관이 0.040(n=5) → 0.424(n=9) 로 올랐는데 런 #9 step 3 이 접두부와 끌어온 양 **둘 다 최대**여서 가르지 못했다 — 이 런은 **접두부는 큰데 끌어온 양은 작은 step**(step 2)과 그 반대 극(step 1)을 함께 둔다. 상한은 접두부에도 끌어온 양에도 다섯 번째로 걸지 않는다.",
+    "estimate_under_test": "수치는 전부 **문자** 기준이다(실행기가 세는 단위 — 바이트로 재면 한글 때문에 1.4배 부풀어 어림이 틀린다). 관측점 넷: ① **통독 유형** — step 1 이 고칠 파일인 src/lib/merge.ts(6,844자)와 src/lib/merge.test.ts(10,997자), 합 17,841자·**어림 10.5 turn** 을 일부러 첨부하지 않는다. [[ADR-H012]] 첫째 줄이 '하한'이라고 적은 것을 시험한다(런 #8 은 1.9배였다). ② **호출 유형** — step 0 의 src/lib/image.ts(9,956자 · 어림 5.9 turn). ③ **호출 유형** — step 1 의 src/services/aladin.ts(22,379자 · 어림 13.2 turn). 둘 다 시그니처와 한두 분기만 필요하므로 예측은 크기와 무관하게 2~3 turn 이다. ④ **접두부 축** — step 2 는 접두부 약 165,900자로 **열 런 최대**(직전 기록은 런 #9 step 3 의 152,800)이면서 손댈 파일을 전부 첨부해 끌어온 양이 최소일 것으로 예측되고, step 1 은 약 51,000자로 최저극이면서 미첨부 파일 셋을 직접 읽는다. **step 2 가 접두부 최대인데 비용이 최대가 아니면 축은 끌어온 양이고(런 #9 결론 유지), 비용도 최대면 세 런 연속 서술이 뒤집힌다.**",
+    "resolved_by_main_before_run": [
+      "docs/ARCHITECTURE.md 상태 관리 절에 '세션이 들고 있는 것은 원본 File 이다' 를 계약으로 못 박았다 — 원본 File[] 을 상태로 보존하고 재시도는 리사이즈 결과가 아니라 원본에서 다시 리사이즈한다. 이 줄이 없으면 step 0 이 상태 형태를 스스로 정하고 PRD 5번 '고른 사진은 그대로 남는다' 와 어긋난다",
+      "docs/TRD.md 10번 병목 표 아래에 '세션당 260회는 산문의 계산식이 아니라 코드가 잠그는 계약이다' 절을 신설했다 — MAX_CANDIDATES_FOR_LOOKUP(80)·MAX_IDENTIFIED_BOOKS(50) 에서 (80+50)×2 = 260 으로 유도되고 그 관계를 회귀 테스트로 고정한다. 인스턴스 간 카운터가 아니라 한 요청 안의 구조적 상한이라 무상태 전제(ADR-003)와 충돌하지 않는다",
+      "docs/ADR.md 에 ADR-011 을 썼다 — @anthropic-ai/sdk 0.68 을 지금 올리지 않고 캐스팅 경계(services/anthropic.ts 의 MessagesClient·MessageRequestBody) 하나로 계속 버티되 상환 트리거 3종(런타임 거부 · 새 SDK 표면 필요 · audit high)을 못 박았다. 네 런째 조용히 이월되던 것을 결정으로 바꾼 것이 이 ADR 의 목적이다",
+      ".github/workflows/ci.yml 을 신설했다 — TRD 9번 CI 파이프라인이 아홉 런 동안 문서에만 있었다(.github 디렉토리 자체가 없었다). 게이트는 TRD 8번 AC 다섯 줄과 같은 세트이고 골든은 넣지 않는다(실제 API 호출 · 키 없으면 목업 위에서 재현율 100% — ADR-010)"
+    ],
+    "not_assigned_this_run": [
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입 노후. **이월이 아니라 결정으로 닫혔다**(ADR-011). 코드 변경은 트리거 도달 시점의 일이므로 이 런의 step 에 주지 않는다",
+      "ROADMAP 12 — 3단계 게이트의 두 번째 스택(gradle-java) 대상 리포가 이 머신에 없다. 사람이 정한다",
+      "ROADMAP 14 — 어댑터 verified:true 승격은 04-gate 가 어댑터를 소비한 뒤다. 열 런 모두 execute.py 로 돈다",
+      "ROADMAP 28 — 접두부 통합 예산의 **값**. 이 런이 다섯 번째 표본이고 축을 가르는 첫 표본이다. 값은 다섯 번째로 정하지 않는다",
+      "ROADMAP 30 — 골든 세트가 비어 있다. 사진 20장과 기대 목록은 사람이 채워야 하고 이 런의 범위가 아니다. 그때까지 npm run test:golden 은 no_set_dir 로 skip 만 하며 **skip 은 통과가 아니다**",
+      "TR-011 번들 200KB(gzip) 게이트 — 측정 수단이 npm run build 출력뿐이고 검사 스크립트를 두려면 scripts/(메인 소유)여야 한다. 런 전 메인 작업에 넣지 않았으므로 이번 런에서 닫히지 않는다",
+      "src/components/booklist/IdentifiedBookCard.tsx — step 2 의 sources 상한(60,000자)에 걸려 유일하게 첨부에서 뺀 컴포넌트다. 접근성 5개 항목 중 이 카드에만 있는 것은 없다(alt 는 BookCover, 배지는 Badge, 생성 텍스트는 ClaudeText 가 그린다). 필요하면 step 이 직접 읽는다",
+      "src/components/common/ClaudeText.tsx · src/components/common/Notice.tsx — step 2 의 sources 합계가 60,120자로 상한 60,000자를 넘어 첨부에서 뺐다(58,735자). 런 시작 전 크기로 설계했는데 step 0 이 UploadScreen.tsx 를 484자 늘렸고, 검사는 step 시작 시점에 돈다(M18). 접근성 5개 항목 중 이 둘에만 있는 것은 없다 — 생성 텍스트 블록의 계약은 UI_GUIDE 가 들고 있고 대비는 색 조합 목록으로 검사하며 Notice 는 배지도 라이브 영역도 그리지 않는다. 필요하면 step 이 직접 읽는다(합 1,385자). **상한을 올려서 통과시키지 않았다.**"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "original-photo-source",
+      "status": "completed",
+      "docs": [
+        "ARCHITECTURE",
+        "PRD",
+        "UI_GUIDE"
+      ],
+      "sources": [
+        "src/app/page.tsx",
+        "src/components/upload/UploadScreen.tsx"
+      ],
+      "started_at": "2026-09-02T16:35:12+0900",
+      "summary": "세션이 리사이즈 결과 대신 원본 File[] 을 보존하도록 업로드→페이지 경계를 바꿨다. onAnalyze 시그니처는 (files: File[], dataUris: string[]) — 앞이 세션이 보존하는 원본이고 뒤는 업로드 화면이 방금 만들어 곁들인 파생값으로 **첫 요청 한 번**에만 쓰인다(첫 요청은 두 번 리사이즈하지 않는다). page.tsx 의 상태 필드는 photos: string[] → files: File[] 로 바뀌었고, 재시도 두 경로(에러 화면 '다시 시도' · 부분 실패 배너 '이 사진만 다시 시도')는 startRetry → runFromSources → prepare() 를 지나며 **원본에서 resizeToDataUri 를 다시 태운다**. checkOutputBudget 은 두 곳에서 산다 — 첫 요청은 UploadScreen.handleAnalyze 가, 재시도는 page.tsx 의 prepare() 가 검사하고 위반은 PAYLOAD_TOO_LARGE, 리사이즈 실패는 INTERNAL_ERROR 로 ANALYZE_FAILED 한다(requestId 는 null). 리사이즈가 비동기가 되면서 runIdRef 회차 번호를 도입했다 — beginRun() 은 handleAnalyze·startRetry·handleRestart 에서 올리고, 비동기 경계마다 isCurrentRun() 으로 낡은 리사이즈·응답을 버린다. 재시도 간격(FR-010 0→5→15초)은 handleRetryPhotos 한 곳에 그대로 있고, startRetry 가 setFiles(부분집합) 하므로 photoIndex 는 계속 '이번에 보낸 배열' 기준이다. lib/session.ts·lib/image.ts 는 손대지 않았다. 다음 step 참고: reviewing 상태에서 온 ANALYZE_RETRIED 는 리듀서가 처리하지 않아(unidentifiedOnly·error 만 처리) 부분 실패 재시도가 analyzing 으로 가지 못하고 그 응답이 ANALYZE_SUCCEEDED 에서 버려진다 — step 3(edge-case-matrix)의 몫으로 남긴다.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 664,
+          "at": "2026-09-02T16:46:16+0900",
+          "guardrail_docs": [
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 48771,
+          "source_chars": 38211,
+          "context_chars": 0,
+          "prompt_chars": 92801,
+          "preamble_chars": 87798,
+          "step_body_chars": 5003,
+          "cost_usd": 4.8616,
+          "turns": 30,
+          "cache_read": 4196860,
+          "cache_write": 159155,
+          "output_tokens": 44413,
+          "session_id": "157d689a-34fe-4026-b0ab-b59e66efb86f",
+          "tool_result_chars": 53481,
+          "tool_result_count": 29,
+          "tool_output_chars": 53481,
+          "tool_calls": {
+            "Bash": 29
+          },
+          "tool_result_p50": 321,
+          "tool_result_p90": 6522,
+          "tool_result_max": 11583,
+          "tool_result_repeat_chars": 14,
+          "tool_result_repeat_count": 7,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T16:46:16+0900",
+      "attempts": 1
+    },
+    {
+      "step": 1,
+      "name": "aladin-call-budget",
+      "status": "completed",
+      "docs": [
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/env.ts"
+      ],
+      "started_at": "2026-09-02T16:46:16+0900",
+      "summary": "TRD 10번의 세션당 알라딘 호출 상한을 산문에서 코드로 옮겨 회귀로 잠갔다. src/lib/env.ts 에 MAX_ALADIN_CALLS_PER_SESSION = 260(선언)과 ALADIN_CALLS_PER_LOOKUP = 2(조회 1건의 최대 HTTP 호출)를 두고, 유도값은 상수로 다시 박지 않고 merge.test.ts 의 새 describe('세션당 알라딘 호출 상한')가 관계로만 검사한다 — (MAX_CANDIDATES_FOR_LOOKUP + MAX_IDENTIFIED_BOOKS) x ALADIN_CALLS_PER_LOOKUP <= MAX_ALADIN_CALLS_PER_SESSION 이라 80을 200으로 올리면 이 테스트가 깨진다. reduceBeforeLookup 이 후보 300건에서도 조회 대상을 80건 안으로 자르는 것과, 확인 상한 50이 유도식의 항이라는 것도 함께 잠갔다(4 it). merge.ts 는 이미 env.ts 상수를 import 하고 있어 리터럴 제거는 필요 없었다. 런타임 카운터·저장소는 만들지 않았다(ADR-003). **ALADIN_CALLS_PER_LOOKUP 실측 확인: 2가 맞다** — services/aladin.ts 의 requestWithRetry 가 callOnce 1회 + retryable(5xx·타임아웃·네트워크)일 때만 남은 데드라인 안에서 재시도 1회로 끝나고, ItemSearch·ItemLookUp 이 같은 래퍼를 공유하므로 어느 쪽도 3회를 내지 않는다. **새 보고 1건(사람 판단 필요)**: 유도식의 둘째 항 MAX_IDENTIFIED_BOOKS(50)이 실제 ItemLookUp 호출 수의 상한이 아니다. app/api/analyze/route.ts 는 lookupFactsMany 를 dedupeByIsbn(promoted) 에 걸고 capIdentified 는 그 **뒤에** 부르므로, 확인 승격이 80건 나오면 ItemLookUp 도 80건이 나가 실제 최악값은 (80+50)x2=260 이 아니라 (80+80)x2=320 이다. 상한을 올려 맞추지 않았고(step 금지사항) 라우트 순서도 이 step 범위 밖이라 손대지 않았다 — 선택지는 ① capIdentified 를 사실 조회 앞으로 옮겨 50을 진짜 상한으로 만들기(평점 기반 정렬이 조회 뒤에나 가능해 그대로는 안 되고 절단 기준을 바꿔야 한다) ② TRD 10번의 유도식을 (80+80)x2=320 과 '하루 약 15세션'으로 고쳐 적기 중 하나이며, 둘 다 문서 소유자의 결정이다.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 233,
+          "at": "2026-09-02T16:50:09+0900",
+          "guardrail_docs": [
+            "TRD"
+          ],
+          "guardrail_chars": 43215,
+          "source_chars": 7958,
+          "context_chars": 1109,
+          "prompt_chars": 57431,
+          "preamble_chars": 53098,
+          "step_body_chars": 4333,
+          "cost_usd": 1.8816,
+          "turns": 16,
+          "cache_read": 1232756,
+          "cache_write": 97016,
+          "output_tokens": 10036,
+          "session_id": "c91408fd-7dd1-43f6-a0e4-3e6c14b2c50b",
+          "tool_result_chars": 33555,
+          "tool_result_count": 15,
+          "tool_output_chars": 33555,
+          "tool_calls": {
+            "Bash": 15
+          },
+          "tool_result_p50": 1823,
+          "tool_result_p90": 7074,
+          "tool_result_max": 7810,
+          "tool_result_repeat_chars": 4,
+          "tool_result_repeat_count": 2,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T16:50:09+0900",
+      "attempts": 1
+    },
+    {
+      "step": 2,
+      "name": "a11y-contract",
+      "status": "completed",
+      "docs": [
+        "UI_GUIDE",
+        "TRD",
+        "PRD",
+        "ARCHITECTURE",
+        "ADR"
+      ],
+      "sources": [
+        "src/components/booklist/BookList.tsx",
+        "src/components/upload/UploadScreen.tsx",
+        "src/components/mood/MoodInput.tsx",
+        "src/components/recommend/RecommendationList.tsx",
+        "src/components/recommend/RecommendationCard.tsx",
+        "src/components/common/ErrorBanner.tsx",
+        "src/components/booklist/UnidentifiedBookCard.tsx",
+        "src/components/booklist/BookCover.tsx",
+        "src/components/mood/GuidedQuestions.tsx",
+        "src/components/upload/PhotoThumbnails.tsx",
+        "src/components/upload/PhotoPicker.tsx",
+        "src/components/upload/RejectedNotice.tsx",
+        "src/components/upload/CaptureGuide.tsx",
+        "src/components/common/Badge.tsx",
+        "src/components/common/AladinLink.tsx",
+        "src/components/common/Skeleton.tsx"
+      ],
+      "started_at": "2026-09-02T16:50:10+0900",
+      "summary": "TRD 6.6 접근성 다섯 줄을 회귀로 잠갔다 — 새 파일 src/components/a11y.test.tsx 하나에 33 it. **한 파일에 모은 이유**: 다섯 계약이 전부 여러 컴포넌트에 걸쳐 있다(배지가 색만으로 구분되지 않는지는 UnidentifiedBookCard 안에서만 판정되고, 대비는 글자색과 배경색이 서로 다른 컴포넌트에 있을 때 비로소 정해진다). 컴포넌트별로 흩으면 계약 하나가 여러 곳으로 쪼개져 어느 줄이 무너졌는지 이름으로 알 수 없다 — describe 이름이 'TRD 6.6 ①'~'⑤'를 번호째로 달아 깨진 테스트만 보고 무너진 계약을 안다(common/antipatterns.test.tsx 가 UI_GUIDE 안티패턴 표에 대해 쓰는 것과 같은 수법이다). ① 키보드: tabOrder(문서 순서 포커스 가능 요소) + focus() 실제 획득 + 네이티브 활성화 태그(A/BUTTON/INPUT/SELECT/SUMMARY/TEXTAREA) + fireEvent.click 콜백, 네 조건을 함께 단정한다. TRD 가 이름으로 지목한 셋(PhotoPicker 촬영·선택 두 input · UnidentifiedBookCard 사유별 경로 3종 · RecommendationCard 수락)에 더해 GuidedQuestions 라디오 · MoodInput textarea·예시·제출 · CaptureGuide summary · ErrorBanner 3버튼 · BookList 부분 실패 재시도 · AladinLink · PhotoThumbnails 제거 · RecommendationList 2버튼을 덮었고, '감추지 않고 비활성'을 세 곳(수락 완료·문답 미완·재시도 대기)에서 'DOM 에는 있고 Tab 순서에는 없다'로 잠갔다. div/span 에 onClick 을 단 곳은 0건이었고 role/tabIndex 로 흉내 낸 버튼이 없다는 것과 tabindex>0 이 없다는 것을 전 화면에 걸어 두었다. ② 표지 alt: img alt='{제목} 표지' · coverUrl null 폴백과 onError 폴백이 같은 접근 이름을 유지 · 빈 제목에서 'undefined 표지'·'null 표지'가 새지 않음 · PhotoThumbnails 미리보기 2종(img/폴백). ③ 미확인 배지: 사유 4종 라벨이 비어 있지 않고 서로 겹치지 않음 · 평점 배지가 '독자'로 출처를 밝힘 · **ADR-005** — lookup_failed 와 no_match 가 배지 문구·설명 문장 **둘 다에서** 텍스트로 갈리고 lookup_failed 에 '절판'·'원서'가 들어 있지 않음. ④ aria-live: 존재가 아니라 **전이**를 잰다 — UploadScreen(없음→'책등을 읽고 있어요'→없음), GuidedQuestions, RecommendationList(진행→실패→빈 문자열로 낡은 문구 없음), RejectedNotice. Skeleton 은 장식이므로 aria-hidden 으로 숨겨져 진행 문구와 이중으로 읽히지 않는 것도 함께. ⑤ 대비: WCAG 2.1 상대휘도·명도대비를 **실제로 계산**하고(계산기 자체를 #000/#fff=21, #767676 통과·#797979 미달 등 기준값으로 고정), 렌더된 DOM 을 훑어 (글자색 토큰, 배경색 토큰) 쌍을 뽑는다 — 색 상속과 반투명 배경 합성(bg-*/10)까지 따라간다. ALLOWED_PAIRS 14쌍 밖의 조합이 들어오면 실패하고, **목록에 죽은 항목이 남아도 실패**시켜 허용 목록이 조용히 느슨해지는 것을 막았다. **컴포넌트는 한 줄도 고치지 않았다** — 다섯 계약을 이미 전부 지키고 있었다(TDD ③ '이미 통과하면 그대로 둔다'). 대신 검사가 실제로 무는지를 다섯 계약 각각에 대해 컴포넌트를 일부러 망가뜨려(alt 비우기 · 배지 텍스트 제거 · Skeleton aria-hidden 제거 · 수락 버튼을 role=button div 로 · Notice 색을 text-line 으로) 확인하고 전부 되돌렸다. 최종 워킹 트리 변경은 새 테스트 파일 1개뿐이다. **⑤ 에서 덮지 못한 것(통과로 세지 않는다)**: (a) hover:/focus:/placeholder: 등 변형 상태의 색 — 기본 상태만 잰다 (b) 글자 크기·굵기에 따른 AA Large(3:1) 완화 — 전부 4.5:1 로 엄격하게 잰다 (c) 이미지·표지 위에 겹치는 글자(현재 화면엔 없다). jsdom 이 CSS 를 적용하지 않고 @theme 토큰이 빌드 시점에 해석되므로 여기서 재는 것은 '브라우저가 칠한 픽셀'이 아니라 **'마크업이 요구한 토큰 조합'**이다 — 이 한계를 파일 주석과 마지막 it('변형 상태의 색은 재지 않는다는 사실 자체를 고정한다')으로 남겼다. TOKEN_HEX 표를 테스트가 손으로 드는 것도 같은 이유이며, 단일 출처는 src/app/globals.css 의 @theme 이므로 토큰 변경 시 함께 고쳐야 한다는 주석을 달았다. **새 보고 2건(사람·문서 소유자 판단 필요)**: ① **UI_GUIDE 가 그 자리에 지정한 색 조합 셋이 AA 4.5:1 을 통과하지 못한다** — ClaudeText 라벨 disabled-on-page **3.42:1**, ErrorBanner 오류 ID 줄 disabled-on-card **3.59:1**, 미확인 배지 unverified-on-(unverified/10 over muted-surface) **3.95:1**. UI_GUIDE 색상 절은 '#8C8681 은 이 기준에 못 미치므로 비활성 상태에만 쓴다'고 적어 놓고 컴포넌트 절('Claude 생성 텍스트 블록'·'에러 배너')에서 그 색을 읽어야 하는 라벨과 오류 ID 에 지정해 **자기모순**이며, 배지 쪽은 bg-[#B45309]/10 위의 #B45309 라 합성 후 미달이다. 금지사항대로 새 토큰을 만들지 않았고, BELOW_AA 목록에 이름·실측값과 함께 드러낸 채 두었다 — **늘어나면 테스트가 깨지고 문서가 색을 고쳐 줄어들면 그때 목록을 함께 줄인다**. 선택지는 (a) 세 자리의 색을 subtle(#6B6560, 5.14~5.74:1)로 올리기 (b) 배지 배경 불투명도를 올려 대비를 확보하기 (c) 현 상태를 문서에 명시적 예외로 적기이며 전부 UI_GUIDE 소유자의 결정이다. ② **@testing-library/user-event 가 리포에 없다.** step 은 userEvent.tab()/{Enter}/{Space} 를 지시했지만 새 npm 의존성은 ADR 선행이라(CLAUDE.md CRITICAL) 넣지 않았고, 애초에 jsdom 은 네이티브 요소의 기본 활성화 동작을 구현하지 않아 fireEvent.keyDown(button,{key:'Enter'}) 뒤 콜백을 기대하는 검사는 브라우저가 아니라 우리 테스트가 만든 통과가 된다 — 그래서 위 ⓐ~ⓓ 네 조건으로 대체했다. 도입을 원하면 ADR 이 먼저다. AC 다섯 줄 전부 통과: typecheck 0 · lint 0 · test 45파일 1302개 통과(기존 1269 + 신규 33, 깨진 것 0) · build 성공 · audit 0 vulnerabilities.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 912,
+          "at": "2026-09-02T17:35:52+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "PRD",
+            "TRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 106338,
+          "source_chars": 59764,
+          "context_chars": 2398,
+          "prompt_chars": 175366,
+          "preamble_chars": 169316,
+          "step_body_chars": 6050,
+          "cost_usd": 6.9437,
+          "turns": 31,
+          "cache_read": 5487753,
+          "cache_write": 249537,
+          "output_tokens": 63239,
+          "session_id": "c74f5e7d-0d90-46cc-b4c0-8875a4bdc985",
+          "tool_result_chars": 47112,
+          "tool_result_count": 30,
+          "tool_output_chars": 76498,
+          "tool_calls": {
+            "Bash": 29,
+            "Write": 1
+          },
+          "tool_result_p50": 716,
+          "tool_result_p90": 2494,
+          "tool_result_max": 10595,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T17:35:52+0900",
+      "attempts": 1
+    },
+    {
+      "step": 3,
+      "name": "edge-case-matrix",
+      "status": "completed",
+      "docs": [
+        "PRD",
+        "ARCHITECTURE",
+        "UI_GUIDE"
+      ],
+      "sources": [
+        "src/app/page.tsx",
+        "src/components/booklist/BookList.tsx",
+        "src/components/common/ErrorBanner.tsx"
+      ],
+      "started_at": "2026-09-02T17:35:52+0900",
+      "summary": "PRD 5번 Edge Cases 표 12행 ↔ 화면·상태 머신의 1:1 대응(TR-011 AC)을 실행 가능한 회귀로 바꿨다 — 새 파일 src/app/edge-cases.test.tsx 하나에 **12행 전부의 판정표를 파일 상단 주석의 표로** 남기고(행마다 어디서 잠겼는지 테스트 이름까지 가리킨다), 비어 있던 행만 9 it 로 채웠다. describe 이름이 'PRD 5번 [로딩]'·'[오프라인·네트워크 단절]'·'[결과 이탈]'처럼 행 이름을 그대로 달아 깨진 테스트만 보고 무너진 계약을 안다. **12행 판정** — ① 빈 상태: 잠김(page.test.tsx 'EMPTY_SHELF는 빈 목록이 아니라 재촬영 안내로 분기한다'). ② 로딩: **일부 채움** — 첫 분석의 진행 표시는 UploadScreen.test.tsx 가, 클라이언트 타임아웃 70초는 api-client.test.ts 가 이미 잠갔으나 **재시도 중의 진행 화면은 아무 데서도 잠기지 않았다**(page.test.tsx:216 은 첫 분석만 본다) → 채웠다(role=status·aria-live=polite·'사진 2장을 다시 읽고 있어요' 분모 포함, 응답 뒤 낡은 진행 문구가 남지 않는 것까지). 다만 PRD 가 발생 조건으로 적은 '분석 요청이 300ms를 넘김'이라는 지연 문턱은 구현이 없다(스켈레톤이 지연 없이 바로 선다) — 표에 적어 두었다. ③ 실패: 잠김(ErrorBanner.test.tsx 정해진 문구·원문 비노출·재시도 버튼 + page.test.tsx 재시도, 외부 1회 자동 재시도는 services/*.test.ts). ④ 권한 없음: **일부 잠김·일부 구현 없음**(보고 ②). ⑤ 부분 실패: **일부 잠김 + 결함 보고**(보고 ①). ⑥ 대량 데이터: 잠김(BookList.test.tsx overflow 안내 + merge.test.ts 결정적 절단). ⑦ 오프라인·네트워크 단절: **채움** — fetch 가 던질 때 값으로 돌아오는 것은 api-client.test.ts 가 잠갔으나 '끊긴 뒤에도 입력 상태가 메모리에 남는가'는 비어 있었다 → 분석 단절(status 0·requestId null)에서 고른 **원본 File[] 이 남아 재업로드 없이 재시도되고 원본에서 다시 리사이즈되는 것**(step 0 이 바꾼 뒤의 상태를 검사한다)과, 추천 단절 뒤 '기분 다시 입력'에서 **적었던 기분이 입력창에 그대로 남고 모델을 다시 부르지 않는 것**을 잠갔다. ⑧ 확인 0건·미확인만: 잠김(page.test.tsx + BookList.test.tsx). ⑨ 결과 이탈(새로고침·뒤로가기): **전부 비어 있었다 → 채움**(6 it) — beforeunload 가 idle 과 첫 분석 진행 중에는 걸리지 않고, reviewing·unidentifiedOnly·result 에서는 걸리며, 사용자가 스스로 '다시 찍기'로 돌아가면 다시 풀리는 것까지. **되묻지 않는 쪽도 계약**이라 양방향으로 잠갔다. ⑩ 재추천·재시도 반복: 잠김(간격 0→5→15초와 3회 소진은 page.test.tsx describe '재시도 간격', 재추천 5회 상한은 session.test.ts, 소진 뒤 '감추지 않고 비활성'은 RecommendationList.test.tsx) — 세 곳에 이미 있어 네 번째로 잠그지 않았다. ⑪ 같은 사진 중복 선택: 잠김(UploadScreen.test.tsx duplicate). ⑫ 파노라마·초고해상도: 잠김(UploadScreen.test.tsx '경고하되 막지 않는다' + PhotoThumbnails.test.tsx '너무 길어요'). **구현·소스는 한 줄도 고치지 않았다** — 최종 워킹 트리 변경은 새 테스트 파일 1개뿐이고, 검사가 실제로 무는지는 page.tsx 를 일부러 망가뜨려(beforeunload 등록을 항상 켜기/항상 끄기 · defaultMood 제거 · 진행 문구 교체 · handleAnalyze 의 setFiles(sources)→setFiles([])) 9 it 전부가 각각 실패하는 것을 확인하고 되돌렸다. **새 보고 3건(사람·문서 소유자 판단 필요)**: ① **[부분 실패 행의 실제 결함 — step 0 이 넘긴 것을 실측으로 확인했다]** 확인된 책이 1권 이상인 reviewing 화면에서는 '이 사진만 다시 시도'가 먹지 않는다. lib/session.ts 의 ANALYZE_RETRIED 가 unidentifiedOnly 와 error(failedStage=analyze)만 처리하므로 reviewing 에서 온 액션은 상태를 그대로 돌려주고(리듀서 직접 호출로 확인: reviewing → reviewing), 그러면 뒤이어 도착하는 ANALYZE_SUCCEEDED 도 status!=='analyzing' 으로 버려진다. **HTTP 호출은 나가므로 모델 비용만 들고 화면은 그대로다.** 기존 page.test.tsx:935 는 analyze 호출 횟수만 세어 이 결함을 통과시킨다. lib/session.ts 수정은 이 step 의 금지 범위('src/lib 의 동작을 바꾸지 마라')라 고치지 않았고, 결함을 정답으로 굳히는 테스트도 쓰지 않았다 — 선택지는 (a) ANALYZE_RETRIED 에 reviewing 을 추가해 확인된 책을 유지한 채 analyzing 으로 보내기(ANALYZE_SUCCEEDED 가 결과를 어떻게 병합할지 — 덮을지 합칠지 — 를 함께 정해야 한다) (b) reviewing 화면에서 부분 실패 재시도 CTA 를 감추기(PRD 5번 부분 실패 행의 '그 사진만 다시 시도할 수 있게 한다'와 어긋난다)이며 (a)가 PRD 에 맞지만 병합 규칙이 문서에 없어 사람이 정해야 한다. ② **[권한 없음 행] PRD 가 지정한 안내 문구 \"사진 접근 권한이 없어요. 갤러리에서 직접 선택해 주세요\"가 구현에 없다** — 브라우저가 카메라 권한 거부를 페이지에 알려주지 않아 그 상태를 관측할 수 없다는 것이 PhotoPicker.tsx 의 명시적 판단이고, 그래서 '촬영·선택 두 경로를 항상 나란히 둔다'로 대체돼 있다(그쪽은 PhotoPicker.test.tsx 가 잠갔다). PRD 표의 '사용자에게 보이는 것' 열을 그 대체 설계로 고쳐 적거나, 관측 가능한 신호를 근거로 안내를 띄우기로 정하거나 둘 중 하나가 필요하다. 없는 것을 테스트로 지어내지 않았다. ③ **[오프라인 행] PRD 문구 \"인터넷 연결을 확인해 주세요\"가 구현에 없다** — api-client 가 네트워크 단절과 상류 5xx 를 같은 UPSTREAM_UNAVAILABLE 로 정규화하고 배너가 \"지금 책을 확인할 수 없어요\"를 쓴다. 단절(status 0)과 상류 장애(status 5xx)는 코드에서 구분 가능하므로 갈라 쓸 수는 있으나, 사용자가 할 수 있는 일이 재시도로 같아 502·500 을 한 문구로 묶은 UI_GUIDE 판단과 같은 계열이다 — **이 step 은 실제 문구를 그대로 단정했고**(테스트가 문서가 아니라 코드를 따라간 자리다) PRD 표와 UI_GUIDE 중 어느 쪽을 고칠지는 문서 소유자의 결정이다. AC 다섯 줄 전부 통과: typecheck 0 · lint 0 · test 46파일 1311개 통과(기존 1302 + 신규 9, 깨진 것 0) · build 성공 · audit 0 vulnerabilities.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 701,
+          "at": "2026-09-02T17:47:34+0900",
+          "guardrail_docs": [
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 48771,
+          "source_chars": 43919,
+          "context_chars": 5966,
+          "prompt_chars": 103581,
+          "preamble_chars": 99472,
+          "step_body_chars": 4109,
+          "cost_usd": 6.0764,
+          "turns": 47,
+          "cache_read": 6318856,
+          "cache_write": 187553,
+          "output_tokens": 38901,
+          "session_id": "86f1ad08-2dcd-4244-b67f-2398a1b676e6",
+          "tool_result_chars": 76554,
+          "tool_result_count": 46,
+          "tool_output_chars": 90316,
+          "tool_calls": {
+            "Bash": 45,
+            "Write": 1
+          },
+          "tool_result_p50": 875,
+          "tool_result_p90": 3771,
+          "tool_result_max": 15492,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T17:47:34+0900",
+      "attempts": 1
+    }
+  ],
+  "created_at": "2026-09-02T16:35:12+0900",
+  "completed_at": "2026-09-02T17:47:34+0900"
+}

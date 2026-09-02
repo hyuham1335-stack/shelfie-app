@@ -1,0 +1,262 @@
+{
+  "project": "shelfie",
+  "phase": "golden-set",
+  "carried_reports": {
+    "note": "런 #8 의 step 들이 올린 새 보고는 0건이라(두 런 연속) 이번 런이 받을 이월 코드 부채는 없다. 이 런의 본체는 TRD 8번이 [MVP] 로 규정했으나 코드도 실행 명령도 없던 골든 인식률 하네스다. PRD MoSCoW 의 Must·Should·Could 가 런 #7·#8 에서 전부 닫혀 FR 이 남지 않았고, 남은 [MVP] 미구현분이 이것이다. 세트 위치·측정 축·빈 세트 처리 3건은 런 전에 사람이 결정해 ADR-010 과 TRD 8번에 못 박았다.",
+    "measurement_design": "이 런은 [[ADR-H011]] 의 계측이 런 중에 도는 첫 실물이다. 백필된 41 step 은 전부 reads_source: backfill 이고 live 표본은 0개다. 그리고 [[ADR-H010]] 이 축을 크기로 확정한 뒤 재정식화한 첨부 기준(안 첨부하면 대략 크기 ÷ 1,700 turn)을 처음 시험한다 — A/B 는 하지 않는다. 런 #8 이 축을 이미 갈랐으므로 대조군을 또 만들 이유가 없고, 이번에 필요한 것은 어림과 실측의 대조다.",
+    "estimate_under_test": "step 3 이 관측점이다. src/services/anthropic.ts(39,233자 · 어림 23.1 turn)를 **일부러 첨부하지 않았다.** 규칙 4 는 큰 파일부터 넣으라고 하지만 규칙 5(읽지도 않을 파일은 넣지 마라)가 이긴다 — 러너가 anthropic 에서 쓰는 것은 extractFromPhoto 하나이고, aladin 쪽은 searchByTitle · createRequestBreaker · LookupOutcome 형태까지 필요하다. 어림은 **통독**을 가정하는데 시그니처만 필요한 파일에는 과대평가다. 실측 조각 수가 23 turn 근처면 어림이 맞고, 2~3 turn 이면 어림에 축(무엇을 위해 읽는가)이 하나 빠진 것이다. 런 #8 capture-guide 가 어림의 1.9배로 나온 것과 반대 방향의 반례를 찾는 셈이다.",
+    "resolved_by_main_before_run": [
+      "ADR-010 을 썼다 — 골든 세트를 리포 밖에 두고 GOLDEN_SET_DIR 로 가리킨다. 판정 규약(재현율 0.90 · 오확인 0 · 유사도 내림차순 1:1 그리디)과 skip 사유 3종도 여기 있다. 이 문서가 없으면 step 이 임계값과 매칭 규칙을 지어내고 다음 런이 '문서대로' 되돌린다",
+      "TRD 8번에 골든 인식률 계약 절을 신설했다 — 매니페스트 형식(version · setId · photos[].sha256 · books[].isbn13 선택), 판정 규약 표, skip 사유 3종 표, 결과 기록 위치, 실행 명령. 4번 환경변수 표에 GOLDEN_SET_DIR 을 넣었다",
+      "TRD 8번 범위 표의 인식률 행을 '축 둘'(TR-003 재현율 + TR-004 오확인)로 고쳤다 — 원래 문언은 추출만 적고 있었는데 TR-004 의 '골든 세트에서 오확인 0건'이 갈 곳이 없었다",
+      "ARCHITECTURE 에 lib/golden-{manifest,score,report}.ts 노드 3개와 '골든 러너는 프로덕션 코드가 아니라 테스트 코드다' 레이어 규칙을 넣었다. 러너가 services 둘을 부르는데 lib -> services 는 금지라, 순수 부품만 lib 에 두고 오케스트레이션은 *.golden.test.ts 가 한다 (ADR-009 와 같은 분리)",
+      "package.json 에 test:golden 을, 루트에 vitest.golden.config.ts 를 만들었다. 골든 config 는 junit 리포터를 쓰지 않는다 — 하네스 게이트가 reports/junit/vitest.xml 에서 테스트 수를 읽으므로 골든이 그 파일을 덮으면 tests_ran_floor 1064 가 사진 20장짜리 숫자와 대조된다",
+      "CLAUDE.md 명령어 절에 npm run test:golden 을 넣었다"
+    ],
+    "not_assigned_this_run": [
+      "런 #5 보고 ⑦ — 재시도가 원본 File 이 아니라 리사이즈된 data URI 를 들고 있다. 이번 런은 lib/image.ts · app/page.tsx 를 건드리지 않는다. 다섯 런째 이월된다",
+      "런 #3 보고 — 알라딘 호출 상한 260회. 메인이 TRD 에서 이미 갱신했고 코드 쪽 소비처가 없다. 이번 런이 aladin 을 **부르기는** 하지만 그 상한을 코드로 강제하는 것은 프로덕션 라우트의 일이고 골든 러너의 일이 아니다",
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡다. SDK 버전 변경은 새 의존성 판단이라 ADR 이 먼저다 (CLAUDE.md CRITICAL)",
+      "ROADMAP 12 — 3단계 게이트의 두 번째 스택(gradle-java) 대상 리포가 이 머신에 없다. 사람이 정한다",
+      "ROADMAP 14 — 어댑터 verified:true 승격은 04-gate 가 어댑터를 소비한 뒤다. 아홉 런 모두 execute.py 로 돈다",
+      "ROADMAP 28 — 접두부 통합 예산의 **값**. 이 런이 네 번째 표본이고 첫 live 표본이다. 값은 여전히 정하지 않는다 — R² 가 0.71 이고, 실행기가 런 중에 재는 경로가 이번에 처음 돈다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "golden-manifest",
+      "status": "completed",
+      "docs": [
+        "ARCHITECTURE",
+        "ADR",
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/schemas.ts",
+        "src/lib/env.ts",
+        "src/types/book.ts"
+      ],
+      "started_at": "2026-09-02T15:24:53+0900",
+      "summary": "lib/golden-manifest.ts 신설 — goldenExpectedBookSchema·goldenPhotoSchema·goldenManifestSchema(z.infer 파생 타입 GoldenExpectedBook·GoldenPhoto·GoldenManifest), 상수 GOLDEN_MANIFEST_VERSION=1, parseGoldenManifest(raw: unknown): ParseGoldenManifestOutcome = {status:\"ok\",manifest} | {status:\"failed\",reason,detail}. reason 어휘는 GoldenManifestFailureReason = \"schema\" | \"version\" 2종이고 던지지 않는다(detail은 zod issues를 \"경로: 메시지 · …\" 한 줄로 접은 문자열). photos[].sha256은 64자리 hex 필수, books[].isbn13은 선택이되 있으면 lib/schemas.ts의 isbn13Schema를 재사용한다. lib/env.ts에 GOLDEN_MIN_RECALL=0.9 · GOLDEN_MAX_MISIDENTIFIED=0 상수와 getGoldenSetDir(): string | null 접근자(공백·미설정이면 null, 던지지 않음)를 추가했다. AC 5종 전부 통과(테스트 1216건).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 257,
+          "at": "2026-09-02T15:29:10+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "TRD"
+          ],
+          "guardrail_chars": 73544,
+          "source_chars": 18649,
+          "context_chars": 0,
+          "prompt_chars": 97963,
+          "preamble_chars": 93003,
+          "step_body_chars": 4960,
+          "cost_usd": 2.1887,
+          "turns": 13,
+          "cache_read": 1432370,
+          "cache_write": 110825,
+          "output_tokens": 11669,
+          "session_id": "a56b5834-c08c-42c4-a7be-6a08492e21c2",
+          "tool_result_chars": 12718,
+          "tool_result_count": 12,
+          "tool_output_chars": 22778,
+          "tool_calls": {
+            "Bash": 8,
+            "Edit": 2,
+            "Write": 2
+          },
+          "tool_result_p50": 447,
+          "tool_result_p90": 2359,
+          "tool_result_max": 4597,
+          "tool_result_repeat_chars": 160,
+          "tool_result_repeat_count": 1,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T15:29:10+0900",
+      "attempts": 1
+    },
+    {
+      "step": 1,
+      "name": "golden-score",
+      "status": "completed",
+      "docs": [
+        "ARCHITECTURE",
+        "ADR",
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/match.ts",
+        "src/lib/golden-manifest.ts",
+        "src/lib/env.ts",
+        "src/types/book.ts"
+      ],
+      "started_at": "2026-09-02T15:29:10+0900",
+      "summary": "lib/golden-score.ts 신설 — 순수 판정 층(fs·services·process.env 모름). 내보내는 타입 GoldenMatch{expected,matched:ExtractedCandidate|null,similarity} · GoldenPhotoScore{file,matches,misidentified:IdentifiedBook[],expectedCount,matchedCount,recall} · GoldenSetScore{photos,expectedCount,matchedCount,recall,misidentifiedCount,passed}, 함수 scorePhoto(photo:GoldenPhoto, candidates:readonly ExtractedCandidate[], identified:readonly IdentifiedBook[]):GoldenPhotoScore 와 aggregateScores(photos:readonly GoldenPhotoScore[]):GoldenSetScore. 짝짓기는 match.ts의 titleSimilarity·MATCH_THRESHOLD를 재사용한 유사도 내림차순 1:1 그리디이고, 동점은 저자 일치(normalizeAuthor 겹침) → 기대 인덱스 → 후보 인덱스 순으로 결정적으로 깬다. 오확인은 기대 항목의 isbn13이 있으면 ISBN 일치가 제목 유사도를 이기고, ISBN 없는 기대 항목만 제목으로 판정한다. 세트 재현율은 사진별 평균이 아니라 전체 기대 대비 전체 매칭이며 분모 0이면 1(공허참), passed = recall >= GOLDEN_MIN_RECALL && misidentifiedCount <= GOLDEN_MAX_MISIDENTIFIED (env.ts 상수). 골든 세트 자체를 판정하는 skip 사유는 여기 없다 — step 2·3의 몫이다. AC 5종 전부 통과(테스트 1231건).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 322,
+          "at": "2026-09-02T15:34:33+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "TRD"
+          ],
+          "guardrail_chars": 73544,
+          "source_chars": 22046,
+          "context_chars": 724,
+          "prompt_chars": 102103,
+          "preamble_chars": 97124,
+          "step_body_chars": 4979,
+          "cost_usd": 2.4171,
+          "turns": 12,
+          "cache_read": 1417390,
+          "cache_write": 120603,
+          "output_tokens": 17061,
+          "session_id": "99a494a5-46d1-4e28-8b1a-a6b78e474be0",
+          "tool_result_chars": 15302,
+          "tool_result_count": 11,
+          "tool_output_chars": 15309,
+          "tool_calls": {
+            "Bash": 11
+          },
+          "tool_result_p50": 286,
+          "tool_result_p90": 3829,
+          "tool_result_max": 8990,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T15:34:33+0900",
+      "attempts": 1
+    },
+    {
+      "step": 2,
+      "name": "golden-report",
+      "status": "completed",
+      "docs": [
+        "ARCHITECTURE",
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/golden-score.ts",
+        "src/lib/golden-manifest.ts",
+        "src/lib/env.ts"
+      ],
+      "started_at": "2026-09-02T15:34:33+0900",
+      "summary": "lib/golden-report.ts 신설 — 순수 표현 층(fs·services·process.env 모름, 파일 쓰기 없음). 타입 GoldenSkipReason = \"no_set_dir\"|\"no_manifest\"|\"no_api_key\" · GoldenOutcome = {status:\"scored\",score:GoldenSetScore} | {status:\"skipped\",reason:GoldenSkipReason,detail:string} · GoldenRunContext{setId:string|null, manifestVersion:number|null, photoHashes:Record<string,string>, extractModel:string, ranAt:string(ISO8601)}. 함수 renderGoldenReport(outcome,context):string 와 toGoldenReportJson(outcome,context):unknown, 상수 MAX_LISTED_ITEMS=10 · GOLDEN_REPORT_VERSION=1. 콘솔 표: scored 는 첫 줄 \"[골든 인식률] PASS|FAIL\" + 재현율/오확인을 기준값과 나란히, 사진별 판정 표, 놓친 책(사진·제목·저자)과 오확인(사진·ISBN13·제목·저자, \"알라딘 사실\" 라벨 — 유사도는 섞지 않음) 목록을 MAX_LISTED_ITEMS 까지만 찍고 잘린 건수·전체 건수를 남긴다. skipped 는 첫 줄이 \"[골든 인식률] 재지 못했습니다 — skip: <reason>\" 이고 PASS·통과·체크마크류 표시가 없으며(테스트가 정규식으로 고정), no_api_key 는 목업 때문에 재현율이 100%로 나온다는 위험 문구를 사유 위에 먼저 찍는다. 실행 맥락(세트·매니페스트 버전·모델·실행 시각·사진 sha256 전문)은 두 출력·두 상태 모두에 실린다. JSON 은 {schema:\"shelfie.golden-report\", reportVersion, context, thresholds:{minRecall,maxMisidentified}, status, passed(skip 이면 null), skip{reason,detail,headline,danger} | totals{expectedCount,matchedCount,recall,misidentifiedCount} + photos[]{file,expectedCount,matchedCount,recall,missed:GoldenExpectedBook[],misidentified:{isbn13,title,author,publisher}[]}} 이고 목록을 자르지 않는다. 판정은 다시 하지 않는다 — passed·recall·misidentifiedCount 는 step 1 값 그대로이고 임계값은 표시용으로만 쓴다. step 3 은 이 두 함수에 GoldenOutcome·GoldenRunContext 를 조립해 넣고 reports/golden/{ISO}.json 쓰기와 콘솔 출력을 맡는다. AC 5종 전부 통과(테스트 1257건).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 513,
+          "at": "2026-09-02T15:43:07+0900",
+          "guardrail_docs": [
+            "ARCHITECTURE",
+            "TRD"
+          ],
+          "guardrail_chars": 57398,
+          "source_chars": 19643,
+          "context_chars": 1698,
+          "prompt_chars": 84175,
+          "preamble_chars": 79549,
+          "step_body_chars": 4626,
+          "cost_usd": 3.387,
+          "turns": 20,
+          "cache_read": 2427081,
+          "cache_write": 127304,
+          "output_tokens": 33624,
+          "session_id": "81bce695-772a-4aae-8f6f-88e80d20d3ac",
+          "tool_result_chars": 19260,
+          "tool_result_count": 19,
+          "tool_output_chars": 42305,
+          "tool_calls": {
+            "Bash": 14,
+            "Edit": 3,
+            "Write": 2
+          },
+          "tool_result_p50": 170,
+          "tool_result_p90": 4269,
+          "tool_result_max": 8925,
+          "tool_result_repeat_chars": 170,
+          "tool_result_repeat_count": 1,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T15:43:07+0900",
+      "attempts": 1
+    },
+    {
+      "step": 3,
+      "name": "golden-runner",
+      "status": "completed",
+      "summary": "src/services/shelf.golden.test.ts 하나만 신설했다(프로덕션 모듈 0개 — 러너는 테스트 코드다, ADR-010). 흐름: getGoldenSetDir() → {dir}/manifest.json 읽기·JSON.parse·parseGoldenManifest → ANTHROPIC_API_KEY·ALADIN_TTB_KEY 확인 → 사진마다 직렬로 확장자→MIME(.jpg/.jpeg→image/jpeg·.png·.webp, 그 외는 그 사진만 건너뛰고 러너 메모에 남김) → data URI → extractFromPhoto(deadline 120s) → reduceBeforeLookup 으로 프로덕션과 같은 축소(확신도 0.3·80건) 후 searchByTitle 을 후보마다 직렬 호출(사진마다 createRequestBreaker, deadline 300s) → judge → 확인 승격분만 IdentifiedBook 으로 모아 scorePhoto → aggregateScores → renderGoldenReport 콘솔 + toGoldenReportJson 을 reports/golden/{ISO}.json 에 쓴다(ISO 의 ':' 만 파일명에서 '-' 로 치환 — Windows. 정확한 값은 context.ranAt 에 남는다). 프로덕션 예산(30s/12s)을 쓰지 않는 이유는 그 값이 Vercel 60s 상한에서 나온 것이라 골든에서는 재는 대상이 판독 품질에서 함수 상한으로 바뀌기 때문이다(ADR-005). skip 3종은 describe.skipIf 로 vitest 의 skip 기제를 쓰고 사유를 콘솔과 리포트 파일 양쪽에 남긴다 — expect(true) 로 때우지 않았다. 실제 출력: \"[골든 인식률] 재지 못했습니다 — skip: no_set_dir / 사유: GOLDEN_SET_DIR 이 설정되지 않아 골든 세트를 찾지 못했습니다. / 할 일: 세트 디렉토리를 GOLDEN_SET_DIR 에 지정하고 다시 실행하세요.\" (Tests 1 skipped, exit 0). 세 skip 경로를 임시 디렉토리로 직접 확인했다(파일 없음·JSON 아님·스키마 위반·미래 버전·키 없음 — 키 없음은 목업 위험 문구와 세트 맥락이 함께 찍힌다). golden-report 가 표현하지 않는 것(사진 단위 실패)은 러너 자기 메모로 콘솔과 JSON 의 runner.photos 에 덧붙인다 — 추출 failed 사진은 후보 0건으로 접지 않고 실패 사유(refusal/timeout/upstream/schema/max_tokens)와 함께 재현율 분모에서 빼며, 사진별 확인·lookup_failed·no_match·ambiguous·unreadable 카운트도 남긴다(ADR-005). lookup_failed 는 확인으로 승격되지 않으므로 오확인의 분자·분모 어디에도 들어가지 않는다. 단정은 둘이다: 재지 못한 사진이 0장인가(부분 측정을 통과로 적지 않기 위해 — skip 이 통과가 아닌 것과 같은 이유), 그리고 score.passed. **세트를 만들 사람에게**: 리포 밖 아무 디렉토리에 manifest.json 1개 + 사진 파일 N개를 두고 GOLDEN_SET_DIR 에 그 디렉토리의 절대 경로를 넣은 뒤 `npm run test:golden` 을 돌린다. manifest.json 은 {version:1, setId:\"사람이 붙인 이름\", photos:[{file:\"shelf-01.jpg\", sha256:\"그 파일의 64자리 hex\", books:[{title, author, isbn13?}]}]} 이고, books 는 그 사진에서 사람이 눈으로 읽을 수 있는 책 **전부**여야 한다(일부만 적으면 재현율이 실제보다 높게 나온다). isbn13 은 선택이지만 적을수록 오확인 판정이 ISBN 으로 정확해진다. 사진 확장자는 jpg/jpeg/png/webp 만 된다. AC 6종 전부 통과(npm test 1257건 — step 2 와 동일, 줄지 않음).",
+      "docs": [
+        "TRD",
+        "ARCHITECTURE",
+        "ADR",
+        "PRD"
+      ],
+      "sources": [
+        "src/services/aladin.ts",
+        "src/lib/match.ts",
+        "src/lib/golden-manifest.ts",
+        "src/lib/golden-score.ts",
+        "src/lib/golden-report.ts"
+      ],
+      "started_at": "2026-09-02T15:43:07+0900",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 633,
+          "at": "2026-09-02T15:53:40+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "PRD",
+            "TRD"
+          ],
+          "guardrail_chars": 94753,
+          "source_chars": 53998,
+          "context_chars": 3239,
+          "prompt_chars": 159180,
+          "preamble_chars": 152800,
+          "step_body_chars": 6380,
+          "cost_usd": 4.8536,
+          "turns": 22,
+          "cache_read": 3847272,
+          "cache_write": 192387,
+          "output_tokens": 35724,
+          "session_id": "01462d08-f1c4-40ba-aad8-73fc341e38ce",
+          "tool_result_chars": 35499,
+          "tool_result_count": 21,
+          "tool_output_chars": 50541,
+          "tool_calls": {
+            "Bash": 18,
+            "Edit": 2,
+            "Write": 1
+          },
+          "tool_result_p50": 835,
+          "tool_result_p90": 3123,
+          "tool_result_max": 11427,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T15:53:40+0900",
+      "attempts": 1
+    }
+  ],
+  "created_at": "2026-09-02T15:24:53+0900",
+  "completed_at": "2026-09-02T15:53:40+0900"
+}

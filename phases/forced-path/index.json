@@ -1,0 +1,317 @@
+{
+  "project": "shelfie",
+  "phase": "forced-path",
+  "carried_reports": {
+    "note": "이전 런의 미해소 보고를 어느 step 이 받는지 명시한다. 배정하지 않으면 이월된다. 이번 런의 본체는 두 가지다 — 런 #6 이 올린 보고 1건(US-003 강행이 모델 호출에 닿지 않는다)을 step 0~2 가 계층별로 나눠 닫고, 런 #5 부터 두 런째 이월된 UI 부채 3건을 step 3~4 가 닫는다. 이 런은 동시에 ADR-H009(steps[].sources)의 첫 실측이다 — 대조군은 런 #6(step당 $3.45 · turn당 cache read 106,596 · step당 turn 29.6 · source_chars 0)이다.",
+    "ab_caveat": "A/B 를 해석할 때 알아야 할 것 두 가지를 설계 시점에 미리 적어 둔다. (1) 가드레일 절감폭이 런 #6 과 다르다 — 이 런은 309,383자로 전량 대비 39.3% 절감이고 런 #6 은 54.1% 였다. 계약 층 step 이 많아 API_SPEC·TRD 를 함께 요구하기 때문이다. 즉 turn당 재독의 변화는 sources 효과와 가드레일 차이가 섞인 값이다. (2) 접두부가 커진다 — sources 를 얹으면 step당 접두부가 런 #6 의 약 54,000자에서 약 108,000자로 두 배가 되고, step 2 는 가드레일 83,671 + sources 45,134 로 접두부가 약 138,000자다. 런 #5 step 5(113,377자)보다 크고 이 리포 최대다. ADR-H009 의 내기는 '읽기 turn 이 사라져 누적 대화가 접두부 증가보다 더 줄어든다'이고, 그 내기가 틀리면 이 런은 런 #6 보다 나빠진다. 나빠지는 것도 실측이므로 그때 상한과 선택 기준을 다시 본다. step 2 는 특히 경계 사례다 — route.test.ts(29,505자)를 첨부했는데 ADR-H009 의 부등식(s·k < 2×접두부)으로 보면 k<7.4 에서만 이득이다.",
+    "resolved_by_main_before_run": [
+      "강행을 모델 호출에도 싣는다는 계약을 API_SPEC 의 POST /api/recommend 절에 규정했다 — 첫 호출부터 프롬프트가 바뀐다 · 교정 재요청에도 강행이 유지된다 · 강행 중에도 relevant 값 자체는 모델이 준 그대로 응답에 싣는다(서버가 무시하기로 한 것은 값의 효력이지 값이 아니다) · 강행 지시문은 우리가 쓴 지시문 쪽에 두고 <mood> 블록 밖에 둔다(TRD 6.5)",
+      "런 #6 실측을 PILOT-LOG 에 기록하고 ROADMAP 1·3·6 절과 DECISIONS 의 ADR-H008·H009 를 갱신했다 (ADR-H008 A/B 결론 · retry_budget 첫 유도 · sources 상한이 소스가 아니라 테스트에 걸린다는 실측)",
+      "calibrate 5회차 — --select 로 M14 를 피해 돌렸다. retry_budget 이 null 에서 2 로, tests_ran_floor 가 829 에서 932 로 갱신됐다",
+      "feat-contract-wiring 을 main 에 머지했다 — 런 #3~#6 네 런이 미머지 상태로 68 커밋 앞서 있었다. 이 런은 main 에서 갈라진다"
+    ],
+    "assigned_to_steps": {
+      "0": [
+        "런 #6 보고 — 강행이 첫 모델 호출에 반영되지 않는다. 그 프롬프트 층(src/lib/prompts.ts 의 추천 규칙 7 을 강행 시 대체한다)"
+      ],
+      "1": [
+        "런 #6 보고 — 같은 건의 서비스 층(src/services/anthropic.ts 의 RecommendOptions 에 통로를 열고 buildRecommendBody 까지 나른다). 교정 재요청에서도 강행이 유지돼야 한다"
+      ],
+      "2": [
+        "런 #6 보고 — 같은 건의 라우트 층(src/app/api/recommend/route.ts 이 irrelevantStreak >= 2 를 첫 호출의 옵션으로 넘긴다). 이 step 이 US-003 의 마지막 AC 를 실환경에서 닫는다. 모델 호출 횟수를 늘리지 않는다"
+      ],
+      "3": [
+        "런 #5 보고 ① — BookList.result 가 AnalyzeResponse 라 재검색 승격분을 담지 못한다. props 를 ShelfBook[] 로 넓혀 한 목록으로 만들고 page.tsx 의 '직접 확인한 책' 우회 섹션을 걷어낸다",
+        "런 #5 보고 ② — UnidentifiedBookCard.onRetryLookup 이 책 인자를 받지 않아 전체 재분석에 배선돼 있다. (book) => void 로 넓히고 책 단위 재조회에 잇는다"
+      ],
+      "4": [
+        "런 #5 보고 ⑤ — FR-010 재시도 간격 백오프(0초 → 5초 → 15초) 미구현. 상한 3회는 이미 지켜진다"
+      ]
+    },
+    "not_assigned_this_run": [
+      "런 #5 보고 ⑦ — 재시도가 원본 File 이 아니라 리사이즈된 data URI 를 들고 있다. '재업로드를 요구하지 않는다'는 목적은 이미 충족돼 있고, EXIF·품질을 다시 고르는 것은 별개의 기능 결정이다",
+      "런 #3 보고 — 알라딘 호출 상한 260회. 메인이 TRD 에서 이미 갱신했고 코드 쪽 소비처가 없다. 이번 런은 services/aladin 을 건드리지 않는다",
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡다. step 1 이 services/anthropic.ts 를 건드리지만 SDK 버전 변경은 새 의존성 판단이라 ADR 이 먼저다 (CLAUDE.md CRITICAL). step 1 의 금지사항에 명시했다",
+      "ROADMAP 12 — 3단계 게이트의 두 번째 스택(gradle-java) 대상 리포가 이 머신에 없다. 사람이 정한다",
+      "ROADMAP 14 — 어댑터 verified:true 승격은 04-gate 가 어댑터를 소비한 뒤다",
+      "ROADMAP 18·21·22 (M11 남은 절반 · M13 재개 신호 · M14 calibrate 덮어쓰기) — scripts/** 는 main_owned_paths 다. step 에 주지 않는다. M14 는 이 런 전의 calibrate 에서 --select 로 손수 피해 갔다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "forced-prompt",
+      "status": "completed",
+      "docs": [
+        "API_SPEC",
+        "TRD",
+        "PRD"
+      ],
+      "sources": [
+        "src/lib/prompts.ts",
+        "src/lib/prompts.test.ts"
+      ],
+      "started_at": "2026-09-02T11:46:02+0900",
+      "summary": "buildRecommendPrompt(books: readonly RecommendPromptBook[], mood: string, options?: RecommendPromptOptions): string 로 세 번째 인자를 옵셔널로 열었다. RecommendPromptOptions = { forced?: boolean } 이며 둘 다 src/lib/prompts.ts 에서 export 한다. options?.forced 가 true 면 추천 프롬프트의 규칙 7(단서가 없으면 relevant=false + recommendations 빈 배열)이 규칙 7~9(단서가 약해도 목록 안에서 골라 채운다 · relevant 는 모델 판단 그대로 두고 true 로 바꿔 적지 않는다 · reason 에 억지 연결을 지어내지 않는다, 20~200자 유지)로 대체된다. 미지정 · {} · { forced: false } 세 호출은 변경 전 문자열과 완전히 동일하며 프롬프트 전문을 픽스처로 고정해 회귀를 막았다. 규칙 1~6, <mood> 데이터 블록(강행 지시문은 ## 규칙 절에만 두어 블록 밖), 허용 목록 2회 게재는 두 경로가 같다. 테스트 11건 추가 (1036 → 1047).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 400,
+          "at": "2026-09-02T11:52:43+0900",
+          "guardrail_docs": [
+            "API_SPEC",
+            "PRD",
+            "TRD"
+          ],
+          "guardrail_chars": 74865,
+          "source_chars": 25363,
+          "prompt_chars": 105708,
+          "cost_usd": 3.2187,
+          "turns": 25,
+          "cache_read": 2920839,
+          "cache_write": 126775,
+          "output_tokens": 16577,
+          "session_id": "740368eb-612c-41b2-aecf-a3fceedff9e7",
+          "tool_result_chars": 17495,
+          "tool_result_count": 24,
+          "tool_output_chars": 17516,
+          "tool_calls": {
+            "Bash": 24
+          },
+          "reads_source": "backfill",
+          "tool_result_p50": 265,
+          "tool_result_p90": 1782,
+          "tool_result_max": 5122,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
+        }
+      ],
+      "completed_at": "2026-09-02T11:52:43+0900",
+      "attempts": 1
+    },
+    {
+      "step": 1,
+      "name": "forced-service",
+      "status": "completed",
+      "docs": [
+        "API_SPEC",
+        "TRD",
+        "ADR"
+      ],
+      "sources": [
+        "src/services/anthropic.ts",
+        "src/lib/prompts.ts"
+      ],
+      "started_at": "2026-09-02T11:52:43+0900",
+      "summary": "generateRecommendations(books, mood, options: RecommendOptions) 의 RecommendOptions 에 forced?: boolean 을 추가했다. 최종 형태는 { deadlineMs: number; correction?: { violatingBookIds: readonly string[] }; forced?: boolean; clientImpl?: unknown; sleepImpl?: (ms: number) => Promise<void> } 이고 src/services/anthropic.ts 에서 export 한다. forced 는 옵셔널이고 기본이 꺼짐이라 미지정 호출의 요청 본문은 변경 전과 완전히 동일하다 (프롬프트 전문을 buildRecommendPrompt(books, mood) 와 대조해 고정했고, forced: false 도 미지정과 body 가 toEqual). buildRecommendBody(books, mood, correction, forced) 가 buildRecommendPrompt(books, mood, { forced }) 로 플래그만 넘긴다 — 강행 문구는 이 파일에서 조립하지 않고 prompts.ts 가 소유한다. correction 과 forced 는 독립이라 교정 재요청(correction + forced: true)에서도 강행 규칙이 유지되고 규칙 7 문구는 사라진다. forced 가 켜져도 RecommendOutcome.relevant 는 모델 값 그대로다(false 를 true 로 덮어쓰지 않는다). 화이트리스트 검증은 여전히 라우트의 일이고, 실패 경로(deadlineMs <= 0 · timeout · 5xx 2회 upstream)와 모델 호출 횟수(1회)는 forced 와 무관하게 동일하다. 테스트 12건 추가 (1047 → 1059). step 2 는 irrelevantStreak >= 2 일 때 첫 호출의 옵션으로 forced: true 를 넘기면 된다.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 413,
+          "at": "2026-09-02T11:59:36+0900",
+          "guardrail_docs": [
+            "ADR",
+            "API_SPEC",
+            "TRD"
+          ],
+          "guardrail_chars": 63786,
+          "source_chars": 52345,
+          "prompt_chars": 122376,
+          "cost_usd": 3.6645,
+          "turns": 22,
+          "cache_read": 3129585,
+          "cache_write": 147422,
+          "output_tokens": 21659,
+          "session_id": "6f3b1353-381f-4d24-8a4d-7a25c3c87474",
+          "tool_result_chars": 37082,
+          "tool_result_count": 21,
+          "tool_output_chars": 46750,
+          "tool_calls": {
+            "Bash": 19,
+            "Write": 2
+          },
+          "reads_source": "backfill",
+          "tool_result_p50": 231,
+          "tool_result_p90": 6661,
+          "tool_result_max": 9462,
+          "tool_result_repeat_chars": 4,
+          "tool_result_repeat_count": 2
+        }
+      ],
+      "completed_at": "2026-09-02T11:59:36+0900",
+      "attempts": 1
+    },
+    {
+      "step": 2,
+      "name": "forced-route",
+      "status": "completed",
+      "summary": "src/app/api/recommend/route.ts 가 강행 판정을 모델 호출 **앞으로** 옮겼다. const forced = irrelevantStreak >= IRRELEVANT_STREAK_LIMIT 를 루프 밖에서 한 번 계산해 generateRecommendations 의 옵션에 ...(forced ? { forced: true } : {}) 로 싣는다 — 첫 호출부터 강행 프롬프트이고, 같은 스프레드가 루프 안에 있어 교정 재요청에도 유지된다. streak 0·1 요청의 옵션에는 forced 키 자체가 없어 요청 본문이 변경 전과 동일하다. 새 상수를 만들지 않고 422 경계와 같은 IRRELEVANT_STREAK_LIMIT(=MAX_IRRELEVANT_STREAK) 을 쓴다. 호출 뒤의 무시 분기(B)는 그대로 남겨 강행 호출에서도 relevant: false 가 오면 422 없이 진행하며, relevant 값은 덮어쓰지 않고 강행 로그(request_id·session_id·streak, mood 원문 없음)도 요청당 1회 그대로다. 화이트리스트·proof·recommend_failed·mood_submitted·상태 코드 표는 건드리지 않았다 — 강행 요청도 목록 밖 bookId 면 교정 1회 후 502다. 모델 호출은 여전히 1회(교정 시 2회). 테스트 9건 추가 (1059 → 1068), 강행 옵션을 존중하는 목(꺼지면 빈 배열·켜지면 채움)으로 200 + 빈 배열 회귀를 고정했다.",
+      "docs": [
+        "API_SPEC",
+        "TRD",
+        "ADR",
+        "PRD"
+      ],
+      "sources": [
+        "src/app/api/recommend/route.ts",
+        "src/app/api/recommend/route.test.ts"
+      ],
+      "started_at": "2026-09-02T11:59:37+0900",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 278,
+          "at": "2026-09-02T12:04:16+0900",
+          "guardrail_docs": [
+            "ADR",
+            "API_SPEC",
+            "PRD",
+            "TRD"
+          ],
+          "guardrail_chars": 83760,
+          "source_chars": 45355,
+          "prompt_chars": 136986,
+          "cost_usd": 2.8243,
+          "turns": 17,
+          "cache_read": 2179037,
+          "cache_write": 136191,
+          "output_tokens": 11166,
+          "session_id": "7e3f9fc5-53c4-425d-a6c8-77ee5a47b848",
+          "tool_result_chars": 17734,
+          "tool_result_count": 16,
+          "tool_output_chars": 14555,
+          "tool_calls": {
+            "Bash": 10,
+            "Edit": 5,
+            "Read": 1
+          },
+          "reads_source": "backfill",
+          "tool_result_p50": 206,
+          "tool_result_p90": 2295,
+          "tool_result_max": 8131,
+          "tool_result_repeat_chars": 352,
+          "tool_result_repeat_count": 2
+        }
+      ],
+      "completed_at": "2026-09-02T12:04:16+0900",
+      "attempts": 1
+    },
+    {
+      "step": 3,
+      "name": "booklist-props",
+      "status": "completed",
+      "docs": [
+        "UI_GUIDE",
+        "ARCHITECTURE",
+        "API_SPEC",
+        "ADR"
+      ],
+      "sources": [
+        "src/components/booklist/BookList.tsx",
+        "src/components/booklist/BookList.test.tsx",
+        "src/components/booklist/UnidentifiedBookCard.tsx",
+        "src/components/booklist/UnidentifiedBookCard.test.tsx",
+        "src/app/page.tsx",
+        "src/types/book.ts"
+      ],
+      "started_at": "2026-09-02T12:04:16+0900",
+      "summary": "BookListProps 에서 result: AnalyzeResponse 를 걷어내고 books: readonly ShelfBook[] · unidentified · overflowCount · unidentifiedOverflowCount · failedPhotoCount · failedPhotoIndexes · photoCount 를 개별 prop 으로 받는다 (ShelfBook 은 @/lib/session 에서 import type 으로만 가져와 런타임 값 의존 0건). 확인된 책은 한 섹션 · 한 헤더('확인된 책 {합계}권')로 서고 origin 으로 카드를 고른다 — photo 는 기존 IdentifiedBookCard, resolved 는 BookList.tsx 안의 로컬 ResolvedBookCard 다. resolved 카드는 알라딘 사실(제목·저자·출판사·쪽수·평점)만 그리고 ClaudeText 를 아예 렌더하지 않으며(빈 claudeNote 를 지어내지 않는다, ADR-002) photoIndex 도 만들지 않는다. 출처는 중립색 라벨 '직접 확인'(data-testid=resolved-origin, text-subtle — 경고색 아님)으로 드러낸다. overflowCount 안내는 사진에서 온 책의 잘림이라는 의미 그대로 두었다. page.tsx 는 '직접 확인한 책' 우회 섹션과 toAnalyzeView · photoBooks · resolvedBooks 파생을 전부 제거하고 state.books 를 그대로 넘긴다(Badge·AnalyzeResponse import 정리). onRetryLookup 은 BookList·UnidentifiedBookCard 양쪽에서 (book: UnidentifiedBook) => void 로 넓어졌고, page 의 handleRetryLookup(book) 이 runResolve(book, book.rawText, 1) 로 그 책 한 권만 재조회한다 — handleRetryPhotos 호출을 끊어 알라딘 1건 실패에 모델 재분석 비용을 내지 않는다(ADR-005). onRetryPhoto(부분 실패 배너)와 ShelfBook 타입·API 라우트·services 는 건드리지 않았다. 테스트 12건 추가 (1068 → 1080).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 450,
+          "at": "2026-09-02T12:11:47+0900",
+          "guardrail_docs": [
+            "ADR",
+            "API_SPEC",
+            "ARCHITECTURE",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 46072,
+          "source_chars": 52777,
+          "prompt_chars": 108405,
+          "cost_usd": 3.6416,
+          "turns": 22,
+          "cache_read": 2882903,
+          "cache_write": 151102,
+          "output_tokens": 24979,
+          "session_id": "3383ab0d-33df-4892-b81e-5beb3290c382",
+          "tool_result_chars": 79860,
+          "tool_result_count": 21,
+          "tool_output_chars": 99542,
+          "tool_calls": {
+            "Bash": 19,
+            "Write": 2
+          },
+          "reads_source": "backfill",
+          "tool_result_p50": 957,
+          "tool_result_p90": 9853,
+          "tool_result_max": 18723,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
+        }
+      ],
+      "completed_at": "2026-09-02T12:11:47+0900",
+      "attempts": 1
+    },
+    {
+      "step": 4,
+      "name": "retry-backoff",
+      "status": "completed",
+      "docs": [
+        "PRD",
+        "UI_GUIDE",
+        "ARCHITECTURE"
+      ],
+      "sources": [
+        "src/app/page.tsx",
+        "src/app/page.test.tsx",
+        "src/lib/env.ts"
+      ],
+      "started_at": "2026-09-02T12:11:47+0900",
+      "summary": "FR-010 의 분석 재시도 간격(0초 → 5초 → 15초)을 구현했다. 스케줄은 src/lib/env.ts 의 ANALYZE_RETRY_DELAYS_MS = [0, 5_000, 15_000] as const 배열 하나이고, 상한은 별도 리터럴이 아니라 MAX_ANALYZE_RETRIES = ANALYZE_RETRY_DELAYS_MS.length 로 스케줄에서 유도한다 — 둘이 갈라지면 마지막 재시도의 간격이 undefined 가 되므로 관계를 구조로 고정했고(page.tsx 안에 있던 로컬 상수 3 은 걷어냈다) env.test.ts 에 회귀 테스트 3건으로도 묶었다. page.tsx 는 재시도 회차(analyzeAttempts, 0-based)로 스케줄을 인덱싱해 handleRetryPhotos 한 곳에서만 간격을 건다 — 에러 화면의 '다시 시도'와 부분 실패 배너의 '이 사진만 다시 시도'가 둘 다 이 합류점을 지나므로 같은 간격을 따르고, 두 군데에 각각 넣어 한쪽만 고쳐지는 경로를 만들지 않았다. 간격 0(1회차)은 즉시 실행되고 '0초 남았어요'를 띄우지 않는다. 대기는 retryWaitSec(number|null) state + retryTimerRef 의 1초 setInterval 틱 카운트다(Date 의존 없음, 새 의존성 0건, localStorage·쿠키 미사용 — ADR-003). 상태 갱신 함수 안에서 분석 호출을 내지 않으려고 남은 초는 클로저 지역 변수로 깎는다. 대기 중에는 두 버튼을 감추지 않고 비활성으로 남기고(ErrorBanner.retryDisabled · BookList.retryPhotoDisabled, 둘 다 옵셔널이라 기존 호출부 무변경) '{n}초 뒤에 다시 시도할게요'를 Notice(text-subtle)로 띄운다 — 경고색도 role=\"alert\"도 쓰지 않는다. 타이머는 cancelRetryTimer 로 RESTARTED(handleRestart)·언마운트에서 정리하고, handleRetryPhotos 가 isWaitingRetry 로 재진입을 상태로도 막아 타이머가 겹치지 않는다. 상한 3회와 소진 후 화면(버튼 없음 + '잠시 후 다시 시도해 주세요')은 그대로다. 재추천(recommendCount, 상한 5회) 경로에는 간격을 넣지 않았다 — FR-010 이 간격을 붙인 것은 분석 재시도뿐이다. 테스트는 가짜 타이머로 advanceTimersByTimeAsync 를 쓰며(실시간 대기 0초), 4999ms 에 안 불리고 5000ms 에 불린다는 짝 단정으로 간격 0 회귀를 막았다. 테스트 11건 추가 (1080 → 1091).",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 458,
+          "at": "2026-09-02T12:19:26+0900",
+          "guardrail_docs": [
+            "ARCHITECTURE",
+            "PRD",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 41323,
+          "source_chars": 55668,
+          "prompt_chars": 105553,
+          "cost_usd": 3.7756,
+          "turns": 27,
+          "cache_read": 3201534,
+          "cache_write": 140837,
+          "output_tokens": 28072,
+          "session_id": "9ae1df70-2119-4234-a6c5-50a59d0a5580",
+          "tool_result_chars": 31717,
+          "tool_result_count": 26,
+          "tool_output_chars": 31717,
+          "tool_calls": {
+            "Bash": 26
+          },
+          "reads_source": "backfill",
+          "tool_result_p50": 49,
+          "tool_result_p90": 5977,
+          "tool_result_max": 11462,
+          "tool_result_repeat_chars": 16,
+          "tool_result_repeat_count": 8
+        }
+      ],
+      "completed_at": "2026-09-02T12:19:26+0900",
+      "attempts": 1
+    }
+  ],
+  "created_at": "2026-09-02T11:46:02+0900",
+  "completed_at": "2026-09-02T12:19:26+0900"
+}

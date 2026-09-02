@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+
+  "project": {
+    "name": "shelfie",
+    "language": "ko",
+    "instruction_file": "CLAUDE.md",
+    "instruction_slot_budget": 12,
+    "rules_dir": "docs",
+    "secret_files": [".env.local", ".env"]
+  },
+
+  "adapter": "nextjs-ts",
+
+  "contract": {
+    "path_template": "_workspace/contract_{slug}.md",
+    "sections": {
+      "units": "## 유닛",
+      "entrypoints": "## 진입점",
+      "errors": "## 오류 어휘",
+      "schema": "## 스키마·데이터 변경",
+      "boundaries": "## 외부 경계"
+    },
+    "required": ["units"]
+  },
+
+  "vcs": {
+    "forge": "github",
+    "remote": "origin",
+    "base_branch": "main",
+    "branch_pattern": "^feat-[a-z0-9-]+$",
+    "protected": ["main"]
+  },
+
+  "roles": [
+    {
+      "id": "impl",
+      "agent": "impl-writer",
+      "code": "impl",
+      "owns": ["src/app/**", "src/components/**", "src/lib/**", "src/services/**", "src/types/**"],
+      "excludes": ["**/*.test.ts", "**/*.test.tsx", "**/*.golden.test.ts"]
+    },
+    {
+      "id": "test",
+      "agent": "test-writer",
+      "code": "test",
+      "owns": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.golden.test.ts"]
+    }
+  ],
+  "primary_role": "impl",
+
+  "main_owned_paths": [
+    "harness/**",
+    "docs/**",
+    "scripts/**",
+    ".claude/**",
+    "phases/**",
+    ".github/**",
+    "*.md",
+    "*.json",
+    "*.mjs",
+    "*.ts",
+    ".gitignore",
+    ".env*"
+  ],
+
+  "budget": {"files_max": 10, "lines_max": 400, "model_calls_max": 24},
+  "profile": {"small_max_units": 3, "inv_skip_below_chars": 400},
+  "background_threshold_sec": 180,
+  "calibration_file": "harness/calibration.json"
+}

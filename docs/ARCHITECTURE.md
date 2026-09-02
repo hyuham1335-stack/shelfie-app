@@ -29,7 +29,7 @@ flowchart TD
     src --> services["services/<br/>외부 API 래퍼"]
 
     app --> api["api/<br/>라우트 핸들러"]
-    app --> page["page.tsx<br/>단일 페이지 (5개 화면을 상태로 전환)"]
+    app --> page["page.tsx<br/>단일 페이지 (상태 10종을 화면으로 전환)"]
 
     api --> apiAnalyze["analyze/route.ts<br/>사진 → 확인·미확인 책"]
     api --> apiResolve["books/resolve/route.ts<br/>수정된 제목으로 재검색"]
@@ -51,7 +51,13 @@ flowchart TD
     lib --> libAnalytics["analytics.ts<br/>구조화 이벤트 로그"]
     lib --> libBudget["budget.ts<br/>단계별 시간 예산 · 데드라인 전파"]
     lib --> libProof["proof.ts<br/>확인된 책 HMAC 서명 발급 · 검증"]
-    lib --> libEnv["env.ts<br/>환경변수 부팅 시 검증"]
+    lib --> libEnv["env.ts<br/>환경변수 부팅 시 검증 · 도메인 상수 단일 출처"]
+    lib --> libSession["session.ts<br/>세션 상태 리듀서 (순수)"]
+    lib --> libApiClient["api-client.ts<br/>app/api 호출 래퍼 · 에러 정규화"]
+    lib --> libShareImage["share-image.ts<br/>저장 이미지 레이아웃(순수) + 캔버스 그리기"]
+    lib --> libGoldenManifest["golden-manifest.ts<br/>골든 세트 매니페스트 스키마·파싱 (순수)"]
+    lib --> libGoldenScore["golden-score.ts<br/>재현율·오확인 판정 (순수)"]
+    lib --> libGoldenReport["golden-report.ts<br/>골든 결과 표·JSON 렌더 (순수)"]
 
     services --> svcAnthropic["anthropic.ts<br/>Claude API 래퍼"]
     services --> svcAladin["aladin.ts<br/>알라딘 OpenAPI 래퍼"]
@@ -61,6 +67,8 @@ flowchart TD
 ```
 
 세부 디렉토리가 늘어나면 위 그래프에 노드를 추가한다. 새 최상위 디렉토리를 만들 때는 ADR에 근거를 남긴다.
+
+저장소를 도입할 때(ADR-007)도 새 최상위 디렉토리를 만들지 않는다. Supabase 클라이언트는 `services/supabase.ts`로 들어가고, DB 행을 검증하는 스키마는 `lib/schemas.ts`에, 행 타입은 `types/`에 둔다 — 외부 API와 정확히 같은 자리다.
 
 ---
 
@@ -94,12 +102,18 @@ flowchart LR
     C --> T
     A --> T
     S --> T
+
+    T -.->|타입 전용| L
 ```
 
 - `components/` → `services/` 직접 호출 금지. 반드시 `app/api/`를 경유한다. 클라이언트 번들에 `ANTHROPIC_API_KEY`·`ALADIN_TTB_KEY`가 새어 나가는 것을 구조적으로 차단하기 위함이다.
 - `services/` → `components/` 역방향 import 금지. 서버 전용 모듈이 React 컴포넌트를 참조하면 서버 코드가 클라이언트 번들로 끌려 들어간다.
 - `lib/` → `services/` 금지. `lib/`는 외부 호출을 하지 않는 순수 함수만 담는다. 이 경계 덕분에 `lib/`는 모킹 없이 단위 테스트할 수 있다.
-- `lib/image.ts`만 브라우저 API(Canvas)에 의존한다. 서버 코드에서 import하지 않는다.
+- `types/` → `lib/schemas.ts`는 **타입 전용**으로만 허용한다(점선). 스키마와 타입을 이중 정의하지 않으려면(TR-002) `z.infer`가 스키마를 참조할 수밖에 없다. 대신 `types/`는 `import type`·`export type`만 쓰고 값을 하나도 내보내지 않으므로, 컴파일 후 런타임 import가 남지 않아 클라이언트 번들에 `lib/`가 끌려 들어가지 않는다. 역방향(`lib/` → `types/`)과 `types/`의 값 export는 계속 금지다.
+- 브라우저 API(Canvas)에 의존하는 `lib/` 모듈은 **`lib/image.ts`와 `lib/share-image.ts` 둘뿐이다.** 서버 코드에서 import하지 않는다.
+- **골든 인식률 러너는 프로덕션 코드가 아니라 테스트 코드다** (ADR-010). 러너는 `services/anthropic.ts`와 `services/aladin.ts`를 둘 다 부르는데 `lib/` → `services/`는 위에서 금지돼 있고, `services/`에 두면 "외부 API 래퍼"라는 그 디렉토리의 정의가 깨지며, `app/api/`에 두면 존재하지 않는 라우트가 생긴다. 그래서 **순수 부품 셋(`golden-manifest.ts`·`golden-score.ts`·`golden-report.ts`)만 `lib/`에 두고**, 실제 API 호출·파일 시스템 접근·리포트 파일 쓰기는 `src/services/shelf.golden.test.ts`가 한다. `lib/`의 셋은 `services/`도 `fs`도 모르므로 일반 `npm test`로 검증된다 — `share-image.ts`가 캔버스에 대해 쓴 것과 같은 분리다 (ADR-009).
+- `lib/share-image.ts`(FR-014 저장 이미지)는 **한 파일 안에서 두 겹으로 갈라져 있다** — 좌표·줄바꿈·잘림을 결정해 드로잉 명령 목록을 만드는 **순수 함수 층**과, 그 명령을 `CanvasRenderingContext2D`에 적용해 PNG `Blob`을 만드는 **얇은 그리기 층**이다. 순수 층은 `document`·`canvas`를 만지지 않으므로 jsdom 없이 값으로 검증하고, 그리기 층은 가짜 `ctx`로 호출 순서만 검사한다. **jsdom에 canvas 구현이 없어** 이 분리가 없으면 TDD가 성립하지 않는다 (ADR-009). 글자 폭은 직접 계산하지 않고 **측정 함수를 주입받는다** — 그것이 순수 층을 순수하게 유지하는 조건이다.
+- 저장소를 도입하면(ADR-007) Supabase도 위 그래프의 `외부 API`와 같은 자리에 놓인다. `components/` → Supabase 직접 호출 금지이며, 반드시 `app/api/`를 경유한다. `service_role` 키가 클라이언트 번들로 새는 경로를 구조적으로 막기 위함이고, 이는 `ANTHROPIC_API_KEY`에 적용하는 규칙과 같은 것이다.
 
 ---
 
@@ -222,10 +236,9 @@ sequenceDiagram
         SA-->>RR: 재검증
     end
 
-    RR->>RR: lib/analytics — 서버 관측 이벤트 기록 (mood_submitted 등)
+    RR->>RR: lib/analytics — 서버 관측 이벤트 기록<br/>(mood_submitted · recommend_viewed, 실패면 recommend_failed)
     RR-->>C: 추천 3권 + 이유 (재검증도 실패하면 502)
     C-->>U: 추천 카드 렌더
-    C->>RE: POST /api/events (recommend_viewed)
     U->>C: "이거 읽을래요" 클릭
     C->>RE: POST /api/events (recommend_accepted) — North Star 분자
 ```
@@ -243,7 +256,19 @@ sequenceDiagram
 
     alt reason이 ambiguous (후보가 이미 있음)
         U->>C: 제시된 후보 중 하나를 바로 선택
-        C-->>U: 재검색 없이 확인된 책으로 이동
+        Note over C: 화면의 후보에는 proof 가 없다 (ADR-006)<br/>승격하려면 서버에서 다시 받아야 한다
+        C->>R: POST /api/books/resolve (그 후보의 제목)
+        R-->>C: ResolvedCandidate[] (proof 포함)
+        alt 고른 책의 isbn13 이 응답에 있다
+            C-->>U: 확인된 책으로 승격
+        else 없다
+            C-->>U: 승격하지 않고 재검색 화면에 남긴다<br/>1번 후보로 때우지 않는다
+        end
+    else reason이 lookup_failed (조회 자체가 실패)
+        U->>C: "다시 시도" — 제목을 고치지 않는다
+        Note over C: 데이터가 없는 것이 아니라 못 물어본 것이다 (ADR-005)<br/>고칠 제목이 없으므로 같은 질의를 그대로 다시 보낸다
+        C->>R: POST /api/books/resolve (그 책의 rawText 그대로)
+        Note over C,R: 이 책 한 권만 다시 묻는다 — 사진 전체 재분석이 아니다
     end
 
     U->>C: 미확인 책의 제목을 수정
@@ -272,9 +297,19 @@ sequenceDiagram
 
 ## 상태 관리
 
-서버 상태가 없으므로 전역 상태 라이브러리를 쓰지 않는다. 세션 전체를 `app/page.tsx`의 `useReducer` 하나로 관리하고, 각 화면 컴포넌트는 상태와 dispatch를 props로 받는다. 새로고침하면 상태가 사라지며, 이는 무상태 설계의 의도된 결과다 (ADR-003).
+서버 상태가 없으므로 전역 상태 라이브러리를 쓰지 않는다. 세션 전체를 `app/page.tsx`의 `useReducer` 하나로 관리한다. **화면 컴포넌트에는 `dispatch`를 넘기지 않는다** — 필요한 값만 개별 props로 주고 사용자의 행동은 콜백으로 받는다. `dispatch`를 넘기면 화면이 액션 이름을 알게 되어 상태 전이를 직접 하게 되고, 그 순간 전이 규칙이 리듀서 밖으로 새어 나가 순수 함수 테스트가 규칙 전부를 검사하지 못한다. 리듀서 자체는 `lib/session.ts`에 **순수 함수로** 두어 jsdom 없이 검증한다 — 화면 전이 규칙은 React와 무관한 규칙이고, React 안에 있으면 렌더링을 통해서만 검사할 수 있다. 새로고침하면 상태가 사라지며, 이는 무상태 설계의 의도된 결과다 (ADR-003).
+
+**`/api/books/resolve`로 승격된 책은 `photoIndex`를 갖지 않는다.** 그 책은 사진이 아니라 사용자의 재검색에서 왔기 때문이다. 승격된 책을 확인된 책으로 다루되(알라딘 대조와 `proof`를 똑같이 통과했다) 사진 출처가 있는 척하지 않는다 — 없는 값을 `0`으로 지어내는 것은 출처를 위조하는 것이다. 요청 경계를 넘을 때 쓰는 `bookReferenceSchema`·`recommendBookSchema`가 `photoIndex`를 요구하지 않으므로 계약을 바꿀 이유도 없다.
+
+그래서 세션의 책 목록은 **출처를 태그로 달고 다닌다** — `photo`(사진에서 왔다)와 `resolved`(재검색에서 왔다)의 판별 유니온이다. **두 출처는 화면에서 한 목록으로 선다.** 확인된 책 섹션 하나에 합계 권수를 세고, 카드만 출처에 따라 고른다. 목록을 둘로 가르면 사용자는 자기 책장이 왜 두 덩어리인지 알 수 없고, 그 구분은 사용자에게 아무 의미가 없다 — **출처는 목록을 가를 이유가 아니라 카드가 무엇을 그릴 수 있는지를 정하는 값이다.** `resolved` 책에는 `claudeNote`가 없으므로 그 카드는 생성 텍스트 블록을 아예 그리지 않는다(ADR-002 — 없는 해석을 빈 문자열로 지어내지 않는다).
+
+**재시도에는 간격이 있다** (FR-010). 분석 재시도는 세션당 3회이고 간격은 0초 → 5초 → 15초로 벌어진다. 대기는 화면의 로컬 상태이지 세션 상태가 아니다 — 리듀서는 "몇 번 눌렀는가"를 알지만 "지금 몇 초 남았는가"는 알 필요가 없고, 그것을 리듀서에 넣으면 순수 함수가 타이머를 갖게 된다. 대기 중에는 재시도 버튼을 **감추지 않고 비활성**한다. 타이머는 처음부터 다시 시작(`RESTARTED`)과 언마운트에서 반드시 정리한다 — 정리하지 않으면 사용자가 버리기로 한 세션에 유령 분석 호출이 나가고 모델 비용이 든다.
 
 다만 **의도된 소실과 사고로 인한 소실은 다르다.** 분석에 30초를 기다린 사용자가 실수로 새로고침하면 사진과 결과가 함께 사라지고 API 비용도 다시 든다. `reviewing` 이후 상태에서는 `beforeunload` 경고를 걸어 이탈을 한 번 되묻는다. 선택한 원본 파일은 `error` 상태에서도 메모리에 유지해, 재시도가 재업로드를 요구하지 않게 한다.
+
+**세션이 들고 있는 것은 원본 `File`이다.** 리사이즈 결과(data URI)를 상태로 들면 재업로드는 면하지만 **EXIF 보정·품질·짧은 변 경고를 다시 고를 수 없다** — 그 판정은 전부 `lib/image.ts`가 원본 비트맵에서 내리는 것이고, 한 번 줄인 결과에는 되돌릴 근거가 남아 있지 않다. 그래서 세션은 사용자가 고른 **원본 `File[]`을 상태로 보존하고**, 전체 재분석도 "이 사진만 다시 시도"도 그 원본에서 `lib/image.ts`의 리사이즈를 **다시 태운다.** 리사이즈 결과는 그때그때 파생되는 값이지 세션이 기억하는 값이 아니다 — 이미 그려진 썸네일을 위해 파생값을 곁에 캐시하는 것은 무방하지만, **재시도의 입력은 언제나 원본이어야 한다.** 이 구분이 없으면 PRD 5번의 "고른 사진은 그대로 남는다"가 "고른 사진의 열화된 사본이 남는다"가 된다.
+
+**`error`는 어느 단계에서 실패했는지 기억한다.** 그 값 없이는 회복 경로를 고를 수 없다 — 분석 실패의 회복은 `analyzing`이고 추천 실패의 회복은 `recommending`·`moodInput`인데, **상태 이름만으로는 둘이 구분되지 않는다.** 세 경로가 같은 상태에서 나가므로 화면이 실패 단계로 갈라야 하고, `error → analyzing`(재시도)은 **분석 단계에서 온 `error`에서만** 유효하다. `error → recommending`은 직전 `mood`를 **그대로 재전송**하는 경로다(사용자에게 기분을 다시 쓰게 하지 않는다). `error → moodInput`은 사용자가 다르게 쓰겠다고 고를 때다. 이 두 전이가 없으면 **추천 한 번의 외부 장애에 분석 비용을 다시 내야 한다** — 회복 경로가 전체 재분석이거나 `idle`뿐이기 때문이다. 실패 단계를 무엇으로 표현할지는 리듀서의 몫이므로 여기서 필드 이름을 정하지 않는다. 다만 **기억하지 않는 선택지는 없다.**
 
 ```mermaid
 stateDiagram-v2
@@ -291,6 +326,7 @@ stateDiagram-v2
     reviewing --> reviewing: 미확인 책 수정·재검색
     reviewing --> moodInput: 추천 단계로 이동
     moodInput --> guidedQuestions: 기분을 비운 채 진행
+    guidedQuestions --> guidedQuestions: 질문 수신
     guidedQuestions --> moodInput: 문답 건너뛰기 또는 생성 실패
     guidedQuestions --> recommending: 답변 제출
     moodInput --> recommending: 기분 텍스트 제출
@@ -300,5 +336,7 @@ stateDiagram-v2
     result --> moodInput: 다시 추천받기
     result --> idle: 새 사진으로 시작
     error --> analyzing: 재시도 (실패한 사진만)
+    error --> recommending: 같은 기분으로 다시 추천
+    error --> moodInput: 기분 다시 입력
     error --> idle: 처음으로
 ```

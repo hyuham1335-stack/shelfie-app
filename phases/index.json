@@ -1,0 +1,54 @@
+{
+  "phases": [
+    {
+      "dir": "lib-core",
+      "status": "completed",
+      "completed_at": "2026-09-01T15:22:50+0900"
+    },
+    {
+      "dir": "services-core",
+      "status": "completed",
+      "completed_at": "2026-09-01T16:21:30+0900"
+    },
+    {
+      "dir": "routes-core",
+      "status": "completed",
+      "completed_at": "2026-09-01T20:59:23+0900"
+    },
+    {
+      "dir": "app-core",
+      "status": "completed",
+      "completed_at": "2026-09-01T22:28:13+0900"
+    },
+    {
+      "dir": "app-shell",
+      "status": "completed",
+      "completed_at": "2026-09-02T01:26:58+0900"
+    },
+    {
+      "dir": "contract-wiring",
+      "status": "completed",
+      "completed_at": "2026-09-02T10:48:21+0900"
+    },
+    {
+      "dir": "forced-path",
+      "status": "completed",
+      "completed_at": "2026-09-02T12:19:26+0900"
+    },
+    {
+      "dir": "could-have",
+      "status": "completed",
+      "completed_at": "2026-09-02T14:03:26+0900"
+    },
+    {
+      "dir": "golden-set",
+      "status": "completed",
+      "completed_at": "2026-09-02T15:53:40+0900"
+    },
+    {
+      "dir": "deploy-ready",
+      "status": "completed",
+      "completed_at": "2026-09-02T17:47:34+0900"
+    }
+  ]
+}

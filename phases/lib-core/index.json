@@ -1,0 +1,146 @@
+{
+  "project": "shelfie",
+  "phase": "lib-core",
+  "steps": [
+    {
+      "step": 0,
+      "name": "proof",
+      "status": "completed",
+      "started_at": "2026-09-01T14:53:28+0900",
+      "summary": "src/lib/proof.ts 신규 — issueProof·verifyProof·filterVerified와 ProofSubject·ProofVerdict 타입 (HMAC-SHA256, TTL 2h, 사유 3종 구분, fail-soft). src/lib/proof.test.ts 16건.",
+      "completed_at": "2026-09-01T14:59:57+0900",
+      "runs": [
+        {
+          "session_id": "513b88a8-066f-441d-a80b-c328f04cb0f9",
+          "tool_result_chars": 18660,
+          "tool_result_count": 12,
+          "tool_output_chars": 18660,
+          "tool_calls": {
+            "Bash": 12
+          },
+          "attempt": null,
+          "reads_source": "backfill",
+          "tool_result_p50": 575,
+          "tool_result_p90": 4039,
+          "tool_result_max": 5430,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
+        }
+      ]
+    },
+    {
+      "step": 1,
+      "name": "analytics",
+      "status": "completed",
+      "started_at": "2026-09-01T14:59:57+0900",
+      "summary": "src/lib/analytics.ts 신규 — logEvent와 AnalyticsEvent(PRD 7번 이벤트 8종 판별 유니온)·UnidentifiedReasonCounts 타입. 속성 화이트리스트 투영으로 PII·rawText 차단, 직렬화 실패는 폴백 로그 후 삼킴. src/lib/analytics.test.ts 17건.",
+      "completed_at": "2026-09-01T15:03:47+0900",
+      "runs": [
+        {
+          "session_id": "c79ca1cc-8fbc-41da-8380-65cc7c419819",
+          "tool_result_chars": 25628,
+          "tool_result_count": 11,
+          "tool_output_chars": 39280,
+          "tool_calls": {
+            "Bash": 9,
+            "Write": 2
+          },
+          "attempt": null,
+          "reads_source": "backfill",
+          "tool_result_p50": 898,
+          "tool_result_p90": 6716,
+          "tool_result_max": 8515,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
+        }
+      ]
+    },
+    {
+      "step": 2,
+      "name": "match",
+      "status": "completed",
+      "started_at": "2026-09-01T15:03:47+0900",
+      "summary": "src/lib/match.ts 신규 — normalizeTitle·normalizeAuthor·titleSimilarity(정규화 후 자체 Levenshtein)·judge와 MATCH_THRESHOLD(0.8)·LookupOutcome·MatchVerdict 타입. 조회 결과를 인자로 받는 순수 판정(unreadable → lookup_failed → ISBN13 필터 → 0.8 임계 → 저자 tie-break → ambiguous 5건), no_match/lookup_failed 분리 유지. src/lib/match.test.ts 33건.",
+      "completed_at": "2026-09-01T15:10:52+0900",
+      "runs": [
+        {
+          "session_id": "0f9a5eb7-fe0d-4362-8fb4-b888075399fc",
+          "tool_result_chars": 24493,
+          "tool_result_count": 14,
+          "tool_output_chars": 41538,
+          "tool_calls": {
+            "Bash": 10,
+            "Edit": 2,
+            "Write": 2
+          },
+          "attempt": null,
+          "reads_source": "backfill",
+          "tool_result_p50": 548,
+          "tool_result_p90": 5202,
+          "tool_result_max": 11805,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
+        }
+      ]
+    },
+    {
+      "step": 3,
+      "name": "merge",
+      "status": "completed",
+      "started_at": "2026-09-01T15:10:52+0900",
+      "summary": "src/lib/merge.ts 신규 — reduceBeforeLookup·dedupeByIsbn·capIdentified·capUnidentified와 CONFIDENCE_FLOOR(0.3). 조회 전 축소(확신도 강등 → match.ts 정규화 키 사전 병합 → 확신도순 80건)에서 잘린 후보도 unreadable로 보존, ISBN13 중복 제거 시 최초 photoIndex 유지, 확인 50·미확인 100 절단은 평점 내림차순(null 최하위) → photoIndex → isbn13 전순서로 결정적. 전부 입력 비변형 순수 함수. src/lib/merge.test.ts 33건.",
+      "completed_at": "2026-09-01T15:15:46+0900",
+      "runs": [
+        {
+          "session_id": "e78c4889-2008-4bf2-ac08-3a764e10d7c1",
+          "tool_result_chars": 24977,
+          "tool_result_count": 21,
+          "tool_output_chars": 40582,
+          "tool_calls": {
+            "Bash": 17,
+            "Edit": 1,
+            "Read": 1,
+            "Write": 2
+          },
+          "attempt": null,
+          "reads_source": "backfill",
+          "tool_result_p50": 446,
+          "tool_result_p90": 3056,
+          "tool_result_max": 8167,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
+        }
+      ]
+    },
+    {
+      "step": 4,
+      "name": "image",
+      "status": "completed",
+      "started_at": "2026-09-01T15:15:46+0900",
+      "summary": "src/lib/image.ts 신규 — 순수 함수 validateSelection·hashBytes·targetDimensions·isTooSmallAfterResize·dataUriByteLength·checkOutputBudget와 DOM 의존 resizeToDataUri, ImageDecodeError·RejectReason·SelectedFileMeta 타입, 상수 8종(MAX_LONG_EDGE 1568·MIN_SHORT_EDGE 600·JPEG_QUALITY 0.85·MAX_SOURCE_BYTES·산출물 2MB/4MB·SUPPORTED_MIME_TYPES). 파일 단위 거부(우선순위 unsupported_type→too_large→duplicate→too_many)로 한 장 결함이 전체를 막지 않고, 디코드는 imageOrientation \"from-image\"로 EXIF 정립 후 축소, 모든 실패를 ImageDecodeError(decode_failed)로 명시. src/lib/image.test.ts 40건 (캔버스는 vi.spyOn/stubGlobal로 대체, 새 의존성 0).",
+      "completed_at": "2026-09-01T15:22:50+0900",
+      "runs": [
+        {
+          "session_id": "f439dec3-52a0-4002-8852-4612deacdc2f",
+          "tool_result_chars": 36050,
+          "tool_result_count": 17,
+          "tool_output_chars": 58253,
+          "tool_calls": {
+            "Bash": 13,
+            "Edit": 2,
+            "Write": 2
+          },
+          "attempt": null,
+          "reads_source": "backfill",
+          "tool_result_p50": 560,
+          "tool_result_p90": 8757,
+          "tool_result_max": 10091,
+          "tool_result_repeat_chars": 0,
+          "tool_result_repeat_count": 0
+        }
+      ]
+    }
+  ],
+  "created_at": "2026-09-01T14:53:28+0900",
+  "completed_at": "2026-09-01T15:22:50+0900"
+}

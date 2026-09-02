@@ -1,0 +1,98 @@
+{
+  "project": "shelfie",
+  "phase": "deploy-ready",
+  "carried_reports": {
+    "note": "런 #9 의 step 들이 올린 새 보고는 0건이라(세 런 연속) 이번 런이 받을 이월 코드 부채는 런 #5 보고 ⑦(다섯 런째)과 런 #3 알라딘 상한 둘이다. PRD MoSCoW 의 Must·Should·Could 와 TRD 의 [MVP] 가 런 #9 에서 전부 닫혀 FR 이 남지 않았으므로, 이 런의 계약은 새 기능이 아니라 **배포 가능 상태**다 — 이월 부채를 닫고, 문서에만 있고 회귀로 고정되지 않은 계약(TRD 6.6 접근성 · TR-011 의 'Edge Cases 표와 1:1 대응')을 실행 가능한 테스트로 잠근다.",
+    "measurement_design": "이 런은 런 #9 가 남긴 측정 숙제 둘을 **같은 런 안에서** 푼다. ① [[ADR-H012]] 의 두 줄 표가 n=2 에 서 있고 통독 1건(런 #8 capture-guide)·호출 1건(런 #9 golden-runner)이 서로 다른 런이라 작업 성격이 교란 변수다 — 두 유형을 한 런에 두면 교란 없이 비교된다. ② 접두부 ↔ 비용 상관이 0.040(n=5) → 0.424(n=9) 로 올랐는데 런 #9 step 3 이 접두부와 끌어온 양 **둘 다 최대**여서 가르지 못했다 — 이 런은 **접두부는 큰데 끌어온 양은 작은 step**(step 2)과 그 반대 극(step 1)을 함께 둔다. 상한은 접두부에도 끌어온 양에도 다섯 번째로 걸지 않는다.",
+    "estimate_under_test": "수치는 전부 **문자** 기준이다(실행기가 세는 단위 — 바이트로 재면 한글 때문에 1.4배 부풀어 어림이 틀린다). 관측점 넷: ① **통독 유형** — step 1 이 고칠 파일인 src/lib/merge.ts(6,844자)와 src/lib/merge.test.ts(10,997자), 합 17,841자·**어림 10.5 turn** 을 일부러 첨부하지 않는다. [[ADR-H012]] 첫째 줄이 '하한'이라고 적은 것을 시험한다(런 #8 은 1.9배였다). ② **호출 유형** — step 0 의 src/lib/image.ts(9,956자 · 어림 5.9 turn). ③ **호출 유형** — step 1 의 src/services/aladin.ts(22,379자 · 어림 13.2 turn). 둘 다 시그니처와 한두 분기만 필요하므로 예측은 크기와 무관하게 2~3 turn 이다. ④ **접두부 축** — step 2 는 접두부 약 165,900자로 **열 런 최대**(직전 기록은 런 #9 step 3 의 152,800)이면서 손댈 파일을 전부 첨부해 끌어온 양이 최소일 것으로 예측되고, step 1 은 약 51,000자로 최저극이면서 미첨부 파일 셋을 직접 읽는다. **step 2 가 접두부 최대인데 비용이 최대가 아니면 축은 끌어온 양이고(런 #9 결론 유지), 비용도 최대면 세 런 연속 서술이 뒤집힌다.**",
+    "resolved_by_main_before_run": [
+      "docs/ARCHITECTURE.md 상태 관리 절에 '세션이 들고 있는 것은 원본 File 이다' 를 계약으로 못 박았다 — 원본 File[] 을 상태로 보존하고 재시도는 리사이즈 결과가 아니라 원본에서 다시 리사이즈한다. 이 줄이 없으면 step 0 이 상태 형태를 스스로 정하고 PRD 5번 '고른 사진은 그대로 남는다' 와 어긋난다",
+      "docs/TRD.md 10번 병목 표 아래에 '세션당 260회는 산문의 계산식이 아니라 코드가 잠그는 계약이다' 절을 신설했다 — MAX_CANDIDATES_FOR_LOOKUP(80)·MAX_IDENTIFIED_BOOKS(50) 에서 (80+50)×2 = 260 으로 유도되고 그 관계를 회귀 테스트로 고정한다. 인스턴스 간 카운터가 아니라 한 요청 안의 구조적 상한이라 무상태 전제(ADR-003)와 충돌하지 않는다",
+      "docs/ADR.md 에 ADR-011 을 썼다 — @anthropic-ai/sdk 0.68 을 지금 올리지 않고 캐스팅 경계(services/anthropic.ts 의 MessagesClient·MessageRequestBody) 하나로 계속 버티되 상환 트리거 3종(런타임 거부 · 새 SDK 표면 필요 · audit high)을 못 박았다. 네 런째 조용히 이월되던 것을 결정으로 바꾼 것이 이 ADR 의 목적이다",
+      ".github/workflows/ci.yml 을 신설했다 — TRD 9번 CI 파이프라인이 아홉 런 동안 문서에만 있었다(.github 디렉토리 자체가 없었다). 게이트는 TRD 8번 AC 다섯 줄과 같은 세트이고 골든은 넣지 않는다(실제 API 호출 · 키 없으면 목업 위에서 재현율 100% — ADR-010)"
+    ],
+    "not_assigned_this_run": [
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입 노후. **이월이 아니라 결정으로 닫혔다**(ADR-011). 코드 변경은 트리거 도달 시점의 일이므로 이 런의 step 에 주지 않는다",
+      "ROADMAP 12 — 3단계 게이트의 두 번째 스택(gradle-java) 대상 리포가 이 머신에 없다. 사람이 정한다",
+      "ROADMAP 14 — 어댑터 verified:true 승격은 04-gate 가 어댑터를 소비한 뒤다. 열 런 모두 execute.py 로 돈다",
+      "ROADMAP 28 — 접두부 통합 예산의 **값**. 이 런이 다섯 번째 표본이고 축을 가르는 첫 표본이다. 값은 다섯 번째로 정하지 않는다",
+      "ROADMAP 30 — 골든 세트가 비어 있다. 사진 20장과 기대 목록은 사람이 채워야 하고 이 런의 범위가 아니다. 그때까지 npm run test:golden 은 no_set_dir 로 skip 만 하며 **skip 은 통과가 아니다**",
+      "TR-011 번들 200KB(gzip) 게이트 — 측정 수단이 npm run build 출력뿐이고 검사 스크립트를 두려면 scripts/(메인 소유)여야 한다. 런 전 메인 작업에 넣지 않았으므로 이번 런에서 닫히지 않는다",
+      "src/components/booklist/IdentifiedBookCard.tsx — step 2 의 sources 상한(60,000자)에 걸려 유일하게 첨부에서 뺀 컴포넌트다. 접근성 5개 항목 중 이 카드에만 있는 것은 없다(alt 는 BookCover, 배지는 Badge, 생성 텍스트는 ClaudeText 가 그린다). 필요하면 step 이 직접 읽는다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "original-photo-source",
+      "status": "pending",
+      "docs": [
+        "ARCHITECTURE",
+        "PRD",
+        "UI_GUIDE"
+      ],
+      "sources": [
+        "src/app/page.tsx",
+        "src/components/upload/UploadScreen.tsx"
+      ]
+    },
+    {
+      "step": 1,
+      "name": "aladin-call-budget",
+      "status": "pending",
+      "docs": [
+        "TRD"
+      ],
+      "sources": [
+        "src/lib/env.ts"
+      ]
+    },
+    {
+      "step": 2,
+      "name": "a11y-contract",
+      "status": "pending",
+      "docs": [
+        "UI_GUIDE",
+        "TRD",
+        "PRD",
+        "ARCHITECTURE",
+        "ADR"
+      ],
+      "sources": [
+        "src/components/booklist/BookList.tsx",
+        "src/components/upload/UploadScreen.tsx",
+        "src/components/mood/MoodInput.tsx",
+        "src/components/recommend/RecommendationList.tsx",
+        "src/components/recommend/RecommendationCard.tsx",
+        "src/components/common/ErrorBanner.tsx",
+        "src/components/booklist/UnidentifiedBookCard.tsx",
+        "src/components/booklist/BookCover.tsx",
+        "src/components/mood/GuidedQuestions.tsx",
+        "src/components/upload/PhotoThumbnails.tsx",
+        "src/components/upload/PhotoPicker.tsx",
+        "src/components/upload/RejectedNotice.tsx",
+        "src/components/upload/CaptureGuide.tsx",
+        "src/components/common/Badge.tsx",
+        "src/components/common/AladinLink.tsx",
+        "src/components/common/ClaudeText.tsx",
+        "src/components/common/Skeleton.tsx",
+        "src/components/common/Notice.tsx"
+      ]
+    },
+    {
+      "step": 3,
+      "name": "edge-case-matrix",
+      "status": "pending",
+      "docs": [
+        "PRD",
+        "ARCHITECTURE",
+        "UI_GUIDE"
+      ],
+      "sources": [
+        "src/app/page.tsx",
+        "src/components/booklist/BookList.tsx",
+        "src/components/common/ErrorBanner.tsx"
+      ]
+    }
+  ]
+}

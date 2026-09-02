@@ -157,7 +157,30 @@
         "ADR",
         "UI_GUIDE"
       ],
-      "started_at": "2026-09-02T10:12:27+0900"
+      "started_at": "2026-09-02T10:12:27+0900",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 690,
+          "at": "2026-09-02T10:23:57+0900",
+          "guardrail_docs": [
+            "ADR",
+            "ARCHITECTURE",
+            "UI_GUIDE"
+          ],
+          "guardrail_chars": 30244,
+          "source_chars": 0,
+          "prompt_chars": 39286,
+          "cost_usd": 5.575,
+          "turns": 41,
+          "cache_read": 5559454,
+          "cache_write": 166704,
+          "output_tokens": 43905
+        }
+      ],
+      "completed_at": "2026-09-02T10:23:57+0900",
+      "attempts": 1
     },
     {
       "step": 4,

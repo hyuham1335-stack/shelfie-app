@@ -213,6 +213,8 @@ CRITICAL: 모든 API 로직은 `app/api/` 라우트 핸들러에서만 처리한
 | body | `books` | object[] | O | 확인된 책 목록. `isbn13`·`title`·`author`·`pages`·`claudeNote`·`proof`. 1~50개 |
 | body | `mood` | string | O | 기분·상황 텍스트. 2~500자. 문답 답변을 합성한 문자열도 여기에 담는다 |
 | body | `inputMode` | string | O | `free_text` 또는 `guided`. 이벤트 로그 속성으로만 쓴다 |
+| body | `retryIndex` | number | O | "다시 추천받기" 횟수. 0~4 (FR-010의 세션당 5회 상한). `mood_submitted.retry_index`가 되는 값 |
+| body | `irrelevantStreak` | number | O | 직전까지 **연속으로** 받은 `IRRELEVANT_MOOD` 횟수. 0~2. 추천에 성공하거나 다른 오류가 나면 0으로 되돌린다 |
 
 요청 본문:
 ```json
@@ -229,7 +231,9 @@ CRITICAL: 모든 API 로직은 `app/api/` 라우트 핸들러에서만 처리한
     }
   ],
   "mood": "string — 2~500자",
-  "inputMode": "string — free_text | guided"
+  "inputMode": "string — free_text | guided",
+  "retryIndex": "number — 0~4",
+  "irrelevantStreak": "number — 0~2"
 }
 ```
 
@@ -251,11 +255,13 @@ CRITICAL: 모든 API 로직은 `app/api/` 라우트 핸들러에서만 처리한
 - `recommendations`의 모든 `bookId`는 검증을 통과한 `books`의 `isbn13` 집합에 속한다. 이 검증을 통과하지 못한 응답은 사용자에게 도달하지 않는다.
 - **재요청은 같은 프롬프트를 반복하지 않는다.** 위반한 `bookId`를 모델에 명시하고 허용 목록을 다시 제시한 뒤 1회만 재요청한다. 동일 입력을 그대로 다시 보내면 같은 실패를 반복할 가능성이 높다.
 - 확인된 책이 3권 미만이면 있는 권수만큼만 반환하고 `shortfall`을 `true`로 둔다.
-- **`IRRELEVANT_MOOD` 판정 주체는 모델이다.** 서버가 키워드로 판정하지 않는다. 추천 프롬프트의 구조화 출력에 `relevant: boolean`을 함께 받고, `false`면 추천 대신 422를 반환한다. 다만 **같은 세션에서 2회 연속 `false`가 나오면 판정을 무시하고 추천을 진행한다** — 오탐으로 사용자를 입력 화면에 가두는 것이 억지 추천 한 번보다 나쁘다.
+- **`IRRELEVANT_MOOD` 판정 주체는 모델이다.** 서버가 키워드로 판정하지 않는다. 추천 프롬프트의 구조화 출력에 `relevant: boolean`을 함께 받고, `false`면 추천 대신 422를 반환한다. 다만 **같은 세션에서 2회 연속 `false`가 나오면 판정을 무시하고 추천을 진행한다** — 오탐으로 사용자를 입력 화면에 가두는 것이 억지 추천 한 번보다 나쁘다. **횟수는 클라이언트가 세어 `irrelevantStreak`로 싣고, 무시 판정은 서버가 한다** — 무상태라 서버가 셀 수는 없지만, 판정을 클라이언트에 맡기면 같은 규칙이 화면마다 다시 구현된다. `irrelevantStreak >= 2`인 요청은 모델이 `relevant: false`를 내도 422를 반환하지 않고 추천을 진행한다 (US-003).
 - `mood`는 사용자가 쓴 자유 텍스트이므로 **데이터로만** 다룬다. 시스템 프롬프트에 이어 붙이지 않고 사용자 메시지 안의 구분된 블록에 넣는다 (`/docs/TRD.md` 6.5 프롬프트 인젝션). 출력은 어차피 `isbn13` 화이트리스트로 걸러진다.
 - "다시 추천받기"는 세션당 5회로 제한한다(FR-010). 클라이언트가 카운트하고 서버는 강제하지 않는다 — 무상태라 세션별 카운터를 서버에 둘 수 없기 때문이며, 이 한도는 남용 방어가 아니라 실수로 인한 비용 누수를 막는 장치다.
+- **`retryIndex`·`irrelevantStreak`는 서명하지 않는다.** `sessionId`와 같은 취급이다(위 공통 규약). `proof`(ADR-006)가 필요한 이유는 **책이 사실인 척할 수 있기 때문**인데, 이 두 값은 위조해도 얻는 것이 **원래 허용된 동작 하나**뿐이다 — `irrelevantStreak`를 2로 보내면 세 번째에 어차피 허용되는 억지 추천 한 번을 앞당길 뿐이고, `retryIndex`는 로그 속성이다. 검증하는 대신 **스키마가 상한을 강제한다**(`retryIndex` 0~4 · `irrelevantStreak` 0~2). 상한 밖은 400이다.
+- **두 필드는 옵셔널이 아니라 필수다.** 기본값 0을 두면 **"보내지 않았다"와 "0회다"가 구분되지 않는다.** 그것이 `mood_submitted.retry_index`가 언제나 0으로 기록되던 원인이고, 클라이언트가 배선을 잊어도 지표가 조용히 거짓말한다. 버저닝이 없고 클라이언트와 서버가 같은 배포 단위라 버전 스큐가 없으므로(위 공통 규약) 필수로 두는 비용도 없다.
 
-실패 응답: 400(스키마 검증 실패, 책 목록이 비었거나 50개 초과, `mood`가 2자 미만, 서명 통과 0권 — `UNVERIFIED_BOOKS`), 422(책 고르기와 무관한 입력 — `IRRELEVANT_MOOD`), 502(재요청 후에도 목록 밖 책을 반환 — `RECOMMENDATION_VALIDATION_FAILED`, 또는 Anthropic 장애), 504(30s 타임아웃)
+실패 응답: 400(스키마 검증 실패, 책 목록이 비었거나 50개 초과, `mood`가 2자 미만, `retryIndex`·`irrelevantStreak`가 범위 밖, 서명 통과 0권 — `UNVERIFIED_BOOKS`), 422(책 고르기와 무관한 입력 — `IRRELEVANT_MOOD`), 502(재요청 후에도 목록 밖 책을 반환 — `RECOMMENDATION_VALIDATION_FAILED`, 또는 Anthropic 장애), 504(30s 타임아웃)
 
 ### POST /api/events
 

@@ -141,7 +141,7 @@
     {
       "step": 2,
       "name": "golden-report",
-      "status": "pending",
+      "status": "completed",
       "docs": [
         "ARCHITECTURE",
         "TRD"
@@ -150,7 +150,9 @@
         "src/lib/golden-score.ts",
         "src/lib/golden-manifest.ts",
         "src/lib/env.ts"
-      ]
+      ],
+      "started_at": "2026-09-02T15:34:33+0900",
+      "summary": "lib/golden-report.ts 신설 — 순수 표현 층(fs·services·process.env 모름, 파일 쓰기 없음). 타입 GoldenSkipReason = \"no_set_dir\"|\"no_manifest\"|\"no_api_key\" · GoldenOutcome = {status:\"scored\",score:GoldenSetScore} | {status:\"skipped\",reason:GoldenSkipReason,detail:string} · GoldenRunContext{setId:string|null, manifestVersion:number|null, photoHashes:Record<string,string>, extractModel:string, ranAt:string(ISO8601)}. 함수 renderGoldenReport(outcome,context):string 와 toGoldenReportJson(outcome,context):unknown, 상수 MAX_LISTED_ITEMS=10 · GOLDEN_REPORT_VERSION=1. 콘솔 표: scored 는 첫 줄 \"[골든 인식률] PASS|FAIL\" + 재현율/오확인을 기준값과 나란히, 사진별 판정 표, 놓친 책(사진·제목·저자)과 오확인(사진·ISBN13·제목·저자, \"알라딘 사실\" 라벨 — 유사도는 섞지 않음) 목록을 MAX_LISTED_ITEMS 까지만 찍고 잘린 건수·전체 건수를 남긴다. skipped 는 첫 줄이 \"[골든 인식률] 재지 못했습니다 — skip: <reason>\" 이고 PASS·통과·체크마크류 표시가 없으며(테스트가 정규식으로 고정), no_api_key 는 목업 때문에 재현율이 100%로 나온다는 위험 문구를 사유 위에 먼저 찍는다. 실행 맥락(세트·매니페스트 버전·모델·실행 시각·사진 sha256 전문)은 두 출력·두 상태 모두에 실린다. JSON 은 {schema:\"shelfie.golden-report\", reportVersion, context, thresholds:{minRecall,maxMisidentified}, status, passed(skip 이면 null), skip{reason,detail,headline,danger} | totals{expectedCount,matchedCount,recall,misidentifiedCount} + photos[]{file,expectedCount,matchedCount,recall,missed:GoldenExpectedBook[],misidentified:{isbn13,title,author,publisher}[]}} 이고 목록을 자르지 않는다. 판정은 다시 하지 않는다 — passed·recall·misidentifiedCount 는 step 1 값 그대로이고 임계값은 표시용으로만 쓴다. step 3 은 이 두 함수에 GoldenOutcome·GoldenRunContext 를 조립해 넣고 reports/golden/{ISO}.json 쓰기와 콘솔 출력을 맡는다. AC 5종 전부 통과(테스트 1257건)."
     },
     {
       "step": 3,

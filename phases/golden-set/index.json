@@ -197,7 +197,8 @@
     {
       "step": 3,
       "name": "golden-runner",
-      "status": "pending",
+      "status": "completed",
+      "summary": "src/services/shelf.golden.test.ts 하나만 신설했다(프로덕션 모듈 0개 — 러너는 테스트 코드다, ADR-010). 흐름: getGoldenSetDir() → {dir}/manifest.json 읽기·JSON.parse·parseGoldenManifest → ANTHROPIC_API_KEY·ALADIN_TTB_KEY 확인 → 사진마다 직렬로 확장자→MIME(.jpg/.jpeg→image/jpeg·.png·.webp, 그 외는 그 사진만 건너뛰고 러너 메모에 남김) → data URI → extractFromPhoto(deadline 120s) → reduceBeforeLookup 으로 프로덕션과 같은 축소(확신도 0.3·80건) 후 searchByTitle 을 후보마다 직렬 호출(사진마다 createRequestBreaker, deadline 300s) → judge → 확인 승격분만 IdentifiedBook 으로 모아 scorePhoto → aggregateScores → renderGoldenReport 콘솔 + toGoldenReportJson 을 reports/golden/{ISO}.json 에 쓴다(ISO 의 ':' 만 파일명에서 '-' 로 치환 — Windows. 정확한 값은 context.ranAt 에 남는다). 프로덕션 예산(30s/12s)을 쓰지 않는 이유는 그 값이 Vercel 60s 상한에서 나온 것이라 골든에서는 재는 대상이 판독 품질에서 함수 상한으로 바뀌기 때문이다(ADR-005). skip 3종은 describe.skipIf 로 vitest 의 skip 기제를 쓰고 사유를 콘솔과 리포트 파일 양쪽에 남긴다 — expect(true) 로 때우지 않았다. 실제 출력: \"[골든 인식률] 재지 못했습니다 — skip: no_set_dir / 사유: GOLDEN_SET_DIR 이 설정되지 않아 골든 세트를 찾지 못했습니다. / 할 일: 세트 디렉토리를 GOLDEN_SET_DIR 에 지정하고 다시 실행하세요.\" (Tests 1 skipped, exit 0). 세 skip 경로를 임시 디렉토리로 직접 확인했다(파일 없음·JSON 아님·스키마 위반·미래 버전·키 없음 — 키 없음은 목업 위험 문구와 세트 맥락이 함께 찍힌다). golden-report 가 표현하지 않는 것(사진 단위 실패)은 러너 자기 메모로 콘솔과 JSON 의 runner.photos 에 덧붙인다 — 추출 failed 사진은 후보 0건으로 접지 않고 실패 사유(refusal/timeout/upstream/schema/max_tokens)와 함께 재현율 분모에서 빼며, 사진별 확인·lookup_failed·no_match·ambiguous·unreadable 카운트도 남긴다(ADR-005). lookup_failed 는 확인으로 승격되지 않으므로 오확인의 분자·분모 어디에도 들어가지 않는다. 단정은 둘이다: 재지 못한 사진이 0장인가(부분 측정을 통과로 적지 않기 위해 — skip 이 통과가 아닌 것과 같은 이유), 그리고 score.passed. **세트를 만들 사람에게**: 리포 밖 아무 디렉토리에 manifest.json 1개 + 사진 파일 N개를 두고 GOLDEN_SET_DIR 에 그 디렉토리의 절대 경로를 넣은 뒤 `npm run test:golden` 을 돌린다. manifest.json 은 {version:1, setId:\"사람이 붙인 이름\", photos:[{file:\"shelf-01.jpg\", sha256:\"그 파일의 64자리 hex\", books:[{title, author, isbn13?}]}]} 이고, books 는 그 사진에서 사람이 눈으로 읽을 수 있는 책 **전부**여야 한다(일부만 적으면 재현율이 실제보다 높게 나온다). isbn13 은 선택이지만 적을수록 오확인 판정이 ISBN 으로 정확해진다. 사진 확장자는 jpg/jpeg/png/webp 만 된다. AC 6종 전부 통과(npm test 1257건 — step 2 와 동일, 줄지 않음).",
       "docs": [
         "TRD",
         "ARCHITECTURE",
@@ -210,7 +211,8 @@
         "src/lib/golden-manifest.ts",
         "src/lib/golden-score.ts",
         "src/lib/golden-report.ts"
-      ]
+      ],
+      "started_at": "2026-09-02T15:43:07+0900"
     }
   ],
   "created_at": "2026-09-02T15:24:53+0900"

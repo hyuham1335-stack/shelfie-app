@@ -13,6 +13,13 @@
  * 그것은 결함이 아니라 의도된 결과다. 다만 **의도된 소실과 사고로 인한 소실은 다르므로**,
  * 잃을 것이 생긴 뒤에는 `beforeunload`로 이탈을 한 번 되묻는다 (ARCHITECTURE 상태 관리).
  *
+ * ## 세션이 들고 있는 것은 원본 `File`이다
+ * 리사이즈 결과(data URI)를 상태로 들면 재업로드는 면하지만 **EXIF 보정·품질·짧은 변
+ * 경고를 다시 고를 수 없다** — 그 판정은 전부 `lib/image.ts`가 원본 비트맵에서 내리는
+ * 것이고, 한 번 줄인 결과에는 되돌릴 근거가 남아 있지 않다. 그래서 세션은 사용자가 고른
+ * **원본 `File[]`을 보존하고**, 전체 재분석도 "이 사진만 다시 시도"도 그 원본에서
+ * 리사이즈를 **다시 태운다** (/docs/ARCHITECTURE.md 상태 관리).
+ *
  * ## `proof`를 해석하지 않는다 (ADR-006)
  * 서명 문자열을 파싱하거나 만료를 예측하지 않는다. 만료는 서버가 돌려주는
  * `UNVERIFIED_BOOKS`로만 안다 — 클라이언트가 서명을 읽기 시작하면 서명이 지키려던
@@ -35,6 +42,7 @@ import { GuidedQuestions } from "@/components/mood/GuidedQuestions";
 import { MoodInput, nextIrrelevantCount } from "@/components/mood/MoodInput";
 import { RecommendationList } from "@/components/recommend/RecommendationList";
 import { UploadScreen } from "@/components/upload/UploadScreen";
+import { checkOutputBudget, resizeToDataUri } from "@/lib/image";
 import {
   analyzePhotos,
   fetchMoodQuestions,
@@ -100,12 +108,16 @@ export default function Home() {
   );
 
   /**
-   * 리사이즈까지 마친 사진. **메모리에만 둔다** — 저장소에 남기는 것은 무상태 전제를
-   * 문서 없이 우회하는 것이다(ADR-003). 에러가 나도 이 값이 남아 있어 재시도가
-   * 재업로드를 요구하지 않는다 (ARCHITECTURE 상태 관리). ref가 아니라 state인 것은
-   * 재시도 버튼을 그릴지가 이 값에 달려 있기 때문이다 — 렌더가 읽는 값은 state에 둔다.
+   * 사용자가 고른 **원본 파일**. **메모리에만 둔다** — 저장소에 남기는 것은 무상태
+   * 전제를 문서 없이 우회하는 것이다(ADR-003). 에러가 나도 이 값이 남아 있어 재시도가
+   * 재업로드를 요구하지 않는다. ref가 아니라 state인 것은 재시도 버튼을 그릴지가 이
+   * 값에 달려 있기 때문이다 — 렌더가 읽는 값은 state에 둔다.
+   *
+   * **리사이즈 결과를 여기 두지 마라.** 그 순간 재시도의 입력이 열화된 사본이 되고,
+   * `lib/image.ts`가 원본에서만 내릴 수 있는 판정(EXIF·품질·짧은 변)을 되돌릴 근거가
+   * 사라진다 (ARCHITECTURE 상태 관리).
    */
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
   const [analyzeAttempts, setAnalyzeAttempts] = useState(0);
   /** 무관 판정의 **연속** 횟수. 서버는 무상태라 셀 수 없어 화면이 센다 (API_SPEC /api/recommend) */
   const [irrelevantCount, setIrrelevantCount] = useState(0);
@@ -121,6 +133,16 @@ export default function Home() {
   const [retryWaitSec, setRetryWaitSec] = useState<number | null>(null);
   const retryTimerRef = useRef<number | null>(null);
   /**
+   * 분석 회차 번호. 리사이즈가 요청마다 도는 비동기 작업이 되면서 **낡은 결과가
+   * 뒤늦게 도착해 새 상태를 덮는 경로**가 생겼다 — 처음으로 돌아간 뒤(`RESTARTED`)
+   * 도착한 응답이나, 앞선 회차의 리사이즈가 그렇다.
+   *
+   * 회차를 시작할 때 번호를 하나 올리고, 비동기 경계를 넘을 때마다 자기 번호가
+   * 아직 최신인지 확인한다. 낡았으면 아무것도 하지 않는다 — 취소할 수 없는 작업을
+   * 취소한 척하지 않고, 그 **결과를 쓰지 않는 것**으로 처리한다.
+   */
+  const runIdRef = useRef(0);
+  /**
    * 저장 이미지의 표시 상태 (FR-014). **리듀서에 넣지 않는다** — 저장은 상태도의
    * 어떤 전이도 일으키지 않는다. 화면은 `result`에 그대로 머물고, 실패해도 추천
    * 결과가 사라지면 안 된다. 전이가 아닌 것을 전이 규칙의 자리에 넣으면 순수 함수
@@ -133,7 +155,7 @@ export default function Home() {
   // 추천 화면은 서지 사실만 필요하므로 출처 구분 없이 책만 편다. 확인된 책 목록
   // 자체는 `BookList`가 `ShelfBook`으로 통째로 받아 한 목록으로 그린다.
   const books = state.books.map((entry) => entry.book);
-  const canRetryAnalyze = photos.length > 0 && analyzeAttempts < MAX_ANALYZE_RETRIES;
+  const canRetryAnalyze = files.length > 0 && analyzeAttempts < MAX_ANALYZE_RETRIES;
   const isWaitingRetry = retryWaitSec !== null;
 
   // 언마운트에서 타이머를 정리한다. 남겨 두면 사라진 화면이 분석을 부른다.
@@ -162,8 +184,52 @@ export default function Home() {
    * 분석 (US-001)
    * ---------------------------------------------------------------- */
 
-  async function runAnalyze(images: string[]) {
+  /** 이 시점 이후로 진행 중인 회차를 전부 낡은 것으로 만들고, 새 회차 번호를 준다 */
+  function beginRun(): number {
+    runIdRef.current += 1;
+    return runIdRef.current;
+  }
+
+  /** 이 회차가 아직 최신인가. 아니면 결과를 버린다 */
+  function isCurrentRun(runId: number): boolean {
+    return runIdRef.current === runId;
+  }
+
+  /**
+   * 원본에서 요청 본문을 다시 만든다 (FR-002).
+   *
+   * 리사이즈 **판정**은 하지 않는다 — `lib/image.ts`가 원본 비트맵에서 이미 내리고,
+   * 여기서는 그 결과를 모아 전송 예산만 확인한다. 4MB를 실어 보낸 뒤 413을 받는 것은
+   * 마지막 방어선이지 설계가 아니다 (API_SPEC 413).
+   */
+  async function prepare(
+    sources: readonly File[],
+  ): Promise<{ ok: true; dataUris: string[] } | { ok: false; code: ErrorCode }> {
+    const dataUris: string[] = [];
+
+    for (const file of sources) {
+      try {
+        dataUris.push(await resizeToDataUri(file));
+      } catch {
+        // 첫 선택에서는 통과했던 사진이다. 데이터 문제가 아니라 우리 쪽에서 못 만든
+        // 것이므로 절판·형식 안내를 쓰지 않는다 (ADR-005).
+        return { ok: false, code: "INTERNAL_ERROR" };
+      }
+    }
+
+    const budget = checkOutputBudget(dataUris);
+    if (budget.totalExceeded || budget.oversized.length > 0) {
+      return { ok: false, code: "PAYLOAD_TOO_LARGE" };
+    }
+
+    return { ok: true, dataUris };
+  }
+
+  async function runAnalyze(runId: number, images: string[]) {
     const result = await analyzePhotos(state.sessionId, images);
+    // 사용자가 이미 다른 곳으로 간 뒤 도착한 응답이다. 새 상태를 덮지 않는다.
+    if (!isCurrentRun(runId)) return;
+
     if (result.ok) {
       dispatch({ type: "ANALYZE_SUCCEEDED", result: result.data });
       return;
@@ -171,12 +237,32 @@ export default function Home() {
     dispatch({ type: "ANALYZE_FAILED", code: result.code, requestId: result.requestId });
   }
 
-  /** `photoCount`는 `/api/analyze` 응답에 없다 — 부분 실패 배너의 분모라 여기서 넘어온다 */
-  function handleAnalyze(dataUris: string[], photoCount: number) {
-    setPhotos(dataUris);
+  /** 원본에서 다시 리사이즈해 분석을 태운다. 재시도가 지나는 유일한 길이다 */
+  async function runFromSources(runId: number, sources: readonly File[]) {
+    const prepared = await prepare(sources);
+    if (!isCurrentRun(runId)) return;
+
+    if (!prepared.ok) {
+      dispatch({ type: "ANALYZE_FAILED", code: prepared.code, requestId: null });
+      return;
+    }
+
+    await runAnalyze(runId, prepared.dataUris);
+  }
+
+  /**
+   * 업로드 화면이 넘긴 원본을 세션에 보존하고 분석을 시작한다.
+   *
+   * 첫 요청만 **곁들여 온 리사이즈 결과를 그대로 쓴다** — 방금 그 원본에서 만든
+   * 값이라 다시 태울 이유가 없다. 재시도부터는 `runFromSources`가 원본에서 다시 만든다.
+   * 부분 실패 배너의 분모(`photoCount`)는 응답에 없으므로 보낸 원본 배열의 길이가 된다.
+   */
+  function handleAnalyze(sources: File[], dataUris: string[]) {
+    const runId = beginRun();
+    setFiles(sources);
     setAnalyzeAttempts(0);
-    dispatch({ type: "ANALYZE_STARTED", photoCount });
-    void runAnalyze(dataUris);
+    dispatch({ type: "ANALYZE_STARTED", photoCount: sources.length });
+    void runAnalyze(runId, dataUris);
   }
 
   /** 대기 중인 재시도를 취소한다. 취소하면 예약된 분석 호출도 함께 사라진다 */
@@ -189,14 +275,16 @@ export default function Home() {
   }
 
   /** 실제로 분석을 다시 태운다. 재시도 회차를 올리는 자리도 여기 하나다 */
-  function startRetry(images: string[]) {
+  function startRetry(sources: File[]) {
     // 다음 응답의 photoIndex는 이번에 보낸 배열을 기준으로 매겨진다. 보낸 것을
     // 그대로 들고 있어야 그 인덱스로 다시 사진을 찾을 수 있다.
-    setPhotos(images);
+    const runId = beginRun();
+    setFiles(sources);
     setAnalyzeAttempts((count) => count + 1);
     setPanel(null);
-    dispatch({ type: "ANALYZE_RETRIED", photoCount: images.length });
-    void runAnalyze(images);
+    dispatch({ type: "ANALYZE_RETRIED", photoCount: sources.length });
+    // 리사이즈 결과가 아니라 원본에서 다시 만든다 (ARCHITECTURE 상태 관리).
+    void runFromSources(runId, sources);
   }
 
   /**
@@ -213,16 +301,16 @@ export default function Home() {
     if (!canRetryAnalyze || isWaitingRetry) return;
 
     const picked = photoIndexes
-      .map((index) => photos[index])
-      .filter((uri): uri is string => uri !== undefined);
-    const images = picked.length > 0 ? picked : photos;
-    if (images.length === 0) return;
+      .map((index) => files[index])
+      .filter((file): file is File => file !== undefined);
+    const sources = picked.length > 0 ? picked : files;
+    if (sources.length === 0) return;
 
     // 이번이 몇 번째 재시도인가(0-based). 첫 재시도는 간격 0초라 즉시 나간다 —
     // 0초 대기에 "0초 남았어요"를 띄우지 않는다.
     const delayMs = ANALYZE_RETRY_DELAYS_MS[analyzeAttempts] ?? 0;
     if (delayMs <= 0) {
-      startRetry(images);
+      startRetry(sources);
       return;
     }
 
@@ -237,7 +325,7 @@ export default function Home() {
         return;
       }
       cancelRetryTimer();
-      startRetry(images);
+      startRetry(sources);
     }, 1000);
   }
 
@@ -519,8 +607,11 @@ export default function Home() {
     // 사용자가 버리기로 한 작업이다. 타이머를 남기면 새 세션에서 유령 분석 호출이
     // 뜨고, 그 비용은 아무도 요청하지 않은 것이 된다.
     cancelRetryTimer();
+    // 진행 중인 리사이즈·분석이 있으면 그 결과를 버린다. 새 세션을 낡은 응답이
+    // 덮으면 사용자는 자기가 시작하지 않은 결과를 보게 된다.
+    beginRun();
     resetShareState();
-    setPhotos([]);
+    setFiles([]);
     setAnalyzeAttempts(0);
     setPanel(null);
     dispatch({ type: "RESTARTED" });

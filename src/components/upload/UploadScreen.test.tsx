@@ -162,7 +162,27 @@ describe("UploadScreen — 선택 (FR-001)", () => {
 });
 
 describe("UploadScreen — 분석 시작 (FR-002)", () => {
-  it("리사이즈한 data URI와 보낸 장수를 콜백으로 넘긴다", async () => {
+  it("고른 **원본 File**을 넘긴다 — 재시도의 입력이 되는 값이다 (ARCHITECTURE 상태 관리)", async () => {
+    비트맵대체();
+    캔버스대체();
+    const onAnalyze = vi.fn();
+    render(<UploadScreen onAnalyze={onAnalyze} />);
+
+    const files = 사진들(2);
+    고르기(files);
+    await 썸네일("shelf-1.jpg");
+    fireEvent.click(screen.getByRole("button", { name: "분석 시작" }));
+
+    await waitFor(() => expect(onAnalyze).toHaveBeenCalledTimes(1));
+    const [sources] = onAnalyze.mock.calls[0];
+    // 리사이즈 결과가 아니라 사용자가 고른 그 파일이다. 이것이 없으면 재시도가
+    // 열화된 사본에서 출발하고 EXIF·품질·짧은 변 판정을 다시 고를 수 없다.
+    expect(sources).toHaveLength(2);
+    expect(sources[0]).toBeInstanceOf(File);
+    expect(sources.map((file: File) => file.name)).toEqual(["shelf-0.jpg", "shelf-1.jpg"]);
+  });
+
+  it("방금 만든 리사이즈 결과를 곁들여 넘긴다 — 첫 요청이 두 번 리사이즈하지 않는다", async () => {
     비트맵대체();
     캔버스대체();
     const onAnalyze = vi.fn();
@@ -173,11 +193,12 @@ describe("UploadScreen — 분석 시작 (FR-002)", () => {
     fireEvent.click(screen.getByRole("button", { name: "분석 시작" }));
 
     await waitFor(() => expect(onAnalyze).toHaveBeenCalledTimes(1));
-    const [uris, photoCount] = onAnalyze.mock.calls[0];
-    expect(uris).toHaveLength(2);
-    expect(uris[0]).toMatch(/^data:image\/jpeg;base64,/);
-    // photoCount는 응답에 없다 — 부분 실패 배너의 분모라 여기서 나와야 한다.
-    expect(photoCount).toBe(2);
+    const [sources, dataUris] = onAnalyze.mock.calls[0];
+    expect(dataUris).toHaveLength(2);
+    expect(dataUris[0]).toMatch(/^data:image\/jpeg;base64,/);
+    // 파생값은 원본과 같은 순서로 선다 — 부분 실패 배너의 분모(photoCount)도
+    // 응답이 아니라 이 배열의 길이에서 나온다.
+    expect(dataUris).toHaveLength(sources.length);
   });
 
   it("전송 예산을 넘기면 보내기 전에 막는다 (413은 마지막 방어선이지 설계가 아니다)", async () => {

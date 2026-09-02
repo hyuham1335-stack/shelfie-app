@@ -19,7 +19,16 @@
  * ## `photoCount`가 여기서 나온다
  * `/api/analyze` 응답에는 보낸 장수가 없다. 그런데 부분 실패 배너("사진 3장 중 1장은
  * 읽지 못했어요")의 **분모**가 바로 그 값이라, 보낸 쪽이 기억해 두지 않으면 화면이
- * 실패를 분모 없이 말하게 된다 (UI_GUIDE 부분 실패 배너).
+ * 실패를 분모 없이 말하게 된다 (UI_GUIDE 부분 실패 배너). 세션이 원본을 들고 다니게
+ * 되면서 그 값은 넘긴 원본 배열의 길이가 됐다 — 따로 세어 넘기지 않는다.
+ *
+ * ## 넘기는 것은 **원본 `File`** 이다
+ * 리사이즈 결과만 넘기면 세션에 남는 것이 열화된 사본뿐이라, 재시도가
+ * EXIF 보정·JPEG 품질·짧은 변 경고를 다시 고를 수 없다 — 그 판정은 전부
+ * `lib/image.ts`가 **원본 비트맵에서** 내리는 것이기 때문이다
+ * (/docs/ARCHITECTURE.md 상태 관리). 그래서 원본을 넘기고, 방금 만든 리사이즈
+ * 결과는 **곁들여** 넘긴다. 첫 요청까지 페이지가 다시 리사이즈할 이유는 없고,
+ * 재시도는 그 파생값이 아니라 원본에서 다시 태운다.
  */
 import { useEffect, useRef, useState } from "react";
 import { Notice } from "@/components/common/Notice";
@@ -49,10 +58,11 @@ type Entry = SelectedFileMeta &
 
 export interface UploadScreenProps {
   /**
-   * 리사이즈까지 마친 data URI와 **실제로 보내는 장수**를 넘긴다.
-   * `photoCount`는 `dataUris.length`와 같지만, 뒤 단계가 분모로 쓰는 값이라 명시적으로 전달한다.
+   * 사용자가 고른 **원본 파일**과, 방금 그 원본에서 만든 리사이즈 결과를 함께 넘긴다.
+   * 두 배열은 같은 순서로 서고 길이가 같다. 세션이 보존하는 것은 앞의 것이고,
+   * 뒤의 것은 첫 요청 한 번에만 쓰이는 파생값이다.
    */
-  onAnalyze: (dataUris: string[], photoCount: number) => void;
+  onAnalyze: (files: File[], dataUris: string[]) => void;
   /** 페이지가 분석 요청 중임을 알린다. 화면은 이 값을 만들지 않는다 */
   isAnalyzing?: boolean;
 }
@@ -151,7 +161,11 @@ export function UploadScreen({ onAnalyze, isAnalyzing = false }: UploadScreenPro
       return;
     }
 
-    onAnalyze(dataUris, dataUris.length);
+    // 원본과 파생값을 같은 순서로 넘긴다. 재시도의 입력이 되는 것은 앞의 배열이다.
+    onAnalyze(
+      photosRef.current.map((photo) => photo.file),
+      dataUris,
+    );
   }
 
   return (

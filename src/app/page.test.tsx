@@ -9,6 +9,8 @@
  * ② `recommend_viewed`를 클라이언트가 보내지 않는다 — 라우트가 정본이고,
  *    둘 다 보내면 North Star의 분모가 이중 계상된다 (PRD 7번).
  * ③ 부분 실패 배너의 분모(`photoCount`)는 응답이 아니라 업로드에서 온다.
+ * ④ 세션이 들고 다니는 것은 **원본 `File`**이고 재시도는 그 원본에서 다시 리사이즈한다.
+ *    파생값을 재사용하면 EXIF·품질·짧은 변 판정을 되돌릴 근거가 사라진다.
  */
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -33,6 +35,17 @@ vi.mock("@/lib/share-image", () => ({
 }));
 
 /**
+ * 리사이즈는 캔버스를 만지므로 jsdom에서는 한 줄도 돌지 않는다. 이 파일이 검사할 것은
+ * "재시도가 무엇을 입력으로 삼는가"이므로 **`resizeToDataUri`만** 가짜로 걸고,
+ * 전송 예산(`checkOutputBudget`)은 실물을 그대로 쓴다 — 상한이 조용히 사라지지
+ * 않았음을 이 파일에서도 확인해야 하기 때문이다.
+ */
+vi.mock("@/lib/image", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/image")>()),
+  resizeToDataUri: vi.fn(),
+}));
+
+/**
  * 업로드 화면은 파일 선택·리사이즈를 스스로 하며 자기 테스트를 갖고 있다.
  * 이 파일이 검사할 것은 그 화면이 넘겨주는 값을 페이지가 어떻게 쓰는가이므로,
  * 콜백만 남긴 스텁으로 바꿔 둔다.
@@ -42,13 +55,13 @@ vi.mock("@/components/upload/UploadScreen", () => ({
     onAnalyze,
     isAnalyzing,
   }: {
-    onAnalyze: (dataUris: string[], photoCount: number) => void;
+    onAnalyze: (files: File[], dataUris: string[]) => void;
     isAnalyzing?: boolean;
   }) => (
     <div>
       <p>업로드 화면</p>
       {isAnalyzing === true && <p>분석 중</p>}
-      <button type="button" onClick={() => onAnalyze(IMAGES, IMAGES.length)}>
+      <button type="button" onClick={() => onAnalyze(FILES, IMAGES)}>
         사진 2장 분석
       </button>
     </div>
@@ -64,8 +77,16 @@ import {
   sendClientEvent,
 } from "@/lib/api-client";
 import { renderShareImage } from "@/lib/share-image";
+import { resizeToDataUri } from "@/lib/image";
 
+/** 업로드 화면이 방금 원본에서 만들어 곁들여 넘기는 파생값. 첫 요청에만 쓰인다 */
 const IMAGES = ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"];
+
+/** 세션이 보존하는 원본. 재시도는 언제나 여기서 출발한다 */
+const FILES = [
+  new File([new Uint8Array([1, 1])], "shelf-a.jpg", { type: "image/jpeg" }),
+  new File([new Uint8Array([2, 2])], "shelf-b.jpg", { type: "image/jpeg" }),
+];
 
 const analyzeMock = vi.mocked(analyzePhotos);
 const resolveMock = vi.mocked(resolveBook);
@@ -73,6 +94,13 @@ const questionsMock = vi.mocked(fetchMoodQuestions);
 const recommendMock = vi.mocked(requestRecommendations);
 const eventMock = vi.mocked(sendClientEvent);
 const shareMock = vi.mocked(renderShareImage);
+const resizeMock = vi.mocked(resizeToDataUri);
+
+/** 회차마다 다른 값을 돌려준다 — 첫 호출 결과를 재사용하면 이 번호가 늘지 않는다 */
+let resizeCallCount = 0;
+function resizedUri(file: File, nth: number): string {
+  return `data:image/jpeg;base64,RESIZED-${file.name}-${nth}`;
+}
 
 function ok<T>(data: T): ApiResult<T> {
   return { ok: true, data };
@@ -169,6 +197,11 @@ async function reachMoodInput() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resizeCallCount = 0;
+  resizeMock.mockImplementation(async (file: File) => {
+    resizeCallCount += 1;
+    return resizedUri(file, resizeCallCount);
+  });
 });
 
 describe("세션 셸", () => {
@@ -614,6 +647,19 @@ describe("세션 셸", () => {
 
     await screen.findByRole("heading", { name: "책장을 이렇게 읽었어요" });
     // 같은 사진을 그대로 다시 보낸다 — 사용자가 파일을 다시 고르지 않는다.
+    // 다만 보내는 값은 **원본에서 다시 만든 것**이지 첫 요청의 파생값이 아니다.
+    expect(resizeMock.mock.calls.map(([file]) => file)).toEqual(FILES);
+    expect(analyzeMock).toHaveBeenLastCalledWith(expect.any(String), [
+      resizedUri(FILES[0], 1),
+      resizedUri(FILES[1], 2),
+    ]);
+    expect(analyzeMock).not.toHaveBeenLastCalledWith(expect.any(String), IMAGES);
+  });
+
+  it("첫 요청은 업로드가 곁들여 넘긴 파생값을 쓴다 — 두 번 리사이즈하지 않는다", async () => {
+    await analyzeInto(makeAnalyze());
+
+    expect(resizeMock).not.toHaveBeenCalled();
     expect(analyzeMock).toHaveBeenLastCalledWith(expect.any(String), IMAGES);
   });
 
@@ -784,8 +830,10 @@ describe("세션 셸", () => {
       const before = analyzeMock.mock.calls.length;
 
       fireEvent.click(retryButton());
+      // 리사이즈가 비동기라 마이크로태스크만 흘린다. **타이머는 하나도 밀지 않는다** —
+      // 간격이 0초임을 보는 자리이기 때문이다.
+      await settle();
 
-      // 타이머를 하나도 밀지 않았는데 이미 나갔다.
       expect(analyzeMock.mock.calls.length).toBe(before + 1);
       // 0초 대기에 "0초 남았어요"를 띄우지 않는다.
       expect(screen.queryByText(/뒤에 다시 시도할게요/)).toBeNull();
@@ -804,8 +852,8 @@ describe("세션 셸", () => {
       expect(analyzeMock.mock.calls.length).toBe(before);
 
       await advance(1);
-      expect(analyzeMock.mock.calls.length).toBe(before + 1);
       await settle();
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
     });
 
     it("3회차 재시도는 15초 전에는 부르지 않고 15초에 부른다", async () => {
@@ -820,8 +868,8 @@ describe("세션 셸", () => {
       expect(analyzeMock.mock.calls.length).toBe(before);
 
       await advance(1);
-      expect(analyzeMock.mock.calls.length).toBe(before + 1);
       await settle();
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
     });
 
     it("대기 중에는 재시도 버튼이 비활성이고 남은 시간이 보인다", async () => {
@@ -853,8 +901,8 @@ describe("세션 셸", () => {
       fireEvent.click(retryButton());
 
       await advance(5_000);
-      expect(analyzeMock.mock.calls.length).toBe(before + 1);
       await settle();
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
     });
 
     it("대기 중 처음으로 돌아가면 타이머가 취소되고 분석이 불리지 않는다", async () => {
@@ -897,8 +945,8 @@ describe("세션 셸", () => {
 
       // 1회차는 즉시.
       fireEvent.click(partialRetry());
-      expect(analyzeMock.mock.calls.length).toBe(before + 1);
       await settle();
+      expect(analyzeMock.mock.calls.length).toBe(before + 1);
 
       // 2회차는 5초. 비용이 드는 쪽이 같으므로 간격도 같다.
       fireEvent.click(partialRetry());
@@ -909,8 +957,174 @@ describe("세션 셸", () => {
       expect(analyzeMock.mock.calls.length).toBe(before + 1);
 
       await advance(1);
-      expect(analyzeMock.mock.calls.length).toBe(before + 2);
       await settle();
+      expect(analyzeMock.mock.calls.length).toBe(before + 2);
+    });
+  });
+
+  /* ---------------------------------------------------------------- *
+   * 재시도의 입력은 언제나 원본이다 (ARCHITECTURE 상태 관리)
+   *
+   * 세션이 리사이즈 결과를 들고 있으면 재업로드는 면하지만, EXIF 보정·JPEG 품질·
+   * 짧은 변 경고를 다시 고를 수 없다 — 그 판정은 전부 `lib/image.ts`가 원본
+   * 비트맵에서 내리는 것이고 줄인 결과에는 되돌릴 근거가 없다.
+   * ---------------------------------------------------------------- */
+
+  describe("원본에서 다시 리사이즈", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** 분석이 502로 실패한 에러 화면까지 진행한다 */
+    async function reachAnalyzeError() {
+      analyzeMock.mockResolvedValue({
+        ok: false,
+        code: "UPSTREAM_UNAVAILABLE",
+        requestId: "req-502",
+        status: 502,
+      });
+      render(<Home />);
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByText("지금 책을 확인할 수 없어요. 잠시 후 다시 시도해 주세요");
+    }
+
+    /** 확인 0건 — 미확인만 남아 부분 실패 배너와 "이 사진만 다시 시도"가 함께 선다 */
+    function unidentifiedOnlyWithFailure(failedPhotoIndexes: number[]) {
+      return makeAnalyze({
+        identified: [],
+        unidentified: [makeAmbiguous()],
+        failedPhotoCount: failedPhotoIndexes.length,
+        failedPhotoIndexes,
+      });
+    }
+
+    it("재시도마다 원본에서 다시 만든다 — 첫 회차의 결과를 재사용하지 않는다", async () => {
+      await reachAnalyzeError();
+
+      fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+      await waitFor(() => expect(resizeMock).toHaveBeenCalledTimes(2));
+      expect(analyzeMock).toHaveBeenLastCalledWith(expect.any(String), [
+        resizedUri(FILES[0], 1),
+        resizedUri(FILES[1], 2),
+      ]);
+
+      // 2회차. 같은 원본이지만 리사이즈는 다시 돈다 — 캐시된 파생값이 아니다.
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(resizeMock).toHaveBeenCalledTimes(4);
+      expect(resizeMock.mock.calls.map(([file]) => file)).toEqual([...FILES, ...FILES]);
+      expect(analyzeMock).toHaveBeenLastCalledWith(expect.any(String), [
+        resizedUri(FILES[0], 3),
+        resizedUri(FILES[1], 4),
+      ]);
+    });
+
+    it("실패한 사진만 재시도하면 그 원본만 다시 만들고, 다음 응답의 photoIndex도 그 배열 기준이다", async () => {
+      analyzeMock.mockResolvedValue(ok(unidentifiedOnlyWithFailure([1])));
+      render(<Home />);
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByRole("heading", { name: "책장을 이렇게 읽었어요" });
+      expect(screen.getByText("사진 2장 중 1장은 읽지 못했어요")).toBeInTheDocument();
+
+      // 두 번째 응답은 **이번에 보낸 배열**(1장) 기준으로 0번이 실패했다고 말한다.
+      analyzeMock.mockResolvedValue(ok(unidentifiedOnlyWithFailure([0])));
+      fireEvent.click(screen.getByRole("button", { name: "이 사진만 다시 시도" }));
+      await screen.findByText("사진 1장 중 1장은 읽지 못했어요");
+
+      // 고쳐야 할 사진은 1번 하나뿐이다. 나머지 원본을 다시 태우지 않는다.
+      expect(resizeMock.mock.calls.map(([file]) => file)).toEqual([FILES[1]]);
+      expect(analyzeMock).toHaveBeenLastCalledWith(expect.any(String), [
+        resizedUri(FILES[1], 1),
+      ]);
+
+      // 응답의 0번은 이제 원본 배열의 1번 사진이다. 대응이 어긋나면 사용자가 고친
+      // 사진 대신 엉뚱한 사진이 다시 돈다.
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByRole("button", { name: "이 사진만 다시 시도" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(resizeMock.mock.calls.map(([file]) => file)).toEqual([FILES[1], FILES[1]]);
+    });
+
+    it("재시도의 전송 합계가 상한을 넘으면 보내지 않고 용량으로 말한다 (checkOutputBudget)", async () => {
+      await reachAnalyzeError();
+      const before = analyzeMock.mock.calls.length;
+
+      // 장당 상한(2MB)을 넘기는 산출물. 413은 마지막 방어선이지 설계가 아니다.
+      resizeMock.mockImplementation(
+        async () => `data:image/jpeg;base64,${"A".repeat(2.5 * 1024 * 1024)}`,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+
+      await screen.findByText("사진 용량이 너무 커요. 장수를 줄여 주세요");
+      expect(analyzeMock.mock.calls.length).toBe(before);
+    });
+
+    it("재시도의 리사이즈가 실패하면 데이터 문제로 설명하지 않는다 (ADR-005)", async () => {
+      await reachAnalyzeError();
+      const before = analyzeMock.mock.calls.length;
+
+      resizeMock.mockRejectedValue(new Error("decode"));
+      fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+
+      await screen.findByText("문제가 생겨 중단했어요. 잠시 후 다시 시도해 주세요");
+      expect(analyzeMock.mock.calls.length).toBe(before);
+      // 우리 쪽에서 못 만든 것이지 알라딘에 없는 책이 아니다.
+      expect(screen.queryByText(/원서·절판/)).toBeNull();
+    });
+
+    it("앞선 회차의 낡은 응답은 새 회차의 상태를 덮지 않는다 (RESTARTED와 같은 관문)", async () => {
+      let resolveStale: (result: ApiResult<AnalyzeResponse>) => void = () => {};
+      analyzeMock.mockReturnValueOnce(
+        new Promise<ApiResult<AnalyzeResponse>>((resolve) => {
+          resolveStale = resolve;
+        }),
+      );
+      render(<Home />);
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByText("분석 중");
+
+      // 새 회차가 시작되면 앞 회차는 그 자리에서 낡은 것이 된다.
+      analyzeMock.mockResolvedValue(ok(makeAnalyze()));
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByRole("heading", { name: "책장을 이렇게 읽었어요" });
+
+      await act(async () => {
+        resolveStale({
+          ok: false,
+          code: "UPSTREAM_UNAVAILABLE",
+          requestId: "req-stale",
+          status: 502,
+        });
+      });
+
+      // 사용자가 보고 있는 결과를 뒤늦게 도착한 실패가 지우지 않는다.
+      expect(screen.getByRole("heading", { name: "책장을 이렇게 읽었어요" })).toBeInTheDocument();
+      expect(
+        screen.queryByText("지금 책을 확인할 수 없어요. 잠시 후 다시 시도해 주세요"),
+      ).toBeNull();
+    });
+
+    it("처음으로 돌아가면 들고 있던 원본까지 버린다 — 새 세션에 옛 사진이 섞이지 않는다", async () => {
+      await reachAnalyzeError();
+
+      fireEvent.click(screen.getByRole("button", { name: "처음으로" }));
+      expect(screen.getByText("업로드 화면")).toBeInTheDocument();
+
+      // 원본을 버렸으므로 다시 고르기 전에는 재시도할 사진 자체가 없다.
+      analyzeMock.mockResolvedValue(ok(makeAnalyze()));
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByRole("heading", { name: "책장을 이렇게 읽었어요" });
+
+      // 새 세션의 첫 요청도 곁들여 온 파생값을 그대로 쓴다.
+      expect(resizeMock).not.toHaveBeenCalled();
+      expect(analyzeMock).toHaveBeenLastCalledWith(expect.any(String), IMAGES);
     });
   });
 

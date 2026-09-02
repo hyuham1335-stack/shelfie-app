@@ -88,7 +88,44 @@
         "src/lib/env.ts"
       ],
       "started_at": "2026-09-02T16:46:16+0900",
-      "summary": "TRD 10번의 세션당 알라딘 호출 상한을 산문에서 코드로 옮겨 회귀로 잠갔다. src/lib/env.ts 에 MAX_ALADIN_CALLS_PER_SESSION = 260(선언)과 ALADIN_CALLS_PER_LOOKUP = 2(조회 1건의 최대 HTTP 호출)를 두고, 유도값은 상수로 다시 박지 않고 merge.test.ts 의 새 describe('세션당 알라딘 호출 상한')가 관계로만 검사한다 — (MAX_CANDIDATES_FOR_LOOKUP + MAX_IDENTIFIED_BOOKS) x ALADIN_CALLS_PER_LOOKUP <= MAX_ALADIN_CALLS_PER_SESSION 이라 80을 200으로 올리면 이 테스트가 깨진다. reduceBeforeLookup 이 후보 300건에서도 조회 대상을 80건 안으로 자르는 것과, 확인 상한 50이 유도식의 항이라는 것도 함께 잠갔다(4 it). merge.ts 는 이미 env.ts 상수를 import 하고 있어 리터럴 제거는 필요 없었다. 런타임 카운터·저장소는 만들지 않았다(ADR-003). **ALADIN_CALLS_PER_LOOKUP 실측 확인: 2가 맞다** — services/aladin.ts 의 requestWithRetry 가 callOnce 1회 + retryable(5xx·타임아웃·네트워크)일 때만 남은 데드라인 안에서 재시도 1회로 끝나고, ItemSearch·ItemLookUp 이 같은 래퍼를 공유하므로 어느 쪽도 3회를 내지 않는다. **새 보고 1건(사람 판단 필요)**: 유도식의 둘째 항 MAX_IDENTIFIED_BOOKS(50)이 실제 ItemLookUp 호출 수의 상한이 아니다. app/api/analyze/route.ts 는 lookupFactsMany 를 dedupeByIsbn(promoted) 에 걸고 capIdentified 는 그 **뒤에** 부르므로, 확인 승격이 80건 나오면 ItemLookUp 도 80건이 나가 실제 최악값은 (80+50)x2=260 이 아니라 (80+80)x2=320 이다. 상한을 올려 맞추지 않았고(step 금지사항) 라우트 순서도 이 step 범위 밖이라 손대지 않았다 — 선택지는 ① capIdentified 를 사실 조회 앞으로 옮겨 50을 진짜 상한으로 만들기(평점 기반 정렬이 조회 뒤에나 가능해 그대로는 안 되고 절단 기준을 바꿔야 한다) ② TRD 10번의 유도식을 (80+80)x2=320 과 '하루 약 15세션'으로 고쳐 적기 중 하나이며, 둘 다 문서 소유자의 결정이다."
+      "summary": "TRD 10번의 세션당 알라딘 호출 상한을 산문에서 코드로 옮겨 회귀로 잠갔다. src/lib/env.ts 에 MAX_ALADIN_CALLS_PER_SESSION = 260(선언)과 ALADIN_CALLS_PER_LOOKUP = 2(조회 1건의 최대 HTTP 호출)를 두고, 유도값은 상수로 다시 박지 않고 merge.test.ts 의 새 describe('세션당 알라딘 호출 상한')가 관계로만 검사한다 — (MAX_CANDIDATES_FOR_LOOKUP + MAX_IDENTIFIED_BOOKS) x ALADIN_CALLS_PER_LOOKUP <= MAX_ALADIN_CALLS_PER_SESSION 이라 80을 200으로 올리면 이 테스트가 깨진다. reduceBeforeLookup 이 후보 300건에서도 조회 대상을 80건 안으로 자르는 것과, 확인 상한 50이 유도식의 항이라는 것도 함께 잠갔다(4 it). merge.ts 는 이미 env.ts 상수를 import 하고 있어 리터럴 제거는 필요 없었다. 런타임 카운터·저장소는 만들지 않았다(ADR-003). **ALADIN_CALLS_PER_LOOKUP 실측 확인: 2가 맞다** — services/aladin.ts 의 requestWithRetry 가 callOnce 1회 + retryable(5xx·타임아웃·네트워크)일 때만 남은 데드라인 안에서 재시도 1회로 끝나고, ItemSearch·ItemLookUp 이 같은 래퍼를 공유하므로 어느 쪽도 3회를 내지 않는다. **새 보고 1건(사람 판단 필요)**: 유도식의 둘째 항 MAX_IDENTIFIED_BOOKS(50)이 실제 ItemLookUp 호출 수의 상한이 아니다. app/api/analyze/route.ts 는 lookupFactsMany 를 dedupeByIsbn(promoted) 에 걸고 capIdentified 는 그 **뒤에** 부르므로, 확인 승격이 80건 나오면 ItemLookUp 도 80건이 나가 실제 최악값은 (80+50)x2=260 이 아니라 (80+80)x2=320 이다. 상한을 올려 맞추지 않았고(step 금지사항) 라우트 순서도 이 step 범위 밖이라 손대지 않았다 — 선택지는 ① capIdentified 를 사실 조회 앞으로 옮겨 50을 진짜 상한으로 만들기(평점 기반 정렬이 조회 뒤에나 가능해 그대로는 안 되고 절단 기준을 바꿔야 한다) ② TRD 10번의 유도식을 (80+80)x2=320 과 '하루 약 15세션'으로 고쳐 적기 중 하나이며, 둘 다 문서 소유자의 결정이다.",
+      "runs": [
+        {
+          "attempt": 1,
+          "outcome": "completed",
+          "elapsed_sec": 233,
+          "at": "2026-09-02T16:50:09+0900",
+          "guardrail_docs": [
+            "TRD"
+          ],
+          "guardrail_chars": 43215,
+          "source_chars": 7958,
+          "context_chars": 1109,
+          "prompt_chars": 57431,
+          "preamble_chars": 53098,
+          "step_body_chars": 4333,
+          "cost_usd": 1.8816,
+          "turns": 16,
+          "cache_read": 1232756,
+          "cache_write": 97016,
+          "output_tokens": 10036,
+          "session_id": "c91408fd-7dd1-43f6-a0e4-3e6c14b2c50b",
+          "tool_result_chars": 33555,
+          "tool_result_count": 15,
+          "tool_output_chars": 33555,
+          "tool_calls": {
+            "Bash": 15
+          },
+          "tool_result_p50": 1823,
+          "tool_result_p90": 7074,
+          "tool_result_max": 7810,
+          "tool_result_repeat_chars": 4,
+          "tool_result_repeat_count": 2,
+          "reads_source": "live"
+        }
+      ],
+      "completed_at": "2026-09-02T16:50:09+0900",
+      "attempts": 1
     },
     {
       "step": 2,

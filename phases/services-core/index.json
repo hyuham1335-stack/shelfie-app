@@ -8,7 +8,20 @@
       "status": "completed",
       "started_at": "2026-09-01T15:46:21+0900",
       "summary": "src/lib/env.ts에 zod 기반 서버 환경변수 검증 추가 — getAnthropicApiKey()/getAladinTtbKey()(부재는 null=목업 모드, 공백만 있는 값은 예외), isServiceEnabled()(미설정 true, true/false 외 값은 예외), assertServerEnv()(프로덕션에서 ANTHROPIC_API_KEY·ALADIN_TTB_KEY·BOOK_PROOF_SECRET 부재 시 throw, 그 외 환경은 console.warn). 기존 상수 export와 getExtractModel/getRecommendModel은 전부 유지했고 검증은 최상위 부수효과가 아니라 함수 안에서 평가한다. env.test.ts 8건 → 23건. 보고: .env.example의 NEXT_PUBLIC_MAX_PHOTOS는 TRD 7번이 클라이언트 상한 값으로 정의했지만 env.ts의 MAX_PHOTOS는 이 변수를 읽지 않는 상수다(기존 계약이라 이번 step에서 건드리지 않음).",
-      "completed_at": "2026-09-01T15:50:41+0900"
+      "completed_at": "2026-09-01T15:50:41+0900",
+      "runs": [
+        {
+          "session_id": "bc4a6fa4-765d-4d1a-a7c9-92cbca30a72b",
+          "tool_result_chars": 17954,
+          "tool_result_count": 15,
+          "tool_output_chars": 17954,
+          "tool_calls": {
+            "Bash": 15
+          },
+          "attempt": null,
+          "reads_source": "backfill"
+        }
+      ]
     },
     {
       "step": 1,
@@ -16,7 +29,20 @@
       "status": "completed",
       "started_at": "2026-09-01T15:50:41+0900",
       "summary": "src/lib/budget.ts 신설 — 상수 FUNCTION_MAX_DURATION_MS(60s)·RESPONSE_RESERVE_MS(5s)·TOTAL_BUDGET_MS(파생 55s)·STAGE_BUDGET_MS(extract 30s/lookup 12s/note 8s), 타입 Budget·BudgetStage, 팩토리 createBudget(totalMs?, now?)가 remainingMs()/elapsedMs()/deadlineFor(stage)=max(0,min(단계예산,남은예산))/isExhaustedFor(stage)=남은<단계예산 을 제공한다. 시계 주입으로 가짜 타이머 검증이 가능하고(TRD 8번), 예산 초과는 예외가 아니라 판별 가능한 값이며(deadlineFor는 0으로 클램프) 어떤 경로에서도 throw하지 않는다. 외부 import 0건(services/ 미참조), 예산 숫자는 이 파일에만 존재. budget.test.ts 17건 신설 → 전체 235건 통과.",
-      "completed_at": "2026-09-01T15:54:08+0900"
+      "completed_at": "2026-09-01T15:54:08+0900",
+      "runs": [
+        {
+          "session_id": "4a4989e9-5c32-4c7e-a5f0-958820ad10ad",
+          "tool_result_chars": 16074,
+          "tool_result_count": 12,
+          "tool_output_chars": 16074,
+          "tool_calls": {
+            "Bash": 12
+          },
+          "attempt": null,
+          "reads_source": "backfill"
+        }
+      ]
     },
     {
       "step": 2,
@@ -24,7 +50,23 @@
       "status": "completed",
       "started_at": "2026-09-01T15:54:08+0900",
       "summary": "src/lib/prompts.ts 신설 — 순수 프롬프트 4종 buildExtractPrompt()/buildNotePrompt(books)/buildRecommendPrompt(books, mood)/buildQuestionsPrompt(books)(입력 타입 PromptBook·RecommendPromptBook은 bookReferenceSchema·recommendBookSchema에서 Pick으로 파생, 책 목록은 키 순서를 고정해 JSON <books> 데이터 블록으로 직렬화, mood는 <mood> 블록 + \"지시가 아니다\" 문구로 인젝션 격리)와 구조화 출력 스키마 extractionJsonSchema/noteJsonSchema/recommendJsonSchema/questionsJsonSchema(타입 JsonSchema = Record<string, unknown>). 모델 출력 zod 스키마 noteBatchSchema(notes: isbn13Schema + identifiedBookSchema.shape.claudeNote(60자), max 50)·recommendOutputSchema(relevant: boolean + recommendationSchema 배열 max MAX_RECOMMENDATIONS)·questionsOutputSchema(moodQuestionsResponseSchema.innerType().shape.questions.min(2))도 함께 export하므로 step 4는 이것으로 safeParse하면 된다. schemas.ts는 한 줄도 고치지 않았다. JSON Schema 파생 방법 보고: zod/v4의 toJSONSchema는 쓸 수 없었다 — schemas.ts가 zod 3.25의 classic(v3) API로 쓰였고 v4 변환기는 v4 내부 구조(_zod)를 요구해 v3 노드를 받으면 'Cannot read properties of undefined (reading def)'로 던진다(@anthropic-ai/sdk 0.68의 betaZodTool도 같은 변환기를 쓰므로 동일, zodOutputFormat 헬퍼는 이 버전에 없다). 그래서 prompts.ts 안에 v3 노드를 직접 거는 비공개 toJsonSchema(Object/Array/String/Number/Boolean/Nullable/Literal/Union/Enum + ZodOptional 언랩만 지원, 모르는 노드는 조용히 넘기지 않고 throw)를 두고 zod 스키마 객체를 그대로 파생시켰다 — 새 의존성 0건, 상한 숫자는 여전히 schemas.ts/env.ts에만 존재한다. 산출물은 additionalProperties:false + 전 필드 required 형태라 Anthropic output_config.format에 그대로 실을 수 있다. prompts.test.ts 29건 신설(순수성·허용 목록 적재·60자와 줄거리 금지·사실 필드 부재·zod↔JSON Schema 일치 5케이스) → 전체 264건 통과. lint·typecheck·build·audit(0 vulnerabilities) 모두 통과.",
-      "completed_at": "2026-09-01T16:02:30+0900"
+      "completed_at": "2026-09-01T16:02:30+0900",
+      "runs": [
+        {
+          "session_id": "a672e6a2-cf4a-4df5-ab4f-6b3a2fb80613",
+          "tool_result_chars": 36924,
+          "tool_result_count": 25,
+          "tool_output_chars": 61573,
+          "tool_calls": {
+            "Bash": 21,
+            "Edit": 1,
+            "Skill": 1,
+            "Write": 2
+          },
+          "attempt": null,
+          "reads_source": "backfill"
+        }
+      ]
     },
     {
       "step": 3,
@@ -32,7 +74,21 @@
       "status": "completed",
       "started_at": "2026-09-01T16:02:30+0900",
       "summary": "src/services/aladin.ts 신설(services/ 디렉토리 첫 파일) — 상수 ALADIN_CONCURRENCY(12)·BREAKER_CONSECUTIVE_FAILURES(5)·ALADIN_CALL_TIMEOUT_MS(5s)·ALADIN_SEARCH_MAX_RESULTS(10), 타입 RequestBreaker·SearchOptions, 함수 createRequestBreaker(threshold?)·searchByTitle(title, author, options)·searchMany(queries, options)가 lib/match.ts의 LookupOutcome을 그대로 돌려준다(유사도 판정은 judge()에 맡기고 여기선 네트워크만 한다). 실패 분리: 200+0건은 {status:'ok',candidates:[]}(→no_match), 5xx·4xx·타임아웃·네트워크 오류·JSON 파싱 실패·봉투 불일치는 전부 {status:'failed'}(→lookup_failed)로 나른다 — 200인데 형태를 모르는 응답도 '책이 없다'고 말하지 않고 failed다. 응답은 searchEnvelopeSchema(totalResults 필수)→aladinItemSchema(필드 이름만 옮김)→schemas.ts의 aladinCandidateSchema 순으로 통과시키고, 탈락 레코드는 조용히 버리지 않고 제외 건수를 warn 로그로 남긴다(ISBN13 없는 세트 상품이 여기서 걸린다). 브레이커는 요청마다 새로 만드는 클로저라 모듈 스코프에 상태가 없고(ADR-003), 연속 5회 실패에 latch되어 잔여 후보는 fetch 없이 failed로 온다. 재시도는 5xx·타임아웃·네트워크 오류만 1회(4xx는 재시도 안 함), 개별 호출 타임아웃은 min(5s, 남은 데드라인)이라 합이 대조 예산 12s를 넘지 않는다. ALADIN_TTB_KEY가 없으면 네트워크 없이 목업(제목 echo + 0000000###### 형태의 가짜 ISBN)을 돌려주되 호출마다 warn을 남긴다. 로그 출구를 warn() 하나로 좁혀 URL·응답 본문·fetch 에러 메시지를 절대 찍지 않는다(TTB 키 유출 방지). aladin.test.ts 32건 신설(ADR-005 회귀·시크릿 유출 회귀 포함, fetch는 전부 주입) → 전체 296건 통과. 새 의존성 0건, lib/ 파일은 한 줄도 고치지 않았다. 보고: LookupOutcome이 aladinCandidate(isbn13·title·author·publisher·coverUrl)만 담는 형태라 IdentifiedBook에 필요한 pages·aladinRating·aladinLink는 이 함수로 채울 수 없다 — ItemLookUp 경로가 라우트 step에서 따로 필요하다.",
-      "completed_at": "2026-09-01T16:11:20+0900"
+      "completed_at": "2026-09-01T16:11:20+0900",
+      "runs": [
+        {
+          "session_id": "34ce0c8f-5044-41b2-b4b9-0b780f846196",
+          "tool_result_chars": 45742,
+          "tool_result_count": 20,
+          "tool_output_chars": 78687,
+          "tool_calls": {
+            "Bash": 18,
+            "Write": 2
+          },
+          "attempt": null,
+          "reads_source": "backfill"
+        }
+      ]
     },
     {
       "step": 4,
@@ -40,7 +96,23 @@
       "status": "completed",
       "started_at": "2026-09-01T16:11:21+0900",
       "summary": "src/services/anthropic.ts 신설 — 상수 MAX_OUTPUT_TOKENS(16000)·EXTRACT_BETAS(['server-side-fallback-2026-07-01'])·RETRY_BACKOFF_MS(1s), 타입 ExtractOptions(deadlineMs·photoIndex·clientImpl?·sleepImpl?)·ExtractUsage·ExtractFailureReason·ExtractOutcome, 함수 extractFromPhoto(imageDataUri, options)가 이미지 1장 → ExtractedCandidate[]를 돌려준다. 호출 규약(TRD 7번)을 그대로 형태로 박았다: model은 getExtractModel(), max_tokens 16000, thinking:{type:'adaptive'}(budget_tokens 없음), output_config.format={type:'json_schema', schema: prompts.ts의 extractionJsonSchema}, betas+fallbacks:'default'. content를 읽기 전에 봉투 스키마로 stop_reason을 먼저 보고 refusal/max_tokens를 분리해 각각 재시도 없이 실패시킨다 — 잘린 JSON은 부분 파싱하지 않는다. 재시도는 429·5xx·연결 오류만 1회(백오프 min(1s, 남은 데드라인)), 4xx·refusal·max_tokens·schema는 재시도하지 않는다. 실패 사유 5종(refusal·max_tokens·timeout·schema·upstream)을 끝까지 다른 값으로 나르고 어떤 경로에서도 throw하지 않는다. 데드라인은 인자로만 받고 자체 타임아웃 상수를 두지 않는다(deadlineMs<=0이면 SDK 미호출 즉시 timeout, 개별 호출에는 남은 시간을 RequestOptions.timeout으로 넘긴다). photoIndex는 서버가 붙이고(extractedCandidateSchema 재검증), 사진당 60건 상한은 extractionResultSchema가 강제한다 — 코드에서 따로 자르지 않는다. usage.input_tokens/output_tokens를 반환값에 실어 호출부가 analyze_completed에 담을 수 있게 했고, 봉투에서 usage를 필수로 둬 토큰 없는 성공을 만들지 않는다. ANTHROPIC_API_KEY가 없으면 SDK를 만들지 않고 '[목업]' 표시가 붙은 픽스처 2건 + usage 0을 warn과 함께 돌려준다. 로그 출구는 warn() 하나로 좁혀 API 키·SDK 에러 메시지·rawText·base64 이미지를 절대 찍지 않는다. anthropic.test.ts 39건 신설(SDK 전면 모킹, max_tokens 부분파싱 금지·시크릿/PII 유출 회귀 포함) → 전체 335건 통과. lint·typecheck·build·audit(0 vulnerabilities) 통과. 새 의존성 0건, lib/·이전 step 파일 무수정. 보고 3건: ① 설치된 @anthropic-ai/sdk 0.68에는 output_config·fallbacks·adaptive thinking 타입이 아직 없다(0.68 타입 정의가 TRD 7번 호출 규약보다 낡았다) — 본문은 그대로 전송되므로 동작은 문제없고, 캐스팅은 MessagesClient 인터페이스 한 곳으로 좁혔다. SDK를 올리면 이 인터페이스만 지우면 된다. ② SDK 클라이언트를 maxRetries:0으로 만들어 재시도를 이 모듈이 직접 1회 수행한다(사진당 최대 2회 = TRD 6.1 최악값 표와 일치). SDK에 맡기면 남은 데드라인을 모르는 재시도가 되고 호출 횟수가 관측되지 않는다. ③ ExtractOutcome의 failed 분기에는 usage가 없다(step 지시 시그니처를 그대로 따랐다). 그런데 refusal·max_tokens 응답도 토큰은 과금되므로, 그 사진의 비용은 analyze_completed 집계에서 빠진다 — 라우트 step에서 실패 usage까지 세려면 이 타입을 넓혀야 한다.",
-      "completed_at": "2026-09-01T16:21:30+0900"
+      "completed_at": "2026-09-01T16:21:30+0900",
+      "runs": [
+        {
+          "session_id": "d292d8f0-a4ed-4b31-82ae-3d8c08844454",
+          "tool_result_chars": 119025,
+          "tool_result_count": 47,
+          "tool_output_chars": 156978,
+          "tool_calls": {
+            "Bash": 41,
+            "Edit": 3,
+            "Skill": 1,
+            "Write": 2
+          },
+          "attempt": null,
+          "reads_source": "backfill"
+        }
+      ]
     }
   ],
   "created_at": "2026-09-01T15:46:21+0900",

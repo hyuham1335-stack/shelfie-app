@@ -1647,3 +1647,301 @@ class TestSourceInjection:
         index = json.loads(executor._index_file.read_text(encoding="utf-8"))
         step = next(s for s in index["steps"] if s["step"] == 2)
         assert step["runs"][0]["source_chars"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 세션이 끌어온 양 — 트랜스크립트 사후 집계 (ROADMAP 29 · ADR-H011)
+# ---------------------------------------------------------------------------
+
+def _jsonl(path: Path, records: list) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records),
+                    encoding="utf-8")
+    return path
+
+
+def _tool_use(name: str, tid: str = "t1") -> dict:
+    return {"type": "assistant", "isSidechain": False,
+            "message": {"content": [{"type": "tool_use", "id": tid, "name": name,
+                                     "input": {"command": "cat x"}}]}}
+
+
+def _tool_result(text: str, tid: str = "t1", *, raw=None, sidechain=False) -> dict:
+    rec = {"type": "user", "isSidechain": sidechain,
+           "message": {"content": [{"type": "tool_result", "tool_use_id": tid,
+                                    "content": text}]}}
+    if raw is not None:
+        rec["toolUseResult"] = {"stdout": raw, "stderr": ""}
+    return rec
+
+
+@pytest.fixture
+def transcripts(tmp_path):
+    """~/.claude/projects/<slug>/<session_id>.jsonl 을 흉내내는 루트."""
+    root = tmp_path / "transcripts"
+    (root / "C--some-slug").mkdir(parents=True)
+    return root
+
+
+class TestSessionMetrics:
+    """접두부는 재는데 세션이 **직접 끌어온 양**은 아무도 재지 않았다.
+
+    런 #7·#8 이 두 번 연속 "접두부가 크면 비싸다"를 반증했고, 런 #8 이
+    진짜 변수를 지목했다 — 첨부되지 않아 세션이 직접 읽어야 했던 양이다.
+    재지 않는 것을 근거로 상수를 정할 수 없다 (ROADMAP 28·29).
+    """
+
+    def test_sums_tool_result_chars(self, transcripts):
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("가" * 100, "t1"),
+            _tool_use("Bash", "t2"), _tool_result("나" * 250, "t2"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_chars"] == 350
+        assert m["tool_result_count"] == 2
+        assert m["session_id"] == "abc"
+
+    def test_raw_output_is_a_separate_number(self, transcripts):
+        """16KB 를 넘는 출력은 파일로 빠지고 블록은 잘린다.
+
+        컨텍스트에 들어간 것은 잘린 쪽이고, 둘의 차가 잘린 양이다.
+        한 숫자로 뭉치면 어느 쪽인지 알 수 없다.
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"),
+            _tool_result("x" * 200, "t1", raw="x" * 9000),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_chars"] == 200
+        assert m["tool_output_chars"] == 9000
+
+    def test_counts_tool_calls_by_name_without_classifying(self, transcripts):
+        """이름으로 '읽기/쓰기'를 가르지 않는다.
+
+        step 세션은 bashFirst 로 돌아 cat·sed·grep 으로 읽고 heredoc 으로
+        쓴다 — 런 #8 step 0 은 도구 호출 15건이 전부 Bash 다. 이름으로
+        분류하면 틀린 숫자가 나오고, 틀린 숫자는 없는 숫자보다 나쁘다.
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("a", "t1"),
+            _tool_use("Bash", "t2"), _tool_result("b", "t2"),
+            _tool_use("Edit", "t3"), _tool_result("c", "t3"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_calls"] == {"Bash": 2, "Edit": 1}
+
+    def test_sidechain_records_are_excluded(self, transcripts):
+        """서브에이전트의 도구 결과는 메인 컨텍스트에 들어가지 않는다.
+
+        여덟 런 모두 spawned:0 이라 지금은 차이가 없지만, 8페이즈
+        파이프라인은 리뷰어를 서브에이전트로 부른다.
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("가" * 100, "t1"),
+            _tool_result("나" * 5000, "t2", sidechain=True),
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_chars"] == 100
+        assert m["tool_result_count"] == 1
+
+    def test_missing_transcript_yields_nothing(self, transcripts):
+        """0 으로 채우면 '재지 않았다'와 '0 이었다'가 같은 칸에 들어간다 (ADR-H007)."""
+        assert ex.StepExecutor._read_session_metrics("nope", transcript_root=transcripts) == {}
+
+    def test_missing_session_id_yields_nothing(self, transcripts):
+        assert ex.StepExecutor._read_session_metrics(None, transcript_root=transcripts) == {}
+        assert ex.StepExecutor._read_session_metrics("", transcript_root=transcripts) == {}
+
+    def test_broken_lines_are_skipped_not_fatal(self, transcripts):
+        p = transcripts / "C--some-slug" / "abc.jsonl"
+        _jsonl(p, [_tool_use("Bash", "t1"), _tool_result("가" * 40, "t1")])
+        p.write_text(p.read_text(encoding="utf-8") + "\n{not json\n", encoding="utf-8")
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_chars"] == 40
+
+    def test_finds_transcript_under_any_slug(self, transcripts):
+        """슬러그를 유도하지 않는다 — 이 리포는 경로 casing 함정에 두 번 물렸다.
+
+        session_id 는 UUID 라 glob 하나로 유일하게 잡힌다.
+        """
+        (transcripts / "C--Users-hyu13-PROJECT-x").mkdir()
+        _jsonl(transcripts / "C--Users-hyu13-PROJECT-x" / "zzz.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("y" * 77, "t1"),
+        ])
+        m = ex.StepExecutor._read_session_metrics("zzz", transcript_root=transcripts)
+        assert m["tool_result_chars"] == 77
+
+    def test_list_shaped_result_content_is_counted(self, transcripts):
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"),
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1",
+                 "content": [{"type": "text", "text": "가" * 30}]}]}},
+        ])
+        m = ex.StepExecutor._read_session_metrics("abc", transcript_root=transcripts)
+        assert m["tool_result_chars"] == 30
+
+
+class TestSessionId:
+    def test_pulls_session_id(self):
+        out = {"stdout": json.dumps({"session_id": "abc-123", "num_turns": 3})}
+        assert ex.StepExecutor._session_id(out) == "abc-123"
+
+    def test_unparsable_or_absent_is_none(self):
+        assert ex.StepExecutor._session_id({"stdout": "not json"}) is None
+        assert ex.StepExecutor._session_id({"stdout": "{}"}) is None
+
+
+class TestRunRecordsPull:
+    def _complete(self, executor, stdout):
+        def fake_invoke(step_arg, preamble):
+            index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+            for s in index["steps"]:
+                if s["step"] == 2:
+                    s["status"] = "completed"; s["summary"] = "done"
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False),
+                                            encoding="utf-8")
+            return {"exitCode": 0, "stdout": stdout, "stderr": ""}
+
+        with patch.object(executor, "_invoke_claude", side_effect=fake_invoke), \
+             patch.object(executor, "_commit_step"):
+            executor._execute_single_step({"step": 2, "name": "ui", "status": "pending"},
+                                          "guardrails")
+        index = json.loads(executor._index_file.read_text(encoding="utf-8"))
+        return next(s for s in index["steps"] if s["step"] == 2)["runs"][0]
+
+    def test_run_carries_the_pull(self, executor, transcripts):
+        _jsonl(transcripts / "C--some-slug" / "sid-1.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("가" * 4321, "t1"),
+        ])
+        with patch.object(ex, "TRANSCRIPT_ROOT", transcripts):
+            run = self._complete(executor, json.dumps({"session_id": "sid-1"}))
+        assert run["tool_result_chars"] == 4321
+        assert run["session_id"] == "sid-1"
+        assert run["reads_source"] == "live"
+
+    def test_unmeasurable_pull_creates_no_keys(self, executor, transcripts):
+        with patch.object(ex, "TRANSCRIPT_ROOT", transcripts):
+            run = self._complete(executor, json.dumps({"session_id": "gone"}))
+        assert "tool_result_chars" not in run
+        assert "reads_source" not in run
+
+    def test_pull_is_printed(self, executor, capsys):
+        executor._report_pull({"tool_result_chars": 61997, "tool_result_count": 43},
+                              preamble_chars=81798)
+        out = capsys.readouterr().out
+        assert "61,997자" in out
+        assert "43건" in out
+        assert "81,798" in out
+
+    def test_nothing_printed_when_unmeasured(self, executor, capsys):
+        executor._report_pull({}, preamble_chars=81798)
+        assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------------------
+# 백필 — 여덟 런 41 step 을 사후 집계한다 (ROADMAP 29)
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(Path(__file__).parent))
+import backfill_reads as bf  # noqa: E402
+
+
+class TestBackfillReads:
+    """트랜스크립트에 있는 값이므로 사후 집계가 된다.
+
+    백필하지 않으면 ROADMAP 28 의 예산값은 런 #9 부터 표본을 쌓아야 하고,
+    이미 여덟 런이 남긴 41 step 은 버려진다.
+    """
+
+    def _phase(self, tmp_path, *, runs=True, session="sid-1"):
+        d = tmp_path / "phases" / "0-mvp"
+        d.mkdir(parents=True)
+        step = {"step": 0, "name": "setup", "status": "completed"}
+        if runs:
+            step["runs"] = [{"attempt": 1, "outcome": "completed", "turns": 16}]
+        (d / "index.json").write_text(
+            json.dumps({"phase": "mvp", "steps": [step]}, ensure_ascii=False),
+            encoding="utf-8")
+        (d / "step0-output.json").write_text(
+            json.dumps({"step": 0, "stdout": json.dumps({"session_id": session})}),
+            encoding="utf-8")
+        (tmp_path / "phases" / "index.json").write_text(
+            json.dumps({"phases": [{"dir": "0-mvp", "status": "completed"}]}),
+            encoding="utf-8")
+        return d
+
+    def _transcript(self, transcripts, session, chars):
+        _jsonl(transcripts / "C--some-slug" / f"{session}.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("가" * chars, "t1"),
+        ])
+
+    def _index(self, phase_dir):
+        return json.loads((phase_dir / "index.json").read_text(encoding="utf-8"))
+
+    def test_fills_the_last_run(self, tmp_path, transcripts):
+        d = self._phase(tmp_path, runs=True)
+        self._transcript(transcripts, "sid-1", 5000)
+        bf.backfill(tmp_path, transcript_root=transcripts)
+        run = self._index(d)["steps"][0]["runs"][-1]
+        assert run["tool_result_chars"] == 5000
+        assert run["reads_source"] == "backfill"
+        assert run["turns"] == 16, "기존 실측을 건드리지 않는다"
+
+    def test_does_not_overwrite_existing_measurement(self, tmp_path, transcripts):
+        """못 잰 것이 잰 것을 지우면 안 된다 — M12·M14 가 두 번 열렸던 자리다."""
+        d = self._phase(tmp_path, runs=True)
+        idx = self._index(d)
+        idx["steps"][0]["runs"][-1].update(tool_result_chars=111, reads_source="live")
+        (d / "index.json").write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+        self._transcript(transcripts, "sid-1", 5000)
+        rows = bf.backfill(tmp_path, transcript_root=transcripts)
+        run = self._index(d)["steps"][0]["runs"][-1]
+        assert run["tool_result_chars"] == 111
+        assert run["reads_source"] == "live"
+        assert rows[0]["action"] == "kept"
+
+    def test_is_idempotent(self, tmp_path, transcripts):
+        d = self._phase(tmp_path, runs=True)
+        self._transcript(transcripts, "sid-1", 5000)
+        bf.backfill(tmp_path, transcript_root=transcripts)
+        first = self._index(d)
+        rows = bf.backfill(tmp_path, transcript_root=transcripts)
+        assert self._index(d) == first
+        assert rows[0]["action"] == "kept"
+
+    def test_dry_run_writes_nothing(self, tmp_path, transcripts):
+        d = self._phase(tmp_path, runs=True)
+        self._transcript(transcripts, "sid-1", 5000)
+        before = (d / "index.json").read_text(encoding="utf-8")
+        rows = bf.backfill(tmp_path, dry_run=True, transcript_root=transcripts)
+        assert (d / "index.json").read_text(encoding="utf-8") == before
+        assert rows[0]["tool_result_chars"] == 5000
+
+    def test_step_without_runs_gets_an_entry_that_admits_it(self, tmp_path, transcripts):
+        """런 #1~#5 의 26 step 에는 runs[] 가 없다 — M12 가 그 다음에 생겼다.
+
+        시도 번호를 지어내지 않는다. 출력 파일은 **마지막 세션**만 증명하고
+        그것이 몇 번째 시도였는지는 증명하지 않는다.
+        """
+        d = self._phase(tmp_path, runs=False)
+        self._transcript(transcripts, "sid-1", 4242)
+        bf.backfill(tmp_path, transcript_root=transcripts)
+        runs = self._index(d)["steps"][0]["runs"]
+        assert len(runs) == 1
+        assert runs[0]["attempt"] is None
+        assert runs[0]["tool_result_chars"] == 4242
+        assert runs[0]["reads_source"] == "backfill"
+        assert "outcome" not in runs[0], "모르는 것을 적지 않는다"
+
+    def test_missing_transcript_is_reported_not_zeroed(self, tmp_path, transcripts):
+        d = self._phase(tmp_path, runs=True, session="gone")
+        rows = bf.backfill(tmp_path, transcript_root=transcripts)
+        assert rows[0]["action"] == "unmeasured"
+        assert "tool_result_chars" not in self._index(d)["steps"][0]["runs"][-1]
+
+    def test_missing_output_file_does_not_crash(self, tmp_path, transcripts):
+        d = self._phase(tmp_path, runs=True)
+        (d / "step0-output.json").unlink()
+        rows = bf.backfill(tmp_path, transcript_root=transcripts)
+        assert rows[0]["action"] == "unmeasured"

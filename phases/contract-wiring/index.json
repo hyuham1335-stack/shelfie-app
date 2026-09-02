@@ -71,7 +71,15 @@
           "turns": 44,
           "cache_read": 4175152,
           "cache_write": 125698,
-          "output_tokens": 28205
+          "output_tokens": 28205,
+          "session_id": "91ce38d1-17e7-4f1d-bb33-e4e3b9630942",
+          "tool_result_chars": 79679,
+          "tool_result_count": 43,
+          "tool_output_chars": 79679,
+          "tool_calls": {
+            "Bash": 43
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T10:00:10+0900",
@@ -104,7 +112,15 @@
           "turns": 17,
           "cache_read": 1105843,
           "cache_write": 74926,
-          "output_tokens": 7089
+          "output_tokens": 7089,
+          "session_id": "7c9df1ce-5a1d-42a0-9c38-0a43dcce505a",
+          "tool_result_chars": 25121,
+          "tool_result_count": 16,
+          "tool_output_chars": 25121,
+          "tool_calls": {
+            "Bash": 16
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T10:03:56+0900",
@@ -141,7 +157,15 @@
           "turns": 26,
           "cache_read": 3374785,
           "cache_write": 169009,
-          "output_tokens": 26857
+          "output_tokens": 26857,
+          "session_id": "7ff96a3b-e247-4ed6-94d8-a318de3b932c",
+          "tool_result_chars": 70349,
+          "tool_result_count": 25,
+          "tool_output_chars": 70349,
+          "tool_calls": {
+            "Bash": 25
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T10:12:27+0900",
@@ -176,7 +200,17 @@
           "turns": 41,
           "cache_read": 5559454,
           "cache_write": 166704,
-          "output_tokens": 43905
+          "output_tokens": 43905,
+          "session_id": "9299dca1-1b54-4883-825a-c5e577e2d4a5",
+          "tool_result_chars": 107691,
+          "tool_result_count": 40,
+          "tool_output_chars": 130565,
+          "tool_calls": {
+            "Bash": 27,
+            "Edit": 9,
+            "Write": 4
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T10:23:57+0900",
@@ -211,7 +245,15 @@
           "turns": 20,
           "cache_read": 1560980,
           "cache_write": 92361,
-          "output_tokens": 8040
+          "output_tokens": 8040,
+          "session_id": "976f515a-6943-4ba7-a881-088c17c725ae",
+          "tool_result_chars": 43102,
+          "tool_result_count": 19,
+          "tool_output_chars": 43102,
+          "tool_calls": {
+            "Bash": 19
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T10:48:20+0900",

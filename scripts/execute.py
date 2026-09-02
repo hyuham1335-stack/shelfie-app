@@ -32,6 +32,12 @@ HEARTBEAT_INTERVAL_SEC = 30
 # 세션이 잠깐 멈칫한 것과 프로세스가 사라진 것을 가르기에 충분히 넉넉하다.
 STALE_AFTER_SEC = 300
 
+# step 세션의 트랜스크립트가 쌓이는 곳 (ROADMAP 29 · ADR-H011).
+# 하위 디렉토리 이름(슬러그)은 유도하지 않고 session_id 로 glob 한다 —
+# 슬러그 규칙은 Claude Code 구현 세부이고, 이 리포는 경로 casing 함정에
+# 두 번 물렸다. session_id 는 UUID 라 한 번의 glob 으로 유일하게 잡힌다.
+TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
+
 
 def _force_utf8_output():
     """실행기 자신의 출력을 UTF-8 로 고정한다.
@@ -894,6 +900,116 @@ class StepExecutor:
                     rec[dst_key] = val
         return rec
 
+    @staticmethod
+    def _session_id(output: dict) -> Optional[str]:
+        """claude -p 의 JSON 에서 세션 식별자를 뽑는다.
+
+        _extract_usage 와 나눠 둔다 — 과금 지표와 식별자는 다른 것이고,
+        이 값은 사후 집계가 어느 트랜스크립트를 읽었는지 감사하는 데 쓴다.
+        """
+        try:
+            payload = json.loads(output.get("stdout") or "{}")
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        sid = payload.get("session_id")
+        return sid if isinstance(sid, str) and sid else None
+
+    @staticmethod
+    def _read_session_metrics(session_id: Optional[str], *,
+                              transcript_root: Optional[Path] = None) -> dict:
+        """세션이 접두부 **밖에서** 끌어온 양을 트랜스크립트에서 잰다 (ROADMAP 29).
+
+        접두부는 ADR-H010 이 분해해서 재게 했는데, 런 #7·#8 이 두 번 연속
+        "접두부가 크면 비싸다"를 반증했다 — 접두부 최대 step 이 두 번 최저
+        비용이었다. 런 #8 이 진짜 변수를 지목했다: **첨부되지 않아 세션이
+        직접 읽어야 했던 양**이다(66,275자 → 44 turn · 16,334자 → 23 turn).
+        실행기는 sources(첨부한 것)는 알면서 그것을 몰랐다.
+
+        **분류하지 않는다.** step 세션은 bashFirst 로 돌아 cat·sed·grep 으로
+        읽고 heredoc 으로 쓴다 — 런 #8 step 0 은 도구 호출 15건이 전부 Bash 다.
+        이름으로 "읽기/쓰기"를 가르면 틀린 숫자가 나오고, 틀린 숫자는 없는
+        숫자보다 나쁘다. 이름별 횟수만 원자료로 남기고 해석은 사람이 한다.
+
+        못 재면 키를 만들지 않는다 — 0 으로 채우면 "재지 않았다"와 "0 이었다"가
+        같은 칸에 들어간다 (ADR-H007 이 attempts 에서 겪은 실패).
+        """
+        if not session_id:
+            return {}
+        root = TRANSCRIPT_ROOT if transcript_root is None else Path(transcript_root)
+        try:
+            paths = sorted(root.glob(f"*/{session_id}.jsonl"))
+        except OSError:
+            return {}
+        if not paths:
+            return {}
+
+        def _block_chars(content) -> int:
+            if isinstance(content, str):
+                return len(content)
+            if isinstance(content, list):
+                return sum(len(b.get("text", "")) for b in content
+                           if isinstance(b, dict) and isinstance(b.get("text"), str))
+            return 0
+
+        def _raw_chars(tur) -> int:
+            if isinstance(tur, str):
+                return len(tur)
+            if isinstance(tur, dict):
+                total = 0
+                for key in ("stdout", "stderr", "content", "output"):
+                    val = tur.get(key)
+                    if isinstance(val, str):
+                        total += len(val)
+                return total
+            return 0
+
+        result_chars = raw_chars = result_count = 0
+        calls: dict = {}
+        for path in paths:
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    # 트랜스크립트가 쓰이는 중이면 마지막 줄이 잘려 있을 수 있다.
+                    # 한 줄 때문에 나머지 실측을 버리지 않는다.
+                    continue
+                if not isinstance(rec, dict) or rec.get("isSidechain"):
+                    # 서브에이전트의 도구 결과는 메인 컨텍스트에 들어가지 않는다.
+                    continue
+                msg = rec.get("message")
+                if isinstance(msg, dict) and isinstance(msg.get("content"), list):
+                    for blk in msg["content"]:
+                        if not isinstance(blk, dict):
+                            continue
+                        if blk.get("type") == "tool_use":
+                            name = blk.get("name")
+                            if isinstance(name, str):
+                                calls[name] = calls.get(name, 0) + 1
+                        elif blk.get("type") == "tool_result":
+                            result_chars += _block_chars(blk.get("content"))
+                            result_count += 1
+                if rec.get("toolUseResult") is not None:
+                    raw_chars += _raw_chars(rec["toolUseResult"])
+
+        return {"session_id": session_id,
+                "tool_result_chars": result_chars,
+                "tool_result_count": result_count,
+                # 도구가 남긴 원본 stdout·stderr 다. 16KB 를 넘는 출력은 파일로
+                # 빠지고 컨텍스트에 들어가는 블록은 잘리므로, 이 값이 크면 그
+                # 차이가 잘린 양이다. 다만 **하한**이다 — Edit 처럼 결과가
+                # 구조화된 도구는 stdout 을 남기지 않아 여기서 세지 못한다.
+                # 예산에 쓰는 숫자는 위의 tool_result_chars 쪽이다.
+                "tool_output_chars": raw_chars,
+                "tool_calls": dict(sorted(calls.items()))}
+
     def _record_run(self, index: dict, step_num: int, *, attempt: int, outcome: str,
                     elapsed: float, out: dict, guard_info: dict):
         """시도 하나의 실측을 남긴다 (M12).
@@ -917,6 +1033,15 @@ class StepExecutor:
             # 둘을 한 숫자로 두면 예산을 어디에 걸어야 하는지 알 수 없다.
             entry["step_body_chars"] = entry["prompt_chars"] - entry["preamble_chars"]
         entry.update(self._extract_usage(out))
+        pull = self._read_session_metrics(self._session_id(out))
+        if pull:
+            # 실행기가 런 중에 직접 잰 값이라는 표시다. 사후 백필한 값은
+            # "backfill" 로 적혀 실측 시점이 런 당시가 아님을 칸이 말한다.
+            entry.update(pull, reads_source="live")
+        else:
+            print("  ⚠ 세션 트랜스크립트를 찾지 못해 '끌어온 양'을 재지 못했다 — "
+                  "칸을 0 으로 채우지 않고 비워 둔다", flush=True)
+        self._report_pull(entry, preamble_chars=entry.get("preamble_chars"))
         for s in index["steps"]:
             if s["step"] == step_num:
                 s.setdefault("runs", []).append(entry)
@@ -960,6 +1085,27 @@ class StepExecutor:
         boiler = preamble_chars - guard - src - context_chars
         print(f"  접두부 {preamble_chars:,}자 = 가드레일 {guard:,} + 소스 {src:,} + "
               f"누적 summary {context_chars:,} + 상용구 {boiler:,} — 매 turn 다시 읽힌다",
+              flush=True)
+
+    @staticmethod
+    def _report_pull(entry: dict, *, preamble_chars: Optional[int] = None):
+        """세션이 접두부 밖에서 끌어온 양을 한 줄로 드러낸다 (ROADMAP 29).
+
+        _report_prefix 의 짝이다. 저쪽은 step 이 시작할 때 우리가 **실은** 양을
+        찍고, 이쪽은 끝난 뒤 세션이 **스스로 끌어온** 양을 찍는다. 런 #8 에서
+        둘의 방향이 갈렸다 — 접두부가 가장 큰 step 이 가장 쌌고, 비싼 step 은
+        끌어온 양이 가장 컸다(61,997자 · 44 turn · $5.19).
+
+        여기서도 상한은 걸지 않는다. 상한을 걸면 그 순간부터 step 설계가 그
+        값에 맞춰지고, 그러면 값이 옳았는지 잴 표본이 더는 생기지 않는다
+        (ADR-H010). 막지 않고 드러낸다.
+        """
+        chars = entry.get("tool_result_chars")
+        if not isinstance(chars, int):
+            return
+        count = entry.get("tool_result_count", 0)
+        tail = f" (접두부 {preamble_chars:,}자 밖이다)" if isinstance(preamble_chars, int) else ""
+        print(f"  도구 결과 {chars:,}자 · {count}건 — 세션이 스스로 끌어온 양{tail}",
               flush=True)
 
     # --- 헤더 & 검증 ---

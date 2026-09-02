@@ -68,7 +68,15 @@
           "turns": 16,
           "cache_read": 1772762,
           "cache_write": 110851,
-          "output_tokens": 12896
+          "output_tokens": 12896,
+          "session_id": "549ef97a-3f13-4cb4-ab0b-156099706cfd",
+          "tool_result_chars": 17024,
+          "tool_result_count": 15,
+          "tool_output_chars": 17031,
+          "tool_calls": {
+            "Bash": 15
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T13:34:00+0900",
@@ -113,7 +121,17 @@
           "turns": 18,
           "cache_read": 2085386,
           "cache_write": 120961,
-          "output_tokens": 29958
+          "output_tokens": 29958,
+          "session_id": "68fd6031-d464-4287-8cab-32f75662b610",
+          "tool_result_chars": 22142,
+          "tool_result_count": 17,
+          "tool_output_chars": 43559,
+          "tool_calls": {
+            "Bash": 13,
+            "Edit": 2,
+            "Write": 2
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T13:42:02+0900",
@@ -158,7 +176,17 @@
           "turns": 14,
           "cache_read": 1459009,
           "cache_write": 113881,
-          "output_tokens": 19136
+          "output_tokens": 19136,
+          "session_id": "d6a44308-68fe-49c1-a810-326b617569ca",
+          "tool_result_chars": 18708,
+          "tool_result_count": 13,
+          "tool_output_chars": 28647,
+          "tool_calls": {
+            "Bash": 11,
+            "Edit": 1,
+            "Write": 1
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T13:48:10+0900",
@@ -202,7 +230,17 @@
           "turns": 44,
           "cache_read": 5611176,
           "cache_write": 153770,
-          "output_tokens": 31473
+          "output_tokens": 31473,
+          "session_id": "dd8bfaec-6954-44d9-a36b-72d16c4adab1",
+          "tool_result_chars": 61997,
+          "tool_result_count": 43,
+          "tool_output_chars": 91443,
+          "tool_calls": {
+            "Bash": 30,
+            "Edit": 11,
+            "Write": 2
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T13:57:50+0900",
@@ -244,7 +282,17 @@
           "turns": 23,
           "cache_read": 2074563,
           "cache_write": 100733,
-          "output_tokens": 12581
+          "output_tokens": 12581,
+          "session_id": "bc782a6b-f243-4ab5-9691-0b82b5baed9d",
+          "tool_result_chars": 30644,
+          "tool_result_count": 22,
+          "tool_output_chars": 35114,
+          "tool_calls": {
+            "Bash": 18,
+            "Edit": 2,
+            "Write": 2
+          },
+          "reads_source": "backfill"
         }
       ],
       "completed_at": "2026-09-02T14:03:26+0900",

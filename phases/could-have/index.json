@@ -1,0 +1,86 @@
+{
+  "project": "shelfie",
+  "phase": "could-have",
+  "carried_reports": {
+    "note": "이전 런의 미해소 보고를 어느 step 이 받는지 명시한다. 배정하지 않으면 이월된다. 런 #7 의 step 들이 올린 새 보고는 0건이라 이번 런이 받을 이월 코드 부채는 없다. 이 런의 본체는 PRD MoSCoW 의 Could-have 3종(FR-013 알라딘 상품 링크 · FR-014 추천 결과 이미지 저장 · FR-015 촬영 가이드 시트)이고, Must·Should 가 런 #7 에서 전부 닫힌 뒤에 붙이는 것이다.",
+    "ab_design": "이 런은 [[ADR-H010]] 의 열린 질문을 잰다 — 첨부는 **읽을** 파일에 값을 하고 **쓸** 파일에는 덜 하는가. 런 #7 에서 step 2(접두부 최대 136,986 · 비용 최소 $2.82 · turn 최소 17)와 step 4(접두부 최소 105,553 · 비용 최대 $3.78 · turn 최대 27)가 정반대로 나와 반례가 이미 있다. 그래서 이 런의 5 step 을 두 팔로 가른다. **팔 A(쓸 파일을 첨부한다)**: step 0 · step 2 — 자기가 고칠 소스와 그 테스트를 sources 에 넣는다. **팔 B(읽을 파일만 첨부한다)**: step 3 · step 4 — 자기가 고칠 파일은 sources 에서 빼고 세션이 직접 읽게 하며, 참조만 하는 인접 파일을 첨부한다. step 1 은 새 파일을 만들어 '쓸 파일'이 존재하지 않으므로 어느 팔도 아니다(대조군에서 뺀다). 비교는 step 당 turn · 비용 · 접두부 분해(preamble_chars 등)로 하고, 계층이 섞이는 것을 알고 해석한다 — 팔 A 는 둘 다 좁은 모듈이고 팔 B 는 화면 배선이라 **작업 성격이 교란 변수다.** n=4 로는 판정하지 못하고 런 #7 의 n=5 에 표본을 더할 뿐이다.",
+    "ab_caveat": "팔 B 가 정보를 덜 주는 것이 품질 위험이 아닌지 미리 적어 둔다. sources 미지정은 [[ADR-H009]] 이전의 기존 동작(세션이 직접 읽는다)이고 일곱 런 중 여섯 런이 그 상태로 무재시도 완주했다. 그리고 step 파일의 `## 읽어야 할 파일` 절에 경로를 적으면 실행기의 교차검증이 그것을 sources 에 요구하므로, 팔 B 의 step 은 고칠 파일을 `## 직접 읽어라 (첨부하지 않았다)` 라는 별도 절로 뺀다 — 절이 바뀌면 정규식 범위 밖이다(런 #7 에서 같은 수법을 썼다). 그 절이 '반드시 읽어라'를 명시하므로 세션이 파일을 못 찾는 일은 없다.",
+    "resolved_by_main_before_run": [
+      "PRD 에 FR-013·FR-014·FR-015 를 신설하고 MoSCoW 의 Could-have 를 이번 릴리스 범위로 올렸다. 화면 인벤토리(업로드·분석 결과·추천 결과)도 함께 갱신했다",
+      "PRD 의 '촬영 가이드 오버레이'를 '촬영 가이드 시트'로 정정했다 — PhotoPicker 가 <input type=\"file\" capture> 로 시스템 카메라를 여는 구조라 우리 페이지가 프리뷰 위에 그릴 수 없다. 문서를 고치지 않으면 step 이 없는 것을 만들려 들고 다음 런이 '문서대로' 되돌린다",
+      "세 기능이 이벤트를 만들지 않는다는 것을 PRD 7번 이벤트 로그 절에 못 박았다 — 어느 지표에도 연결되지 않는다",
+      "ADR-009 를 썼다 — 저장 이미지는 새 의존성 없이 캔버스로 그리고, 레이아웃(순수)과 그리기를 가른다(jsdom 에 canvas 구현이 없어 가르지 않으면 TDD 가 성립하지 않는다). 표지는 화면의 <img> 가 아니라 offscreen 으로 따로 받는다",
+      "UI_GUIDE 에 외부 링크 · 촬영 가이드 시트 · 저장 이미지 세 절을 넣었다. 저장 이미지 안에서도 알라딘 사실과 Claude 추천 이유의 층위를 가르는 규칙이 여기 있다",
+      "ARCHITECTURE 에 lib/share-image.ts 를 넣고 두 겹 분리와 측정 함수 주입을 레이어 규칙에 적었다",
+      "CLAUDE.md 의 자기모순 한 줄을 고쳤다 — '상수는 lib/env.ts 한 곳에서만' 과 'lib/env.ts 를 클라이언트에 import 하지 마라' 가 함께 있었다. 실제로는 클라이언트 파일 12개가 이미 import 한다. 이 런의 step 1·2 가 저장 이미지 규격 상수를 어디 둘지 정해야 하므로 런 전에 닫았다",
+      "실행기 결함 3건(M11 남은 절반 · M13 · M14)을 닫고 접두부 분해 계측을 넣었다(ADR-H010). 이 런은 고쳐진 실행기 위에서 돈다"
+    ],
+    "not_assigned_this_run": [
+      "런 #5 보고 ⑦ — 재시도가 원본 File 이 아니라 리사이즈된 data URI 를 들고 있다. '재업로드를 요구하지 않는다'는 목적은 이미 충족돼 있고 EXIF·품질을 다시 고르는 것은 별개의 기능 결정이다. 네 런째 이월된다",
+      "런 #3 보고 — 알라딘 호출 상한 260회. 메인이 TRD 에서 이미 갱신했고 코드 쪽 소비처가 없다. 이번 런은 services/aladin 을 건드리지 않는다",
+      "런 #2·#3 보고 — @anthropic-ai/sdk 0.68 타입이 TRD 7번 호출 규약보다 낡다. SDK 버전 변경은 새 의존성 판단이라 ADR 이 먼저다 (CLAUDE.md CRITICAL). 이번 런은 services/ 를 건드리지 않는다",
+      "ROADMAP 12 — 3단계 게이트의 두 번째 스택(gradle-java) 대상 리포가 이 머신에 없다. 사람이 정한다",
+      "ROADMAP 14 — 어댑터 verified:true 승격은 04-gate 가 어댑터를 소비한 뒤다",
+      "ROADMAP 28 — 접두부 통합 예산의 **값**. 재는 쪽은 ADR-H010 으로 만들었고 값은 표본이 쌓인 뒤에 정한다. 이 런이 세 번째 표본이다"
+    ]
+  },
+  "steps": [
+    {
+      "step": 0,
+      "name": "aladin-link",
+      "status": "pending",
+      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "sources": [
+        "src/components/booklist/IdentifiedBookCard.tsx",
+        "src/components/booklist/IdentifiedBookCard.test.tsx",
+        "src/components/recommend/RecommendationCard.tsx",
+        "src/components/recommend/RecommendationCard.test.tsx",
+        "src/components/booklist/BookList.tsx",
+        "src/components/booklist/BookList.test.tsx",
+        "src/types/book.ts"
+      ]
+    },
+    {
+      "step": 1,
+      "name": "share-layout",
+      "status": "pending",
+      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "sources": [
+        "src/types/book.ts",
+        "src/types/api.ts",
+        "src/lib/env.ts"
+      ]
+    },
+    {
+      "step": 2,
+      "name": "share-render",
+      "status": "pending",
+      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "sources": [
+        "src/lib/share-image.ts",
+        "src/lib/share-image.test.ts",
+        "src/components/booklist/BookCover.tsx"
+      ]
+    },
+    {
+      "step": 3,
+      "name": "share-button",
+      "status": "pending",
+      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE", "ADR"],
+      "sources": [
+        "src/lib/share-image.ts",
+        "src/components/common/Notice.tsx"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "capture-guide",
+      "status": "pending",
+      "docs": ["PRD", "UI_GUIDE", "ARCHITECTURE"],
+      "sources": [
+        "src/components/upload/PhotoPicker.tsx",
+        "src/components/common/Notice.tsx"
+      ]
+    }
+  ]
+}

@@ -185,12 +185,14 @@
     {
       "step": 4,
       "name": "mood-forced-path",
-      "status": "pending",
+      "status": "completed",
+      "summary": "MoodInput의 irrelevantCount 렌더를 0·1·2+ 세 단계로 갈랐다 — 0은 평소대로, 1은 PRD 문구(\"책 고르는 데 참고할 내용을 적어 주세요\")로 한 번만 다시 받고(reprompt, === 1로 좁힘), 2 이상은 요구를 반복하지 않고 강행 안내를 Notice(중립 톤, 경고색·role=alert 없음)로 띄운다: \"그대로 다시 누르셔도 돼요. 저희가 잘못 읽었을 수 있어서 이번에는 적으신 그대로 골라 드릴게요 — 다만 고른 이유가 덜 들어맞을 수 있어요\" — 오탐 가능성을 인정하되 결과 품질이 낮을 수 있음을 숨기지 않는다. IRRELEVANT_EMPHASIS_THRESHOLD를 매직 넘버 2에서 MAX_IRRELEVANT_STREAK 참조로 바꿔 서버가 판정을 무시하는 경계와 한 값으로 묶었고(어긋나면 화면이 \"그대로 눌러도 돼요\"라 말한 요청이 422로 되돌아온다), IRRELEVANT_REPROMPT_THRESHOLD=1을 신설했다. 제출 버튼·입력창은 어느 횟수에서도 비활성화하지 않는다(입력 화면에 가두지 않는 것이 이 경로의 목적). page.tsx 배선은 이미 옳아 고치지 않았다 — 성공 시 setIrrelevantCount(0)(강행 성공 포함), 실패 시 nextIrrelevantCount의 연속 규칙(IRRELEVANT_MOOD가 아니면 0)을 그대로 두었고 요청에는 Math.min(irrelevantCount, MAX_IRRELEVANT_STREAK)로 클램프해 싣는다. MoodInput은 여전히 fetch·api-client·localStorage·쿠키를 모르고 원시 hex 0건이다. 테스트 +25(1011 → 1036): MoodInput +18(임계값 동치, 0·1·2·3 렌더 분기, 경고색·alert·hex 부재, 안티패턴 11종 회귀, 품질 인정 문구, 0~3 전수 버튼 활성 + 서버 판정을 대신하지 않음), page +3(US-003 AC 재현 — 422 두 번 뒤 세 번째가 irrelevantStreak:2를 싣고 추천 화면 도달 / 강행 성공 후 0 복귀 / 무관 아닌 502가 연속을 끊음). AC 5종 전부 통과(typecheck·lint·test 1036·build·audit 0). ROADMAP 23 배선 6건 전부 닫힘 — 1 schemas(step 0) · 2 recommend route(step 2) · 3 analytics recommend_failed(step 1) · 4 클라이언트 전송(step 0) · 5 error 실패 단계 + 회복 전이 2개(step 3) · 6 3회째 강행 화면(step 4). 부수 항목 clientEventSchema의 recommend_viewed 제거도 step 0에서 닫혔다. 닫히지 않은 것 1건(step 2 이월 보고, 이번 step 범위 밖): 강행이 서버 라우트에서만 이뤄지고 첫 호출 프롬프트에는 반영되지 않는다 — lib/prompts.ts:339 규칙 7이 \"relevant가 false면 recommendations를 빈 배열로 둔다\"고 지시하므로 실제 모델 응답에서는 강행해도 200 + 빈 배열이 될 수 있다. 실질적 강행에는 irrelevantStreak>=2를 services/anthropic 옵션과 프롬프트 문구에 배선해야 하고, 이는 US-003 마지막 AC가 실환경에서 완결되는 마지막 한 칸이다.",
       "docs": [
         "UI_GUIDE",
         "PRD",
         "API_SPEC"
-      ]
+      ],
+      "started_at": "2026-09-02T10:23:57+0900"
     }
   ],
   "created_at": "2026-09-02T09:50:46+0900"

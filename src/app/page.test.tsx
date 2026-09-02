@@ -473,6 +473,80 @@ describe("세션 셸", () => {
     expect(lastRecommendCall().irrelevantStreak).toBe(0);
   });
 
+  it("무관 판정 2회 연속 뒤 세 번째 제출은 추천 화면까지 간다 (US-003 AC)", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(IRRELEVANT);
+
+    // 1·2회째는 판정을 그대로 받아 입력 화면에 남는다.
+    await submitMoodAndSettle("점심 뭐 먹지");
+    expect(screen.getByText("책 고르는 데 참고할 내용을 적어 주세요")).toBeInTheDocument();
+
+    await submitMoodAndSettle("점심 뭐 먹지");
+    // 2회 연속부터는 같은 요구를 반복하지 않고, 다음에 무슨 일이 일어나는지 말한다.
+    expect(screen.queryByText("책 고르는 데 참고할 내용을 적어 주세요")).toBeNull();
+    expect(screen.getByText(/이번에는 적으신 그대로/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "추천받기" })).not.toBeDisabled();
+
+    // 세 번째는 서버가 판정을 무시하고 추천을 진행한다 (API_SPEC /api/recommend).
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+    submitMood("점심 뭐 먹지");
+
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    expect(lastRecommendCall().irrelevantStreak).toBe(2);
+  });
+
+  it("강행 경로로 성공하면 irrelevantCount가 0으로 돌아간다", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(IRRELEVANT);
+
+    await submitMoodAndSettle("점심 뭐 먹지");
+    await submitMoodAndSettle("점심 뭐 먹지");
+
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+    submitMood("점심 뭐 먹지");
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+
+    fireEvent.click(screen.getByRole("button", { name: "다시 추천받기" }));
+    await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+
+    // 연속이 끊겼으므로 강행 안내도 요구 문구도 남아 있지 않다.
+    expect(screen.queryByText(/이번에는 적으신 그대로/)).toBeNull();
+    expect(screen.queryByText("책 고르는 데 참고할 내용을 적어 주세요")).toBeNull();
+
+    submitMood("번아웃이라 가볍게");
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    expect(lastRecommendCall().irrelevantStreak).toBe(0);
+  });
+
+  it("무관 판정이 아닌 실패는 연속을 끊는다 — 강행 안내가 사라진다", async () => {
+    await reachMoodInput();
+    recommendMock.mockResolvedValue(IRRELEVANT);
+
+    await submitMoodAndSettle("점심 뭐 먹지");
+    await submitMoodAndSettle("점심 뭐 먹지");
+    expect(screen.getByText(/이번에는 적으신 그대로/)).toBeInTheDocument();
+
+    recommendMock.mockResolvedValue({
+      ok: false,
+      code: "UPSTREAM_UNAVAILABLE",
+      requestId: "req-upstream",
+      status: 502,
+    });
+    submitMood("점심 뭐 먹지");
+
+    // 추천 실패 화면에서 기분 입력으로 되돌아오면 카운터는 이미 0이다.
+    await screen.findByRole("button", { name: "기분 다시 입력" });
+    fireEvent.click(screen.getByRole("button", { name: "기분 다시 입력" }));
+    await screen.findByRole("heading", { name: "지금 어떤 기분이세요?" });
+
+    expect(screen.queryByText(/이번에는 적으신 그대로/)).toBeNull();
+
+    recommendMock.mockResolvedValue(ok(makeRecommendation()));
+    submitMood("번아웃이라 가볍게");
+    await screen.findByRole("heading", { name: "이 책은 어때요?" });
+    expect(lastRecommendCall().irrelevantStreak).toBe(0);
+  });
+
   it("분석 실패 후 재시도는 재업로드를 요구하지 않는다", async () => {
     analyzeMock.mockResolvedValue({
       ok: false,

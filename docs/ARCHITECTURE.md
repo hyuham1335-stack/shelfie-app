@@ -54,6 +54,7 @@ flowchart TD
     lib --> libEnv["env.ts<br/>환경변수 부팅 시 검증 · 도메인 상수 단일 출처"]
     lib --> libSession["session.ts<br/>세션 상태 리듀서 (순수)"]
     lib --> libApiClient["api-client.ts<br/>app/api 호출 래퍼 · 에러 정규화"]
+    lib --> libShareImage["share-image.ts<br/>저장 이미지 레이아웃(순수) + 캔버스 그리기"]
 
     services --> svcAnthropic["anthropic.ts<br/>Claude API 래퍼"]
     services --> svcAladin["aladin.ts<br/>알라딘 OpenAPI 래퍼"]
@@ -106,7 +107,8 @@ flowchart LR
 - `services/` → `components/` 역방향 import 금지. 서버 전용 모듈이 React 컴포넌트를 참조하면 서버 코드가 클라이언트 번들로 끌려 들어간다.
 - `lib/` → `services/` 금지. `lib/`는 외부 호출을 하지 않는 순수 함수만 담는다. 이 경계 덕분에 `lib/`는 모킹 없이 단위 테스트할 수 있다.
 - `types/` → `lib/schemas.ts`는 **타입 전용**으로만 허용한다(점선). 스키마와 타입을 이중 정의하지 않으려면(TR-002) `z.infer`가 스키마를 참조할 수밖에 없다. 대신 `types/`는 `import type`·`export type`만 쓰고 값을 하나도 내보내지 않으므로, 컴파일 후 런타임 import가 남지 않아 클라이언트 번들에 `lib/`가 끌려 들어가지 않는다. 역방향(`lib/` → `types/`)과 `types/`의 값 export는 계속 금지다.
-- `lib/image.ts`만 브라우저 API(Canvas)에 의존한다. 서버 코드에서 import하지 않는다.
+- 브라우저 API(Canvas)에 의존하는 `lib/` 모듈은 **`lib/image.ts`와 `lib/share-image.ts` 둘뿐이다.** 서버 코드에서 import하지 않는다.
+- `lib/share-image.ts`(FR-014 저장 이미지)는 **한 파일 안에서 두 겹으로 갈라져 있다** — 좌표·줄바꿈·잘림을 결정해 드로잉 명령 목록을 만드는 **순수 함수 층**과, 그 명령을 `CanvasRenderingContext2D`에 적용해 PNG `Blob`을 만드는 **얇은 그리기 층**이다. 순수 층은 `document`·`canvas`를 만지지 않으므로 jsdom 없이 값으로 검증하고, 그리기 층은 가짜 `ctx`로 호출 순서만 검사한다. **jsdom에 canvas 구현이 없어** 이 분리가 없으면 TDD가 성립하지 않는다 (ADR-009). 글자 폭은 직접 계산하지 않고 **측정 함수를 주입받는다** — 그것이 순수 층을 순수하게 유지하는 조건이다.
 - 저장소를 도입하면(ADR-007) Supabase도 위 그래프의 `외부 API`와 같은 자리에 놓인다. `components/` → Supabase 직접 호출 금지이며, 반드시 `app/api/`를 경유한다. `service_role` 키가 클라이언트 번들로 새는 경로를 구조적으로 막기 위함이고, 이는 `ANTHROPIC_API_KEY`에 적용하는 규칙과 같은 것이다.
 
 ---

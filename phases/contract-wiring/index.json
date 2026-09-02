@@ -80,11 +80,13 @@
     {
       "step": 1,
       "name": "analytics-event",
-      "status": "pending",
+      "status": "completed",
       "docs": [
         "PRD",
         "ARCHITECTURE"
-      ]
+      ],
+      "started_at": "2026-09-02T10:00:10+0900",
+      "summary": "AnalyticsEvent 유니온에 recommend_failed 추가 — 최종 속성은 event · session_id · error_code(z.infer<typeof errorCodeSchema>) · input_tokens · output_tokens 다섯 개이고 PROPERTY_KEYS.recommend_failed = [\"session_id\",\"error_code\",\"input_tokens\",\"output_tokens\"] 로 화이트리스트 투영에 등록했다. 토큰 두 개는 옵셔널이 아니다(실패해도 청구되므로 세션당 비용 가드레일이 실패분을 봐야 한다). PRD 7번 표에 없는 duration_ms · recommended_count · failed_photo_count 는 넣지 않았다. 파일 상단 주석과 테스트 describe 의 '이벤트 8종'을 9종으로, 타입 수준 보장 주석의 '세 이벤트'를 '네 이벤트'로 고쳤다. analytics.test.ts 에 테스트 3개 추가 — 출력 키가 정확히 5개인 한 줄 대조, errorCodeSchema.options 15종 전수 통과, mood/request_id/books 를 얹어도 투영에서 빠짐. recommend_viewed · logEvent 실패 처리 · src/app/api/recommend/route.ts 는 미변경(라우트 호출은 step 2)."
     },
     {
       "step": 2,

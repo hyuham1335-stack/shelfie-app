@@ -21,17 +21,28 @@
  * `RECOMMENDATION_VALIDATION_FAILED`로 끊는다 — 목록 밖 책은 어떤 경로로도
  * 사용자에게 도달하지 않는다.
  *
- * ## 계약의 공백 두 곳 (문서 결정 사항 — 이 라우트에서 메우지 않는다)
- * ① **`IRRELEVANT_MOOD` 2회 연속 무시** — API_SPEC은 "같은 세션에서 2회 연속
- *    `relevant: false`면 판정을 무시하고 추천을 진행한다"고 정했지만, 무상태라
- *    세션별 카운터를 서버에 둘 수 없고 `recommendRequestSchema`에 그 횟수를 담을
- *    필드가 없다. 스키마를 임의로 넓히는 것은 계약 변경이고 문서가 먼저다
- *    (CLAUDE.md CRITICAL). 그래서 **서버는 매 요청을 독립적으로 판정해 422를
- *    반환하고, "2회 연속이면 무시"는 클라이언트 책임**으로 둔다 — 클라이언트가
- *    422를 두 번 받았음을 기억했다가 세 번째에 추천을 강행하는 UI 경로를 갖는다.
- * ② **`mood_submitted.retry_index`** — "다시 추천받기" 횟수 역시 요청에 실려 오지
- *    않아 서버가 알 수 없다. 0으로 기록한다. 두 공백은 같은 원인(요청 스키마에
- *    세션 진행 상태가 없다)에서 나오므로 함께 결정해야 한다.
+ * ## 세션 진행 상태는 요청에 실려 온다 (`retryIndex`·`irrelevantStreak`)
+ * 무상태라 서버가 "이 세션에서 몇 번째 재추천인지", "무관 판정이 몇 번 연속
+ * 나왔는지"를 셀 수 없다 (ADR-003). 그래서 두 값은 요청에 **필수 필드**로 실려
+ * 온다 (API_SPEC /api/recommend). 기본값을 두면 "보내지 않았다"와 "0이다"가 구분되지
+ * 않고, 그것이 `mood_submitted.retry_index`가 언제나 0이던 원인이다.
+ *
+ * **세는 것은 클라이언트, 판정하는 것은 서버다.** 화면은 횟수만 실어 보내고,
+ * "2회 연속이면 무관 판정을 무시한다"는 규칙 자체는 이 라우트가 갖는다 — 판정까지
+ * 클라이언트에 맡기면 같은 규칙이 화면마다 다시 구현되고 그중 하나는 반드시 덜
+ * 검증된다.
+ *
+ * 두 값에는 서명을 붙이지 않는다. `proof`가 필요한 이유는 **책이 사실인 척할 수
+ * 있기 때문**인데, 이 둘은 위조해도 얻는 것이 **원래 허용된 동작 하나**뿐이다 —
+ * `irrelevantStreak`를 2로 보내면 세 번째에 어차피 허용되는 억지 추천 한 번을 앞당길
+ * 뿐이고, `retryIndex`는 로그 속성이다. 검증하는 대신 **스키마가 상한을 강제한다**
+ * (0~4 · 0~2). 상한 밖은 400이다 (ADR-006, API_SPEC).
+ *
+ * ## 실패도 이벤트로 남는다
+ * 추천이 실패로 끝나도 태운 토큰은 그대로 청구되고 에러율은 집계돼야 한다. 그래서
+ * 실패 응답 반환 직전에 `recommend_failed`를 남긴다(PRD 7번). **그 자리에서
+ * `recommend_viewed`를 올리지 않는다** — 그것은 추천 수락률의 분모라 실패로
+ * 부풀면 North Star가 실제보다 낮게 보인다.
  *
  * ## `mood`는 데이터다
  * 라우트는 `mood`를 가공하지도, 프롬프트에 이어 붙이지도 않는다. 그대로 넘기면
@@ -45,7 +56,7 @@ import { randomUUID } from "node:crypto";
 
 import { logEvent, type AnalyticsEvent } from "@/lib/analytics";
 import { createBudget } from "@/lib/budget";
-import { MAX_RECOMMENDATIONS, isServiceEnabled } from "@/lib/env";
+import { MAX_IRRELEVANT_STREAK, MAX_RECOMMENDATIONS, isServiceEnabled } from "@/lib/env";
 import { filterVerified } from "@/lib/proof";
 import { recommendRequestSchema, recommendResponseSchema } from "@/lib/schemas";
 import {
@@ -74,6 +85,17 @@ const RECOMMEND_BUDGET_MS = 28_000;
 
 /** 목록 밖 `bookId`에 대한 재요청 횟수. API_SPEC이 1회로 정했다 */
 const MAX_CORRECTION_ATTEMPTS = 1;
+
+/**
+ * 무관 판정을 무시하기 시작하는 **연속** 횟수. 여기 도달한 요청은 모델이
+ * `relevant: false`를 내도 422로 끊지 않고 추천을 진행한다 — 오탐으로 사용자를
+ * 입력 화면에 가두는 것이 억지 추천 한 번보다 나쁘다 (US-003 AC, API_SPEC).
+ *
+ * 스키마 상한(`MAX_IRRELEVANT_STREAK`)과 **같은 값을 쓴다.** API_SPEC이
+ * `irrelevantStreak`의 범위를 0~2로 정한 이유가 "2면 판정을 무시하므로 그보다 큰
+ * 값에 의미가 없다"이기 때문이다. 두 숫자가 갈리면 상한이 계약을 설명하지 못한다.
+ */
+const IRRELEVANT_STREAK_LIMIT = MAX_IRRELEVANT_STREAK;
 
 type RecommendErrorCode = Extract<
   ErrorCode,
@@ -127,7 +149,7 @@ export async function POST(request: Request): Promise<Response> {
     return errorResponse(400, "INVALID_REQUEST", requestId);
   }
 
-  const { sessionId, books, mood, inputMode } = parsed.value;
+  const { sessionId, books, mood, inputMode, retryIndex, irrelevantStreak } = parsed.value;
 
   /* --- ① 서명 검증. 화이트리스트보다 먼저다 (ADR-006) --------------- */
 
@@ -143,6 +165,12 @@ export async function POST(request: Request): Promise<Response> {
 
   if (verified.length === 0) {
     // 위조된 목록으로 유료 호출을 하지 않는다. 모델은 아직 부르지 않았다.
+    //
+    // **이 400도 `recommend_failed`를 남긴다.** 토큰은 0이지만 그것은 누락이 아니라
+    // 사실이다 — 여기까지의 실패는 비용을 태우지 않았고, 비용 가드레일에는 0으로,
+    // 에러율과 `proof` 무결성 계측(TRD 6.4)에는 1건으로 들어가야 한다. 실패를
+    // 세지 않으면 클라이언트 상태 조립 버그가 지표에서 조용히 사라진다.
+    recordFailure(sessionId, "UNVERIFIED_BOOKS", { input_tokens: 0, output_tokens: 0 });
     return errorResponse(400, "UNVERIFIED_BOOKS", requestId);
   }
 
@@ -158,12 +186,21 @@ export async function POST(request: Request): Promise<Response> {
     claudeNote: book.claudeNote,
   }));
 
-  record({ event: "mood_submitted", session_id: sessionId, input_mode: inputMode, retry_index: 0 });
+  // `retry_index`는 요청이 실어 온 "다시 추천받기" 횟수 그대로다. 하드코딩된 0이
+  // 아니다 — 무상태라 서버가 셀 수 없고, 0으로 적으면 지표가 조용히 거짓말한다.
+  record({
+    event: "mood_submitted",
+    session_id: sessionId,
+    input_mode: inputMode,
+    retry_index: retryIndex,
+  });
 
   /* --- ② 추천 생성 + 화이트리스트 (필요하면 교정 재요청 1회) -------- */
 
   const usage: UsageTotal = { input_tokens: 0, output_tokens: 0 };
   let violations: string[] = [];
+  /** 무관 판정 강행을 요청당 한 번만 기록하기 위한 표시. 응답에는 나가지 않는다 */
+  let forcedIrrelevant = false;
 
   for (let attempt = 0; attempt <= MAX_CORRECTION_ATTEMPTS; attempt += 1) {
     const outcome: RecommendOutcome = await generateRecommendations(promptBooks, mood, {
@@ -179,15 +216,32 @@ export async function POST(request: Request): Promise<Response> {
       // 예산 소진(timeout)은 재시도하면 달라질 수 있고 화면 안내도 다르다.
       const failureCode: RecommendErrorCode =
         outcome.reason === "timeout" ? "TIMEOUT" : "UPSTREAM_UNAVAILABLE";
-      warnBurnedTokens(requestId, failureCode, usage);
+      recordFailure(sessionId, failureCode, usage);
       return errorResponse(outcome.reason === "timeout" ? 504 : 502, failureCode, requestId);
     }
 
     if (!outcome.relevant) {
-      // 판정 주체는 모델이다. 서버가 키워드로 판정하지 않는다 (API_SPEC).
-      // "2회 연속이면 무시"는 세션을 아는 클라이언트 몫이다 — 파일 상단 참고.
-      warnBurnedTokens(requestId, "IRRELEVANT_MOOD", usage);
-      return errorResponse(422, "IRRELEVANT_MOOD", requestId);
+      // 판정 주체는 **모델**이다. 서버가 키워드로 판정하지 않는다 (API_SPEC).
+      // 이 라우트가 정하는 것은 *판정을 언제 무시하는가*뿐이다.
+      if (irrelevantStreak < IRRELEVANT_STREAK_LIMIT) {
+        recordFailure(sessionId, "IRRELEVANT_MOOD", usage);
+        return errorResponse(422, "IRRELEVANT_MOOD", requestId);
+      }
+
+      // 2회 연속 무관 판정 뒤의 요청이다. 판정을 무시하고 계속 진행한다 —
+      // **모델을 다시 부르지 않는다.** `outcome.picks`는 이미 손에 있고, 다시
+      // 부르면 같은 응답에 비용만 두 배가 된다.
+      //
+      // 무시하는 것은 무관 판정 하나뿐이다. 아래 화이트리스트 검증(FR-009)은
+      // 그대로 지난다 — 목록 밖 책은 이 경로로도 사용자에게 도달하지 않는다.
+      if (!forcedIrrelevant) {
+        forcedIrrelevant = true;
+        // 이벤트가 아니라 경고 한 줄이다. 오탐률을 나중에 읽기 위한 것이고,
+        // `mood` 원문은 절대 싣지 않는다 (PRD 7번).
+        console.warn(
+          `[recommend] 무관 판정을 무시하고 추천을 강행합니다 — request_id=${requestId} session_id=${sessionId} streak=${irrelevantStreak}`,
+        );
+      }
     }
 
     violations = outsideAllowed(outcome.picks, allowed);
@@ -203,7 +257,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // 재요청 후에도 목록 밖이다. 3권을 채우려고 남은 것만 골라 내보내지 않는다 —
   // 모델이 목록을 벗어났다는 사실 자체가 그 응답 전체를 신뢰할 수 없다는 뜻이다.
-  warnBurnedTokens(requestId, "RECOMMENDATION_VALIDATION_FAILED", usage);
+  recordFailure(sessionId, "RECOMMENDATION_VALIDATION_FAILED", usage);
   return errorResponse(502, "RECOMMENDATION_VALIDATION_FAILED", requestId);
 }
 
@@ -238,7 +292,7 @@ function success(
     // 모델이 목록 밖 책을 준 경우는 아래에서 502로 따로 남는다 — 두 실패의
     // 원인이 다르므로 로그에서도 구분한다 (API_SPEC).
     console.error(`[recommend] 생성된 추천이 계약을 어겼습니다 — request_id=${requestId}`);
-    warnBurnedTokens(requestId, "INTERNAL_ERROR", usage);
+    recordFailure(sessionId, "INTERNAL_ERROR", usage);
     return errorResponse(500, "INTERNAL_ERROR", requestId);
   }
 
@@ -246,6 +300,7 @@ function success(
   // 하나도 없어야 한다 (FR-009, PRD 가드레일 0건).
   if (validated.data.recommendations.some((item) => !allowed.has(item.bookId))) {
     console.error(`[recommend] 목록 밖 bookId가 응답 조립까지 도달했습니다 — request_id=${requestId}`);
+    recordFailure(sessionId, "RECOMMENDATION_VALIDATION_FAILED", usage);
     return errorResponse(502, "RECOMMENDATION_VALIDATION_FAILED", requestId);
   }
 
@@ -340,21 +395,35 @@ function accumulate(total: UsageTotal, outcome: RecommendOutcome): void {
 }
 
 /**
- * 실패로 끝난 요청이 태운 토큰을 남긴다.
+ * 실패 응답 반환 직전에 `recommend_failed`를 남긴다 (PRD 7번).
  *
- * **이벤트가 아니라 경고 한 줄이다.** `recommend_viewed`는 추천 수락률의 분모라
- * 실패 분기에서 올리면 North Star가 왜곡되고, 실패 전용 이벤트는 PRD 7번 표에
- * 없으므로 `lib/analytics`의 유니온에도 없다(이 step에서 `lib/`을 고치지 않는다).
- * 그래서 비용만 사람이 읽을 수 있는 형태로 남긴다 — 집계에 섞이지 않도록
- * `event` 키를 쓰지 않는다.
+ * **`recommend_viewed`를 대신 올리지 않는다.** 그것은 추천 수락률의 분모이고,
+ * 실패로 부풀면 North Star가 실제보다 낮게 보인다. `analyze_completed`/
+ * `analyze_failed`와 같은 짝이다.
+ *
+ * **태운 토큰을 빼지 않는다.** 응답을 받고 나서 실패한 경우(refusal·max_tokens·
+ * 스키마 위반)도 이미 과금됐고, 빼면 세션당 비용 가드레일이 실패분을 보지 못한다.
+ * 토큰이 0인 실패(`UNVERIFIED_BOOKS`처럼 모델을 부르기 전에 끊긴 경우)도 그대로
+ * 0으로 남긴다 — 값이 없는 것이 아니라 0인 것이 사실이고, 에러율에는 세어야 한다.
+ *
+ * `sessionId`를 반드시 싣는다. 세션 없이 남긴 이벤트는 어느 지표에도 붙지 않는다.
+ * 요청 본문 파싱 자체가 실패한 400(`INVALID_REQUEST`)에서는 `sessionId`를 알 수
+ * 없어 이벤트를 남기지 않는다 — 세션에 붙지 않는 실패를 세면 분모만 흐려진다.
+ * 503(`SERVICE_DISABLED`)도 남기지 않는다. 그것은 실패가 아니라 우리가 켜고 끄는
+ * 스위치이며, 외부 호출도 비용도 없다 (TRD 7번).
  */
-function warnBurnedTokens(requestId: string, code: RecommendErrorCode, usage: UsageTotal): void {
-  if (usage.input_tokens === 0 && usage.output_tokens === 0) {
-    return;
-  }
-  console.warn(
-    `[recommend] 실패로 끝난 요청의 토큰 — request_id=${requestId} code=${code} input=${usage.input_tokens} output=${usage.output_tokens}`,
-  );
+function recordFailure(
+  sessionId: string,
+  code: RecommendErrorCode,
+  usage: UsageTotal,
+): void {
+  record({
+    event: "recommend_failed",
+    session_id: sessionId,
+    error_code: code,
+    input_tokens: usage.input_tokens,
+    output_tokens: usage.output_tokens,
+  });
 }
 
 /** 무결성 로그용 사유 집계. 책의 서지 값은 남기지 않는다 (TRD 6.4) */

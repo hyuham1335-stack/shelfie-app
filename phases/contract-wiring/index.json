@@ -113,13 +113,15 @@
     {
       "step": 2,
       "name": "recommend-route",
-      "status": "pending",
+      "status": "completed",
       "docs": [
         "API_SPEC",
         "PRD",
         "ADR",
         "TRD"
-      ]
+      ],
+      "started_at": "2026-09-02T10:03:57+0900",
+      "summary": "route.ts 상단 '계약의 공백 두 곳' 주석을 지우고 현재 계약 서술로 대체(요청이 실어 오는 이유=무상태 ADR-003 / 세는 것은 클라이언트·판정은 서버 / 서명하지 않고 스키마 상한으로 강제 ADR-006 / 실패는 recommend_failed 이고 recommend_viewed 는 올리지 않는다). IRRELEVANT_STREAK_LIMIT = MAX_IRRELEVANT_STREAK(2) 를 상수로 두고 relevant:false 이면 irrelevantStreak < 2 일 때만 422, 2 이상이면 손에 있는 outcome.picks 로 그대로 진행한다 — 모델 재호출 없음(호출 1회 테스트로 고정), 화이트리스트·교정 재요청 1회·502 경로는 그대로 지난다. 강행은 console.warn 한 줄(request_id·session_id·streak, mood 원문 없음)로 요청당 1회만 남긴다. mood_submitted.retry_index 하드코딩 0 → 요청의 retryIndex. warnBurnedTokens 를 recordFailure(sessionId, code, usage) 로 교체해 실패 지점 전부가 recommend_failed 를 남긴다 — TIMEOUT(504) · UPSTREAM_UNAVAILABLE(502) · IRRELEVANT_MOOD(422) · RECOMMENDATION_VALIDATION_FAILED(502, 루프 종료 + success() 방어 재확인 두 곳) · INTERNAL_ERROR(500). 토큰 0 가드를 없애 0 도 사실로 기록한다. UNVERIFIED_BOOKS(400)도 남기기로 결정 — 토큰 0 은 누락이 아니라 사실이고(모델 호출 전), 비용에는 0 · 에러율과 proof 무결성 계측(TRD 6.4)에는 1건으로 들어가야 클라이언트 상태 조립 버그가 지표에서 사라지지 않는다. 반대로 INVALID_REQUEST(400, 본문 파싱 실패라 sessionId 를 모름)와 SERVICE_DISABLED(503, 실패가 아니라 우리 스위치)는 남기지 않으며 이유를 recordFailure 주석에 적었다. 테스트 21개 추가(53 → 74): irrelevantStreak 0·1 → 422, 2 → 200 + 추천, 강행 중 목록 밖 → 502, 강행에서도 교정 재요청 1회, 호출 1회, 상한 밖(3) → 400, retry_index 0~4 전수 일치, 실패 4종 파라미터화 + INTERNAL_ERROR + mood 원문 미노출 + 성공 시 recommend_failed 0건. 기존 'recommend_viewed 0건' 회귀 케이스 유지. lib/schemas.ts · lib/analytics.ts 미변경. 보고: 강행 경로가 모델을 다시 부르지 않는 대신, lib/prompts.ts 추천 프롬프트 규칙 7이 'relevant:false 면 recommendations 를 빈 배열로 둔다'고 지시하므로 실제 모델 응답에서는 강행해도 추천 0건(200 + 빈 배열)이 될 수 있다. 실질적 강행에는 irrelevantStreak>=2 를 첫 호출 프롬프트에 반영하는 배선(services/anthropic 옵션 + prompts 문구)이 필요하지만 이 step 범위 밖이라 고치지 않았다."
     },
     {
       "step": 3,

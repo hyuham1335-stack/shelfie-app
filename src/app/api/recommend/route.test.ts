@@ -161,6 +161,9 @@ function setOkRecommend(
   setRecommendSequence(okOutcome(picks));
 }
 
+/** 실패해도 청구되는 토큰. 실패 이벤트가 이 값을 그대로 실어야 한다 */
+const USAGE = { input_tokens: 900, output_tokens: 20 };
+
 function eventsOf(name: AnalyticsEvent["event"]): Record<string, unknown>[] {
   return logEventMock.mock.calls
     .map((call) => call[0] as Record<string, unknown>)
@@ -456,6 +459,78 @@ describe("무관한 기분 입력", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * 2회 연속 무관 판정 뒤의 강행 (US-003 AC, API_SPEC)
+ * 오탐으로 사용자를 입력 화면에 가두는 것이 억지 추천 한 번보다 나쁘다.
+ * ------------------------------------------------------------------ */
+
+describe("irrelevantStreak", () => {
+  it.each([0, 1])("streak %i에서는 여전히 422다", async (irrelevantStreak) => {
+    setRecommendSequence(okOutcome([], { input_tokens: 900, output_tokens: 20 }, false));
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak })));
+
+    expect(response.status).toBe(422);
+    expect((await readJson(response)).code).toBe("IRRELEVANT_MOOD");
+  });
+
+  it("streak 2에서는 relevant: false여도 200이고 추천이 나온다", async () => {
+    setRecommendSequence(
+      okOutcome([pickOf(isbnOf(1), 1), pickOf(isbnOf(2), 2)], undefined, false),
+    );
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    expect(response.status).toBe(200);
+    expect((await readJson(response)).recommendations).toHaveLength(2);
+  });
+
+  it("강행 경로에서 모델을 다시 부르지 않는다 — 호출은 1회다", async () => {
+    setRecommendSequence(okOutcome([pickOf(isbnOf(1), 1)], undefined, false));
+
+    await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    expect(generateRecommendationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("강행해도 목록 밖 bookId는 502다 — 화이트리스트를 뚫지 않는다 (FR-009)", async () => {
+    setRecommendSequence(okOutcome([pickOf(OUTSIDER_ISBN, 1)], undefined, false));
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+    const body = await readJson(response);
+
+    expect(response.status).toBe(502);
+    expect(body.code).toBe("RECOMMENDATION_VALIDATION_FAILED");
+    expect(JSON.stringify(body)).not.toContain(OUTSIDER_ISBN);
+  });
+
+  it("강행 경로에서도 위반 ID를 명시해 1회 교정 재요청한다", async () => {
+    setRecommendSequence(
+      okOutcome([pickOf(OUTSIDER_ISBN, 1)], undefined, false),
+      okOutcome([pickOf(isbnOf(1), 1)], undefined, false),
+    );
+
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    expect(generateRecommendationsMock).toHaveBeenCalledTimes(2);
+    expect(callsSeen[1].options.correction?.violatingBookIds).toEqual([OUTSIDER_ISBN]);
+    expect(response.status).toBe(200);
+  });
+
+  it("streak 2여도 relevant: true면 평소와 같다", async () => {
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 2 })));
+
+    expect(response.status).toBe(200);
+  });
+
+  it("streak가 상한(2) 밖이면 스키마가 먼저 막는다", async () => {
+    const response = await POST(recommendRequest(bodyOf({ irrelevantStreak: 3 })));
+
+    expect(response.status).toBe(400);
+    expect(generateRecommendationsMock).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * shortfall (FR-006)
  * ------------------------------------------------------------------ */
 
@@ -647,11 +722,38 @@ describe("관측성", () => {
     });
   });
 
-  it("서명 0권으로 끊긴 요청은 모델을 부르지 않았으므로 이벤트도 없다", async () => {
+  it.each([0, 1, 2, 3, 4])(
+    "retry_index가 요청의 retryIndex(%i)와 같다 — 하드코딩된 0이 아니다",
+    async (retryIndex) => {
+      await POST(recommendRequest(bodyOf({ retryIndex })));
+
+      expect(eventsOf("mood_submitted")[0].retry_index).toBe(retryIndex);
+    },
+  );
+
+  it("retryIndex가 상한(4) 밖이면 스키마가 먼저 막는다", async () => {
+    const response = await POST(recommendRequest(bodyOf({ retryIndex: 5 })));
+
+    expect(response.status).toBe(400);
+    expect(eventsOf("mood_submitted")).toHaveLength(0);
+  });
+
+  it("서명 0권으로 끊긴 요청은 모델을 부르기 전이라 토큰 0으로 실패만 남는다", async () => {
     await POST(recommendRequest(bodyOf({ books: [forgedBook(1)] })));
 
     expect(eventsOf("mood_submitted")).toHaveLength(0);
     expect(eventsOf("recommend_viewed")).toHaveLength(0);
+    // 에러율에는 1건, 비용에는 0으로 들어간다. 세지 않으면 클라이언트 상태 조립
+    // 버그가 지표에서 조용히 사라진다 (TRD 6.4 무결성 계측).
+    expect(eventsOf("recommend_failed")).toEqual([
+      {
+        event: "recommend_failed",
+        session_id: SESSION_ID,
+        error_code: "UNVERIFIED_BOOKS",
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    ]);
   });
 
   it("recommend_viewed에 추천 수와 토큰을 싣는다", async () => {
@@ -698,6 +800,84 @@ describe("관측성", () => {
 
     expect(eventsOf("recommend_viewed")).toHaveLength(0);
     expect(eventsOf("mood_submitted")).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      label: "timeout",
+      outcomes: [{ status: "failed", reason: "timeout", usage: USAGE }],
+      status: 504,
+      code: "TIMEOUT",
+    },
+    {
+      label: "외부 장애",
+      outcomes: [{ status: "failed", reason: "upstream", usage: USAGE }],
+      status: 502,
+      code: "UPSTREAM_UNAVAILABLE",
+    },
+    {
+      label: "무관한 기분",
+      outcomes: [okOutcome([], USAGE, false)],
+      status: 422,
+      code: "IRRELEVANT_MOOD",
+    },
+    {
+      label: "재요청 후에도 목록 밖",
+      outcomes: [okOutcome([pickOf(OUTSIDER_ISBN, 1)], USAGE)],
+      status: 502,
+      code: "RECOMMENDATION_VALIDATION_FAILED",
+    },
+  ])(
+    "$label 실패는 recommend_failed를 남기고 error_code가 응답 코드와 같다",
+    async ({ outcomes, status, code }) => {
+      setRecommendSequence(...outcomes);
+
+      const response = await POST(recommendRequest(bodyOf()));
+
+      expect(response.status).toBe(status);
+      expect((await readJson(response)).code).toBe(code);
+      expect(eventsOf("recommend_viewed")).toHaveLength(0);
+      expect(eventsOf("recommend_failed")).toHaveLength(1);
+      expect(eventsOf("recommend_failed")[0]).toMatchObject({
+        session_id: SESSION_ID,
+        error_code: code,
+      });
+      // 태운 토큰을 뺀 채로 남기면 세션당 비용 가드레일이 실패분을 보지 못한다.
+      expect(eventsOf("recommend_failed")[0].input_tokens).toBeGreaterThan(0);
+    },
+  );
+
+  it("우리 응답이 우리 계약을 어기면 500 INTERNAL_ERROR를 이벤트로도 남긴다", async () => {
+    // position이 계약(1|2|3) 밖이라 recommendResponseSchema가 거부한다.
+    setOkRecommend([{ ...pickOf(isbnOf(1), 1), position: 9 } as unknown as RecommendPick]);
+
+    const response = await POST(recommendRequest(bodyOf()));
+
+    expect(response.status).toBe(500);
+    expect((await readJson(response)).code).toBe("INTERNAL_ERROR");
+    expect(eventsOf("recommend_viewed")).toHaveLength(0);
+    expect(eventsOf("recommend_failed")[0]).toMatchObject({
+      session_id: SESSION_ID,
+      error_code: "INTERNAL_ERROR",
+      input_tokens: 1_200,
+      output_tokens: 180,
+    });
+  });
+
+  it("실패 이벤트에 mood 원문이 닿지 않는다 (PRD 7번)", async () => {
+    const secret = "비밀이 섞인 기분 문장입니다";
+    setRecommendSequence({ status: "failed", reason: "upstream", usage: USAGE });
+
+    await POST(recommendRequest(bodyOf({ mood: secret })));
+
+    expect(JSON.stringify(logEventMock.mock.calls)).not.toContain(secret);
+  });
+
+  it("성공한 요청은 recommend_failed를 남기지 않는다", async () => {
+    await POST(recommendRequest(bodyOf()));
+
+    expect(eventsOf("recommend_failed")).toHaveLength(0);
+    expect(eventsOf("recommend_viewed")).toHaveLength(1);
   });
 
   it("logEvent가 던져도 응답은 정상이다", async () => {

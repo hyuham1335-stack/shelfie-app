@@ -29,7 +29,7 @@ flowchart TD
     src --> services["services/<br/>외부 API 래퍼"]
 
     app --> api["api/<br/>라우트 핸들러"]
-    app --> page["page.tsx<br/>단일 페이지 (5개 화면을 상태로 전환)"]
+    app --> page["page.tsx<br/>단일 페이지 (상태 10종을 화면으로 전환)"]
 
     api --> apiAnalyze["analyze/route.ts<br/>사진 → 확인·미확인 책"]
     api --> apiResolve["books/resolve/route.ts<br/>수정된 제목으로 재검색"]
@@ -51,7 +51,7 @@ flowchart TD
     lib --> libAnalytics["analytics.ts<br/>구조화 이벤트 로그"]
     lib --> libBudget["budget.ts<br/>단계별 시간 예산 · 데드라인 전파"]
     lib --> libProof["proof.ts<br/>확인된 책 HMAC 서명 발급 · 검증"]
-    lib --> libEnv["env.ts<br/>환경변수 부팅 시 검증"]
+    lib --> libEnv["env.ts<br/>환경변수 부팅 시 검증 · 도메인 상수 단일 출처"]
     lib --> libSession["session.ts<br/>세션 상태 리듀서 (순수)"]
     lib --> libApiClient["api-client.ts<br/>app/api 호출 래퍼 · 에러 정규화"]
 
@@ -250,7 +250,19 @@ sequenceDiagram
 
     alt reason이 ambiguous (후보가 이미 있음)
         U->>C: 제시된 후보 중 하나를 바로 선택
-        C-->>U: 재검색 없이 확인된 책으로 이동
+        Note over C: 화면의 후보에는 proof 가 없다 (ADR-006)<br/>승격하려면 서버에서 다시 받아야 한다
+        C->>R: POST /api/books/resolve (그 후보의 제목)
+        R-->>C: ResolvedCandidate[] (proof 포함)
+        alt 고른 책의 isbn13 이 응답에 있다
+            C-->>U: 확인된 책으로 승격
+        else 없다
+            C-->>U: 승격하지 않고 재검색 화면에 남긴다<br/>1번 후보로 때우지 않는다
+        end
+    else reason이 lookup_failed (조회 자체가 실패)
+        U->>C: "다시 시도" — 제목을 고치지 않는다
+        Note over C: 데이터가 없는 것이 아니라 못 물어본 것이다 (ADR-005)<br/>고칠 제목이 없으므로 같은 질의를 그대로 다시 보낸다
+        C->>R: POST /api/books/resolve (그 책의 rawText 그대로)
+        Note over C,R: 이 책 한 권만 다시 묻는다 — 사진 전체 재분석이 아니다
     end
 
     U->>C: 미확인 책의 제목을 수정
@@ -279,9 +291,13 @@ sequenceDiagram
 
 ## 상태 관리
 
-서버 상태가 없으므로 전역 상태 라이브러리를 쓰지 않는다. 세션 전체를 `app/page.tsx`의 `useReducer` 하나로 관리하고, 각 화면 컴포넌트는 상태와 dispatch를 props로 받는다. 리듀서 자체는 `lib/session.ts`에 **순수 함수로** 두어 jsdom 없이 검증한다 — 화면 전이 규칙은 React와 무관한 규칙이고, React 안에 있으면 렌더링을 통해서만 검사할 수 있다. 새로고침하면 상태가 사라지며, 이는 무상태 설계의 의도된 결과다 (ADR-003).
+서버 상태가 없으므로 전역 상태 라이브러리를 쓰지 않는다. 세션 전체를 `app/page.tsx`의 `useReducer` 하나로 관리한다. **화면 컴포넌트에는 `dispatch`를 넘기지 않는다** — 필요한 값만 개별 props로 주고 사용자의 행동은 콜백으로 받는다. `dispatch`를 넘기면 화면이 액션 이름을 알게 되어 상태 전이를 직접 하게 되고, 그 순간 전이 규칙이 리듀서 밖으로 새어 나가 순수 함수 테스트가 규칙 전부를 검사하지 못한다. 리듀서 자체는 `lib/session.ts`에 **순수 함수로** 두어 jsdom 없이 검증한다 — 화면 전이 규칙은 React와 무관한 규칙이고, React 안에 있으면 렌더링을 통해서만 검사할 수 있다. 새로고침하면 상태가 사라지며, 이는 무상태 설계의 의도된 결과다 (ADR-003).
 
 **`/api/books/resolve`로 승격된 책은 `photoIndex`를 갖지 않는다.** 그 책은 사진이 아니라 사용자의 재검색에서 왔기 때문이다. 승격된 책을 확인된 책으로 다루되(알라딘 대조와 `proof`를 똑같이 통과했다) 사진 출처가 있는 척하지 않는다 — 없는 값을 `0`으로 지어내는 것은 출처를 위조하는 것이다. 요청 경계를 넘을 때 쓰는 `bookReferenceSchema`·`recommendBookSchema`가 `photoIndex`를 요구하지 않으므로 계약을 바꿀 이유도 없다.
+
+그래서 세션의 책 목록은 **출처를 태그로 달고 다닌다** — `photo`(사진에서 왔다)와 `resolved`(재검색에서 왔다)의 판별 유니온이다. **두 출처는 화면에서 한 목록으로 선다.** 확인된 책 섹션 하나에 합계 권수를 세고, 카드만 출처에 따라 고른다. 목록을 둘로 가르면 사용자는 자기 책장이 왜 두 덩어리인지 알 수 없고, 그 구분은 사용자에게 아무 의미가 없다 — **출처는 목록을 가를 이유가 아니라 카드가 무엇을 그릴 수 있는지를 정하는 값이다.** `resolved` 책에는 `claudeNote`가 없으므로 그 카드는 생성 텍스트 블록을 아예 그리지 않는다(ADR-002 — 없는 해석을 빈 문자열로 지어내지 않는다).
+
+**재시도에는 간격이 있다** (FR-010). 분석 재시도는 세션당 3회이고 간격은 0초 → 5초 → 15초로 벌어진다. 대기는 화면의 로컬 상태이지 세션 상태가 아니다 — 리듀서는 "몇 번 눌렀는가"를 알지만 "지금 몇 초 남았는가"는 알 필요가 없고, 그것을 리듀서에 넣으면 순수 함수가 타이머를 갖게 된다. 대기 중에는 재시도 버튼을 **감추지 않고 비활성**한다. 타이머는 처음부터 다시 시작(`RESTARTED`)과 언마운트에서 반드시 정리한다 — 정리하지 않으면 사용자가 버리기로 한 세션에 유령 분석 호출이 나가고 모델 비용이 든다.
 
 다만 **의도된 소실과 사고로 인한 소실은 다르다.** 분석에 30초를 기다린 사용자가 실수로 새로고침하면 사진과 결과가 함께 사라지고 API 비용도 다시 든다. `reviewing` 이후 상태에서는 `beforeunload` 경고를 걸어 이탈을 한 번 되묻는다. 선택한 원본 파일은 `error` 상태에서도 메모리에 유지해, 재시도가 재업로드를 요구하지 않게 한다.
 

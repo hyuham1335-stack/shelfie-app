@@ -418,7 +418,31 @@ def _pipeline_checks(root):
     #    은 절 제목 일치만 본다 — 템플릿이 시범 보이는 **형태**가 파서를 속이면
     #    첫 계약이 그 형태를 베끼고, 유닛이 부풀어 스코프 선택이 조용히 빗나간다.
     out.append(_check_template_parses(root, config))
+
+    # ⑤ 리뷰어. 05 가 없는 스킬을 부르면 라운드마다 헛돌고, 그것을 알게 되는
+    #    시점은 리뷰어를 이미 띄운 뒤다. **기동 전에, 무료로 잡는다** (§E10).
+    out.append(_check_reviewers(root, config))
     return out
+
+
+def _check_reviewers(root, config):
+    import review as review_mod
+
+    name = "리뷰어 스킬"
+    if not config:
+        return {"name": name, "status": "SKIP", "message": "config 를 읽지 못했다"}
+    reviewers = config.get("reviewers") or []
+    if not reviewers:
+        return {"name": name, "status": "WARN",
+                "message": "config.reviewers 가 비어 있다 — 05 의 "
+                           "review05.status 가 늘 failed 이고 등급이 "
+                           "PASS_WITH_GAPS 로 떨어진다. 통과가 아니라 미수행이다."}
+    errors = review_mod.validate(root, config)
+    if errors:
+        return {"name": name, "status": "FAIL", "message": "; ".join(errors[:3])}
+    return {"name": name, "status": "PASS",
+            "message": "%d종 — %s" % (len(reviewers),
+                                     ", ".join(r["code"] for r in reviewers))}
 
 
 def _check_template_parses(root, config):
@@ -583,6 +607,7 @@ def lint_phases(root, phases_dir=None):
 
     _lint_cycle(loaded, add)
     _lint_taxonomy(root, add)
+    _lint_reviewers(root, config, add)
     return out
 
 
@@ -667,25 +692,37 @@ def _lint_cycle(loaded, add):
 
 
 def _lint_taxonomy(root, add):
-    """01~04 에는 소비자가 없다. **없는 검사를 통과로 세지 않는다.**"""
+    """원장 어휘 · 승격 목적지 · 리뷰 범위 셋의 단일 출처를 검사한다.
+
+    이 파일이 손상되면 셋이 **동시에** 조용히 틀어진다 — 05 가 검토 제외 목록을
+    잘못 만들고, 승격이 갈 곳을 잃고, 원장이 어휘 밖의 코드를 받는다.
+    """
+    import ledger
+
     path = Path(root) / TAXONOMY_REL
     if not path.exists():
         add(TAXONOMY_REL, "taxonomy", "SKIP",
-            "원장이 아직 없다 — 05~08 이 생기면 검사한다")
+            "원장이 아직 없다 — `ledger.seed(root)` 가 시드를 만든다")
         return
     try:
         data = harness._read_json(path)
     except (OSError, ValueError) as exc:
         add(TAXONOMY_REL, "taxonomy", "FAIL", "읽지 못했다: %s" % exc)
         return
-    codes = [c.get("code") for c in data.get("codes") or []]
-    if len(codes) != len(set(codes)):
-        add(TAXONOMY_REL, "taxonomy", "FAIL", "코드가 유니크하지 않다")
-    bad = [c for c in data.get("codes") or []
-           if c.get("enforceable") not in ("lint", "check", "prose", None)]
-    if bad:
-        add(TAXONOMY_REL, "taxonomy", "FAIL",
-            "enforceable 어휘 밖: %s" % ", ".join(c.get("code") for c in bad))
+    for err in ledger.validate_taxonomy(data):
+        add(TAXONOMY_REL, "taxonomy", "FAIL", err)
+
+
+def _lint_reviewers(root, config, add):
+    """스킬 파일 실재 · 작성자 격리 · code 유니크.
+
+    **기동 전에, 무료로 잡는다** (§E10 첫 행). 05 가 없는 스킬을 부르면 라운드
+    마다 헛돌고, 그것을 알게 되는 시점은 리뷰어를 이미 띄운 뒤다.
+    """
+    import review as review_mod
+
+    for err in review_mod.validate(root, config):
+        add(harness.CONFIG_REL, "reviewers", "FAIL", err)
 
 
 def cmd_lint_phases(root, args):
@@ -764,6 +801,8 @@ def run_next(root, run_id=None):
 
     st.set_phase_status(s, pid, "running")
     st.append_event(paths, "phase_enter", cmd="next", phase=pid)
+    if pid == "05-code-review":
+        _plan_05_review(root, paths, s, ctx)
     st.save(paths, s)
 
     render, next_cmd = render_packet(root, phase, ctx, s, checks)
@@ -773,6 +812,77 @@ def run_next(root, run_id=None):
                         "requires_report": checks,
                         "prescan": _prescan(root, loaded, ctx, s) if pid == "01-plan" else []},
                        render, next_cmd)
+
+
+def _plan_05_review(root, paths, s, ctx):
+    """05 진입 시 **누가 리뷰할지를 여기서 확정한다.**
+
+    모델이 정하지 않는다. `when` glob 이 정하는 결정론이고, 모델이 정하면 같은
+    diff 가 런마다 다른 리뷰를 받아 `escaped_05` 를 세는 것이 의미를 잃는다.
+    """
+    import precheck as pc
+    import review as review_mod
+
+    changed = pc.changed_files(root)
+    profile = (s.get("profile") or {}).get("name") or "normal"
+    routed = review_mod.route(ctx["config"], changed, profile)
+    node = s.setdefault("phases", {}).setdefault("05-code-review", {})
+    node["planned"] = [r["code"] for r in routed["reviewers"]]
+    node["routing"] = routed
+    node["mode"] = review_mod.mode(ctx["config"],
+                                   pc._changed_lines(root, changed))
+    return node
+
+
+def _excluded_render(root):
+    """"검토 제외" 목록. **기계 강제 규칙이 늘수록 05 가 자동으로 싸지고 좁아진다** —
+
+    규칙 승격의 복리가 실현되는 지점이고, 그래서 이 목록이 길어지는 것이 좋은
+    신호다. 드롭한 건수는 `dropped_by_enforcement` 로 센다 (조용히 버리지 않는다).
+    """
+    import ledger
+
+    codes = ledger.excluded_categories(root)
+    if not codes:
+        return ("## 검토 제외\n\n(없다) — 아직 기계로 막는 규칙이 없다. "
+                "원장이 쌓이면 여기가 채워지고 05 가 그만큼 좁아진다.")
+    return ("## 검토 제외 — 리뷰어 프롬프트에 그대로 싣는다\n\n"
+            "아래는 이미 기계가 막는다. 리뷰어가 지적하면 `record` 가 드롭하되 "
+            "`dropped_by_enforcement` 로 **센다** — 조용히 버리지 않는다.\n\n"
+            + "\n".join("- `%s`" % c for c in codes))
+
+
+def _review_render(s):
+    """봉투가 **누가 리뷰하는지와 무엇이 빠졌는지**를 말한다."""
+    node = (s.get("phases") or {}).get("05-code-review") or {}
+    routed = node.get("routing")
+    if not routed:
+        return ""
+    lines = ["## 리뷰어 라우팅 (결정론 — 네가 정하지 않는다)", ""]
+    if not routed["reviewers"]:
+        lines += ["**매칭된 리뷰어가 0개다.** 그러면 `review05.status` 는 "
+                  "`failed` 이고 등급이 `PASS_WITH_GAPS` 로 떨어진다 — "
+                  "아무도 안 부른 것은 통과가 아니라 미수행이다.",
+                  "",
+                  "변경 경로가 `config.reviewers[].when` 어디에도 걸리지 않았다. "
+                  "라우팅 결함일 수 있으니 보고서에 남긴다."]
+        return "\n".join(lines)
+    lines.append("모드: **%s** (%s)"
+                 % (node.get("mode"),
+                    "단일 에이전트가 체크리스트를 순차 적용한다"
+                    if node.get("mode") == "merged" else
+                    "관점별 병렬 fan-out"))
+    lines.append("")
+    for r in routed["reviewers"]:
+        lines.append("- `%s` → `.claude/skills/%s/SKILL.md` (매칭 %d개)"
+                     % (r["code"], r["skill"], r.get("matched_count", 0)))
+    if routed.get("dropped"):
+        lines += ["", "**상한으로 빠진 리뷰어**: %s — 조용히 사라진 것이 아니라 "
+                      "예산 때문이고, 보고서에 남는다."
+                  % ", ".join("`%s`" % d["code"] for d in routed["dropped"])]
+    lines += ["", "프롬프트 첫 줄은 **스킬 파일을 읽으라는 지시**다. "
+                  "본문을 복사하지 마라 — 리뷰어 수만큼 고정비가 곱해진다."]
+    return "\n".join(lines)
 
 
 def render_packet(root, phase, ctx, s, checks=None):
@@ -794,6 +904,11 @@ def render_packet(root, phase, ctx, s, checks=None):
     xv = _cross_verify_render(ctx["config"], s, front)
     if xv:
         parts.append(xv)
+    if pid == "05-code-review":
+        rv_render = _review_render(s)
+        if rv_render:
+            parts.append(rv_render)
+        parts.append(_excluded_render(root))
     warns = [c for c in (checks or []) if c.get("warn")]
     if warns:
         parts.append("## 경고\n\n" + "\n".join("- %s" % c["message"] for c in warns))
@@ -1366,8 +1481,193 @@ def _sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+# ------------------------------------------------------- 05 제출 처리
+
+def _record_05(root, paths, s, phase_item, ctx, file, reviewer, round_):
+    """리뷰어 제출 하나를 받는다. 전원이 모이면 병합하고 원장에 쌓는다.
+
+    **findings 개수와 "리뷰가 수행됐는가"를 분리한다** — 리뷰어가 전부 실패해도
+    findings 는 0건이고, 그 0을 "지적이 없다"로 읽으면 아무도 보지 않은 코드가
+    통과한다 (§E1).
+    """
+    import ledger
+    import review as review_mod
+
+    if not reviewer:
+        return st.envelope(
+            "record", False, 2, s, {},
+            "05 는 리뷰어별 제출이다. `--reviewer <code>` 를 붙인다.\n"
+            "계약 대조는 `contract-trace` 가 따로 낸다.", None)
+    if not file.exists():
+        return st.envelope("record", False, 3, s, {}, "산출물이 없다: %s" % file, None)
+    try:
+        payload = harness._read_json(file)
+    except (OSError, ValueError) as exc:
+        return st.envelope("record", False, 8, s, {},
+                           "JSON 을 읽지 못했다: %s" % exc, None)
+
+    raw_path = file.with_name(file.name.replace(".json", ".raw.md"))
+    if not raw_path.exists():
+        return st.envelope("record", False, 8, s, {},
+                           "리뷰어 원문이 없다: %s — 구조화 JSON 만으로는 "
+                           "quote 를 검증할 수 없다" % raw_path.name, None)
+    raw_text = raw_path.read_text(encoding="utf-8")
+
+    node = s.setdefault("phases", {}).setdefault("05-code-review", {})
+    if not (node.get("trace") or {}):
+        return st.envelope(
+            "record", False, 3, s, {},
+            "계약 대조가 먼저다. `contract-trace --run-id %s` 를 돌린다 — "
+            "무료이고, 여기서 잡히는 것을 리뷰어에게 보내면 리뷰어가 같은 것을 "
+            "다시 발견하는 데 돈을 쓴다." % s["run_id"],
+            "python scripts/pipeline/cli.py contract-trace --run-id %s" % s["run_id"])
+
+    round_ = round_ or 1
+    rounds = node.setdefault("rounds", {})
+    prev_open = _previous_open(rounds, round_, reviewer)
+    excluded = ledger.excluded_categories(root)
+    got = review_mod.check(root, ctx["config"], payload, raw_text, prev_open,
+                           excluded=excluded)
+    if not got["ok"]:
+        st.append_event(paths, "check_fail", cmd="record", phase="05-code-review",
+                        reviewer=reviewer, errors=len(got["errors"]))
+        st.save(paths, s)
+        return st.envelope("record", False, 8, s, {"errors": got["errors"]},
+                           "## 리뷰 제출 거부\n\n" +
+                           "\n".join("- %s" % e for e in got["errors"]),
+                           _same_command(s, "05"))
+
+    slot = rounds.setdefault(str(round_), {})
+    slot[reviewer] = {"mode": payload.get("mode") or "primary",
+                      "keys": got["keys"], "blocking": got["blocking"],
+                      "closed": got["closed"], "findings": got["findings"],
+                      "dropped_by_enforcement": got["dropped_by_enforcement"],
+                      "truncated": got["truncated"],
+                      "need_more_context": payload.get("need_more_context") or []}
+    st.save(paths, s)
+
+    planned = node.get("planned") or [reviewer]
+    missing = [c for c in planned if c not in slot]
+    if missing:
+        return st.envelope("record", True, 0, s,
+                           {"round": round_, "waiting_for": missing},
+                           "`%s` 리뷰를 받았다. 아직 `%s` 가 남았다."
+                           % (reviewer, "`, `".join(missing)),
+                           "python scripts/pipeline/cli.py record --phase 05 "
+                           "--file <리뷰 json> --reviewer %s --round %d --run-id %s"
+                           % (missing[0], round_, s["run_id"]))
+
+    return _judge_05(root, paths, s, phase_item, ctx, round_, slot, node)
+
+
+def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
+    """전원이 모였다. 병합 → 원장 → 수리 판정."""
+    import ledger
+    import review as review_mod
+
+    subs = [dict(v, reviewer=code) for code, v in slot.items()]
+    merged = review_mod.merge(subs)
+
+    planned = node.get("planned") or sorted(slot)
+    ok_count = sum(1 for v in slot.values() if v.get("keys") is not None)
+    status = review_mod.status(len(planned), ok_count)
+
+    s["review05"] = {
+        "status": status,
+        "reviewers_planned": len(planned),
+        "reviewers_ok": ok_count,
+        "mode": node.get("mode") or "fanout",
+        "major": sum(1 for f in merged if f.get("severity") in verdict.BLOCKING),
+        "need_more_context": [n for v in slot.values()
+                              for n in (v.get("need_more_context") or [])],
+        "dropped_by_enforcement": sum(v.get("dropped_by_enforcement") or 0
+                                      for v in slot.values()),
+        "truncated": any(v.get("truncated") for v in slot.values()),
+    }
+    if status != "ok":
+        s["grade"] = st.GRADES[1]
+        gap = "review05:%s" % status
+        if gap not in s.setdefault("gaps", []):
+            s["gaps"].append(gap)
+
+    # 원장에 쌓는다. **계약 대조의 결과도 함께 쌓는다** — 기계가 찾은 것과
+    # 리뷰어가 찾은 것이 같은 눈금 위에 있어야 승격 집계가 성립한다.
+    rows = [dict(f, resolution=f.get("resolution") or "deferred",
+                 source=f.get("source") or "reviewer")
+            for f in merged]
+    trace_path = paths.run_dir / "05_trace.json"
+    if trace_path.exists() and not node.get("trace_ledgered"):
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        rows += [dict(f, resolution=f.get("resolution") or "deferred")
+                 for f in trace.get("findings") or []]
+        node["trace_ledgered"] = True
+    try:
+        ledger.append(root, s["run_id"], "05", rows)
+    except ValueError as exc:
+        # 어휘 밖의 category 는 조용히 버리지 않는다. 제출을 되돌린다.
+        return st.envelope("record", False, 8, s, {"error": str(exc)},
+                           "## 원장 어휘 밖\n\n%s" % exc, _same_command(s, "05"))
+
+    staged = ledger.stage_promotions(root)
+    (paths.run_dir / "05_promo_staged.json").write_text(
+        json.dumps(staged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    (paths.run_dir / "05_review.json").write_text(
+        json.dumps({"round": round_, "review05": s["review05"],
+                    "findings": merged}, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    st.save(paths, s)
+
+    blocking = [f for f in merged if f.get("severity") in verdict.BLOCKING]
+    if blocking:
+        loop = phase_item["front"].get("loop") or {}
+        used, _max, exceeded = st.counter_inc(s, "review_repair",
+                                              loop.get("max") or 2)
+        if exceeded:
+            st.escalate(paths, s,
+                        "05 의 Critical/Major %d건이 %d회 안에 해소되지 않았다"
+                        % (len(blocking), loop.get("max") or 2),
+                        ["계약 결함을 먼저 의심한다 — 같은 지적이 반복되면 "
+                         "코드가 아니라 계약이 틀렸을 수 있다",
+                         "이대로 진행한다(미해결 지적을 안고 간다)", "중단한다"],
+                        phase="05-code-review")
+            return _escalation_envelope("record", paths, s)
+        st.save(paths, s)
+        return st.envelope(
+            "record", False, 4, s,
+            {"blocking": len(blocking), "findings": blocking,
+             "review05": s["review05"]},
+            _review_repair_render(blocking, used + 1),
+            "python scripts/pipeline/cli.py gate --phase 04 --stage scoped "
+            "--run-id %s" % s["run_id"])
+
+    return _advance_to_next(root, paths, s, phase_item, ctx)
+
+
+def _review_repair_render(blocking, round_no):
+    lines = ["## 수리가 필요하다 (%d회차)" % round_no, "",
+             "Critical/Major %d건. **Minor 는 고치지 않는다** — 원장에 쌓이고 "
+             "보고서로 간다." % len(blocking), ""]
+    for f in blocking:
+        raised = (" *(2인 합치로 %s → %s)*"
+                  % (f["severity_raised_from"], f["severity"])
+                  if f.get("severity_raised_from") else "")
+        lines.append("- **%s** → `%s`: %s%s"
+                     % (f.get("severity"), f.get("target_role"),
+                        f.get("title"), raised))
+    contract_defect = [f for f in blocking
+                       if f.get("category") == "CONTRACT_DEFECT"]
+    if contract_defect:
+        lines += ["", "**`CONTRACT_DEFECT` 가 있다.** 이것은 수리 대상이 아니라 "
+                      "에스컬레이션이다 — 계약은 메인 단독 소유다."]
+    lines += ["", "고친 뒤 `gate --phase 04 --stage scoped` 로 재게이트하고, "
+                  "델타 재리뷰 1명을 돌린 다음 다시 제출한다.",
+              "**수리하면 지문이 바뀌어 영수증이 낡는다** — 06 이 자동으로 막으므로 "
+              "재게이트를 잊을 수 없다."]
+    return "\n".join(lines)
+
+
 _RECORD_HANDLERS = {"01-plan": _record_01, "02-cross-verify": _record_02,
-                    "03-implement": _record_03}
+                    "03-implement": _record_03, "05-code-review": _record_05}
 
 
 # ------------------------------------------------------------------------ gate
@@ -1582,6 +1882,148 @@ def _write_json(path, data):
 
 
 # ---------------------------------------------- advance · retry · escalate · resume
+
+# -------------------------------------------------------------------- precheck
+
+def cmd_precheck(root, args):
+    return st.emit(run_precheck(root, args.scope, args.run_id))
+
+
+def run_precheck(root, scope="pr", run_id=None):
+    """05 진입과 06 에서 각 1회, 그리고 **재개마다** 다시 돈다 (§E13).
+
+    런 없이도 돈다 — 무료 검사의 요점이 "시작하기 전에 안다"이므로 런을
+    만들어야만 부를 수 있으면 그 값이 절반이 된다.
+    """
+    import precheck as pc
+
+    root = Path(root)
+    paths, s = st.load(root, run_id)
+    got = pc.run(root, scope=scope)
+
+    if s is not None:
+        s.setdefault("phases", {}).setdefault("05-code-review", {})["precheck"] = {
+            "exit": got["exit"], "classification": got["classification"],
+            "budget": got["budget"]}
+        st.append_event(paths, "check_fail" if got["exit"] else "stage_done",
+                        cmd="precheck", phase="05-code-review",
+                        exit=got["exit"])
+        st.save(paths, s)
+
+    return st.envelope("precheck", got["exit"] == 0, got["exit"], s, got,
+                       _precheck_render(got),
+                       None if got["exit"] else
+                       ("python scripts/pipeline/cli.py contract-trace"
+                        + (" --run-id %s" % s["run_id"] if s else "")))
+
+
+def _precheck_render(got):
+    if got["exit"] == 0:
+        return ("`precheck` 통과. 파일 %d · 줄 %d 로 예산 안이고 브랜치·base·"
+                "인프라가 전부 맞다.\n계약 대조로 넘어간다."
+                % (got["budget"]["files"], got["budget"]["lines"]))
+    bad = [c for c in got["checks"] if not c["ok"]]
+    head = ("## 인프라 선행 조건이 안 맞는다" if got["exit"] == 10 else
+            "## 사람의 판단이 필요하다")
+    lines = [head, ""]
+    lines += ["- **%s**: %s" % (c["name"], c["message"]) for c in bad]
+    if got["exit"] == 10:
+        lines += ["", "**카운터를 소모하지 않았다.** 코드가 아니라 환경의 문제이므로 "
+                      "재시도 예산을 태우지 않는다.",
+                  "이대로 회귀를 돌리면 전부 빨간불이 되고, 그것을 코드 문제로 "
+                  "읽게 된다."]
+    else:
+        lines += ["", "**자동으로 쪼개거나 리베이스하지 않는다.** 무엇을 할지 "
+                      "정하고 다시 부른다."]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------- contract-trace
+
+def cmd_contract_trace(root, args):
+    return st.emit(run_contract_trace(root, args.contract, args.run_id))
+
+
+def run_contract_trace(root, contract=None, run_id=None):
+    """계약 ↔ 코드 대조. **05 에서 두 번째로 도는 무료 검사다.**
+
+    모델을 한 번도 부르지 않는다. 여기서 잡히는 것을 리뷰어에게 보내면 리뷰어가
+    같은 것을 다시 발견하는 데 돈을 쓴다.
+
+    exit 8 은 **Critical 이 남았다**는 뜻이고 "리뷰어를 부르기 전에 고쳐라"다.
+    """
+    import trace_contract
+
+    root = Path(root)
+    paths, s = st.load(root, run_id)
+    if s is None:
+        return st.envelope("contract-trace", False, 3, None, {}, "런이 없다.", None)
+    if s.get("escalated"):
+        return _escalation_envelope("contract-trace", paths, s)
+
+    config, adapter, _cal = adapters.load(root)
+    ctx = build_context(root, paths, s)
+    no_contract = (s.get("contract") or {}).get("mode") == "no_contract"
+    rel = contract or resolve("${run.contract_file}", ctx)
+    full = root / rel
+    if not no_contract and not full.exists():
+        return st.envelope("contract-trace", False, 3, s, {"contract": str(rel)},
+                           "계약 파일이 없다: %s — `no_contract` 런이면 "
+                           "state.contract.mode 가 그렇게 적혀 있어야 한다" % rel,
+                           None)
+
+    got = trace_contract.run(root, config, adapter,
+                             None if no_contract else full,
+                             no_contract=no_contract)
+    out = paths.run_dir / "05_trace.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(got, indent=2, ensure_ascii=False) + "\n",
+                   encoding="utf-8")
+
+    s.setdefault("phases", {}).setdefault("05-code-review", {})["trace"] = {
+        "status": got["status"], "blocking": got.get("blocking", 0),
+        "skipped": got.get("skipped") or []}
+    st.append_event(paths, "submit_received", cmd="contract-trace",
+                    phase="05-code-review", file=paths.rel(out))
+    st.save(paths, s)
+
+    exit_ = 8 if got.get("blocking") else 0
+    return st.envelope("contract-trace", exit_ == 0, exit_, s, got,
+                       _trace_render(got, rel),
+                       None if exit_ else
+                       "python scripts/pipeline/cli.py record --phase 05 "
+                       "--file <리뷰 json> --reviewer <code> --run-id %s" % s["run_id"])
+
+
+def _trace_render(got, rel):
+    if got["status"] == "skipped_no_contract":
+        return ("## 계약 대조 — 수행하지 않았다\n\n"
+                "`no_contract` 런이다. 계약이 없으므로 대조할 것이 없고, "
+                "**이것은 통과가 아니라 미수행이다** — 보고서가 그렇게 적는다.")
+    lines = ["## 계약 대조 (`%s`)" % rel, ""]
+    lines.append("검사 %d종 수행 · 지적 %d건"
+                 % (len(got["checks_run"]), len(got["findings"])))
+    if got.get("skipped"):
+        lines.append("**건너뛴 검사**: %s — 통과가 아니라 미수행이다. "
+                     "어댑터에 `entrypoint_resolver` 가 없다."
+                     % ", ".join("`%s`" % s for s in got["skipped"]))
+    warn_only = [f for f in got["findings"] if f.get("resolution") == "warn_only"]
+    if warn_only:
+        lines.append("`warn_only` %d건 — baseline 기간이라 지적으로 올리지 않는다. "
+                     "보고서에는 남는다." % len(warn_only))
+    blocking = [f for f in got["findings"]
+                if f["severity"] == "critical" and f.get("resolution") != "warn_only"]
+    if blocking:
+        lines += ["", "### 리뷰어를 부르기 전에 고칠 것 (Critical %d건)" % len(blocking)]
+        for f in blocking:
+            lines.append("- `%s` → **%s**: %s"
+                         % (f["code"], f["target_role"], f["title"]))
+        lines += ["", "고친 뒤 `gate --phase 04 --stage scoped` 로 재게이트하고 "
+                      "이 명령을 다시 친다."]
+    else:
+        lines += ["", "Critical 0건. 리뷰어 라우팅으로 넘어간다."]
+    return "\n".join(lines)
+
 
 def cmd_advance(root, args):
     return st.emit(run_advance(root, args.phase, args.run_id))
@@ -1805,6 +2247,15 @@ def build_parser():
     sp.add_argument("--replay", dest="replay", default=None)
     sp.add_argument("--run-id", dest="run_id", default=None)
 
+    sp = sub.add_parser("precheck", add_help=False)
+    sp.add_argument("--scope", dest="scope", default="pr",
+                    choices=["pr"])
+    sp.add_argument("--run-id", dest="run_id", default=None)
+
+    sp = sub.add_parser("contract-trace", add_help=False)
+    sp.add_argument("--contract", dest="contract", default=None)
+    sp.add_argument("--run-id", dest="run_id", default=None)
+
     sp = sub.add_parser("record", add_help=False)
     sp.add_argument("--phase", dest="phase", required=True)
     sp.add_argument("--file", dest="file", required=True)
@@ -1827,6 +2278,8 @@ HANDLERS = {
     "resume": cmd_resume,
     "status": cmd_status,
     "lint-phases": cmd_lint_phases,
+    "contract-trace": cmd_contract_trace,
+    "precheck": cmd_precheck,
 }
 
 

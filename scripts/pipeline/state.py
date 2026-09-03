@@ -41,7 +41,7 @@ RUNS_REL = "_workspace/runs"
 #               그것이 정확한 서술이다.
 PHASE_STATUS = ("running", "passed", "failed", "escalated", "skipped")
 
-COUNTERS = ("round", "repair", "xverify_return")
+COUNTERS = ("round", "repair", "xverify_return", "review_repair")
 
 # 닫힌 어휘다. budget.model_calls 가 next/record 이벤트 수에서 유도되는
 # 근사치이므로, 어휘가 열려 있으면 그 근사치의 정의가 조용히 흔들린다.

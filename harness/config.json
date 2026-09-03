@@ -70,6 +70,31 @@
     "fallback": "plan-reviewer"
   },
 
+  "_reviewers_note": "when glob 이 변경 파일에 걸리면 그 리뷰어가 켜진다. 우선순위는 배열 순서다. skill 은 .claude/skills/{skill}/SKILL.md 를 가리키고, doctor 와 lint-phases 가 기동 전에 실재를 확인한다. roles[].agent 와 겹치면 거부한다 — 작성자가 자기 코드를 리뷰한 것은 독립 관측이 아니다.",
+  "reviewers": [
+    {"code": "data", "skill": "data-layer-reviewer", "priority": 1,
+     "when": ["src/lib/schemas.ts", "src/services/**"]},
+    {"code": "sec", "skill": "security-reviewer", "priority": 2,
+     "when": ["src/app/api/**", "src/lib/env.ts", "src/lib/proof.ts",
+              ".env*", "next.config.*"]},
+    {"code": "arch", "skill": "architecture-reviewer", "priority": 3,
+     "when": ["src/app/**", "src/components/**", "src/lib/**",
+              "src/services/**", "src/types/**"]},
+    {"code": "test", "skill": "test-quality-reviewer", "priority": 4,
+     "when": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/*.golden.test.ts"]},
+    {"code": "docs", "skill": "docs-reviewer", "priority": 5,
+     "when": ["docs/**", "*.md"], "only_when_no_source_change": true}
+  ],
+
+  "_review_note": "아래 여섯 값은 전부 **미검증 상속값**이다 — 원본 명세에서 왔고 이 리포에서 재본 적이 없다. 첫 세 런의 원장이 이 값을 검사한다: 절단이 한 번도 안 걸리면 findings_max 가 헐거운 것이고, 승격이 매 런 발생하면 baseline_runs 가 짧은 것이다. 값을 재기 전에 굳히지 않는다.",
+  "review": {
+    "merge_below_diff_lines": 150,
+    "profile_caps": {"small": 1, "normal": 3},
+    "findings_max": 50,
+    "inline_max": {"lines": 600, "bytes": 25000},
+    "baseline_runs": 3
+  },
+
   "budget": {"files_max": 10, "lines_max": 400, "model_calls_max": 24},
   "profile": {"small_max_units": 3, "inv_skip_below_chars": 400},
   "background_threshold_sec": 180,

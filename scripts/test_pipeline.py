@@ -1847,3 +1847,136 @@ class TestPromotionGate:
         adapter = harness._read_json(ROOT / "harness/adapters/nextjs-ts.json")
         assert adapter["verified"] is False
         assert "_unconsumed" in adapter["attribution"]
+
+
+# ---------------------------------------------------------------------------
+# J  세션 원장 — SessionEnd 훅이 사실만 쌓는다
+# ---------------------------------------------------------------------------
+
+import io  # noqa: E402
+import time  # noqa: E402
+
+import session_log as sl  # noqa: E402
+
+HOOK_IN = {"session_id": "sid-1", "transcript_path": "", "cwd": ".",
+           "hook_event_name": "SessionEnd", "reason": "clear"}
+
+
+def _ledger_lines(root):
+    p = Path(root) / sl.LEDGER_REL
+    if not p.exists():
+        return []
+    return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+class TestSessionLedger:
+    """훅은 셸이라 해석을 못 쓴다. **그래서 사실만 쌓는다.**
+
+    거짓말할 수 없는 부분(커밋·변경량·런 등급)과 해석을 갈라 두지 않으면
+    검증하는 사람 없이 문서에 추측이 쌓인다.
+    """
+
+    def test_broken_stdin_still_exits_zero_and_records_error(self, repo):
+        """세션 종료를 막으면 안 되고, 실패가 조용히 사라져도 안 된다."""
+        code = sl.main(["--from-hook"], stdin=io.StringIO("이건 JSON 이 아니다"),
+                       root=repo)
+        assert code == 0
+        rows = _ledger_lines(repo)
+        assert len(rows) == 1
+        assert "error" in rows[0]
+        # 실패와 "기록할 게 없음"이 같은 모양이면 안 된다.
+        assert "commits" not in rows[0]
+
+    def test_missing_transcript_omits_session_key(self, repo):
+        """0 으로 채우면 '안 쟀다'가 사라진다 (ADR-H007)."""
+        rec = sl.collect(repo, HOOK_IN, transcript_root=repo / "없는곳")
+        assert "session" not in rec
+
+    def test_transcript_metrics_are_carried_when_present(self, repo, tmp_path):
+        troot = tmp_path / "projects"
+        (troot / "slug").mkdir(parents=True)
+        (troot / "slug" / "sid-1.jsonl").write_text(
+            json.dumps({"message": {"content": [
+                {"type": "tool_result", "content": "가나다"}]}},
+                ensure_ascii=False) + "\n", encoding="utf-8")
+        rec = sl.collect(repo, HOOK_IN, transcript_root=troot)
+        assert rec["session"]["tool_result_chars"] == 3
+
+    def test_hangul_commit_subject_survives(self, repo):
+        (repo / "src" / "lib" / "새파일.ts").write_text("export const a = 1\n",
+                                                     encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "feat(파이프라인): 한글 제목 — em dash 포함")
+        sl.main(["--from-hook"], stdin=io.StringIO(json.dumps(HOOK_IN)), root=repo)
+        row = _ledger_lines(repo)[0]
+        subjects = [c["subject"] for c in row["commits"]]
+        assert any("한글 제목 — em dash" in s for s in subjects)
+
+    def test_no_workspace_runs_omits_run_key(self, repo):
+        """파이프라인을 안 돌린 세션이 정상 경로다."""
+        rec = sl.collect(repo, HOOK_IN)
+        assert "run" not in rec
+
+    def test_latest_run_is_carried(self, repo):
+        d = repo / "_workspace" / "runs" / "20260903-1220-d9c0"
+        d.mkdir(parents=True)
+        (d / "state.json").write_text(json.dumps({
+            "run_id": "20260903-1220-d9c0", "grade": "PASS_WITH_GAPS",
+            "gaps": ["stage_absent:e2e"], "counters": {"round": {"used": 3}},
+            "budget": {"model_calls": {"total": 10}},
+            "tests": {"ran": 1333}}, ensure_ascii=False), encoding="utf-8")
+        rec = sl.collect(repo, HOOK_IN)
+        assert rec["run"]["grade"] == "PASS_WITH_GAPS"
+        assert rec["run"]["rounds"] == 3
+        assert rec["run"]["model_calls"] == 10
+        assert rec["tests"]["app"] == 1333
+
+    def test_append_only_keeps_existing_lines(self, repo):
+        sl.append(repo, {"ts": "t1", "marker": "먼저"})
+        sl.main(["--from-hook"], stdin=io.StringIO(json.dumps(HOOK_IN)), root=repo)
+        rows = _ledger_lines(repo)
+        assert len(rows) == 2
+        assert rows[0]["marker"] == "먼저"      # 기존 줄은 손대지 않는다
+
+    def test_finds_root_from_subdirectory(self, repo, monkeypatch):
+        """훅은 하위 디렉터리에서 돌 수 있다."""
+        sub = repo / "src" / "lib"
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+        assert sl.find_root({"cwd": str(sub)}, env={}) == repo
+
+    def test_env_project_dir_wins_over_cwd(self, repo, tmp_path):
+        other = tmp_path / "다른곳"
+        other.mkdir()
+        found = sl.find_root({"cwd": str(other)},
+                             env={"CLAUDE_PROJECT_DIR": str(repo)})
+        assert found == repo
+
+    def test_uncommitted_change_is_counted(self, repo):
+        (repo / "src" / "lib" / "match.ts").write_text("export const b = 2\n",
+                                                       encoding="utf-8")
+        rec = sl.collect(repo, HOOK_IN)
+        assert rec["uncommitted"]["files"] >= 1
+        assert rec["dirty"] is True
+
+    def test_untracked_file_is_not_lost(self, repo):
+        """`git diff` 는 새 파일을 안 센다 — 세면 안 되는 게 아니라 못 보는 것이다.
+
+        새 파일이 안 세지면 "파일 3개 바뀜"이 사실보다 작게 적히고, 그 숫자를
+        나중에 근거로 쓴다.
+        """
+        (repo / "src" / "lib" / "새것.ts").write_text("export const c = 3\n",
+                                                    encoding="utf-8")
+        rec = sl.collect(repo, HOOK_IN)
+        assert rec["uncommitted"]["untracked"] == 1
+
+    def test_gitignored_file_is_not_counted_as_untracked(self, repo):
+        (repo / "_workspace").mkdir()
+        (repo / "_workspace" / "임시.txt").write_text("x", encoding="utf-8")
+        rec = sl.collect(repo, HOOK_IN)
+        assert "uncommitted" not in rec
+
+    def test_collect_fits_the_sessionend_budget(self, repo):
+        """SessionEnd 예산을 넘기면 기록이 통째로 버려진다."""
+        started = time.time()
+        sl.collect(repo, HOOK_IN)
+        assert time.time() - started < 2.0

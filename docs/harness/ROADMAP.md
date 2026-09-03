@@ -8,7 +8,7 @@
 
 ---
 
-## 1. 현재 상태 (3단계 착수 — 8페이즈 명세 이식 완료)
+## 1. 현재 상태 (3단계 — 워킹 스켈레톤 01~04 동작)
 
 | 계층 | 내용 |
 |------|------|
@@ -17,7 +17,10 @@
 | 워크플로우 | `.claude/skills/harness/SKILL.md` (doctor → step 설계 → `phases/` 생성 → 실행), `.claude/skills/review/SKILL.md` |
 | **계약 계층** | `harness/config.json` · `config.schema.json` · `adapters/{nextjs-ts,_template}.json` + `adapter.schema.json` · `profiles/nextjs-ts/` · `templates/contract.md` |
 | 실행기 | `scripts/harness.py` — `init` · `doctor` · `calibrate`. `scripts/execute.py` — 순차 step 실행기, CLI는 `{task-name}` + `--push`. `scripts/backfill_reads.py` — 지난 런의 끌어온 양 사후 집계(빠진 칸만 채운다) |
-| 테스트 | `scripts/test_harness.py` (70건) · `scripts/test_execute.py` (176건) |
+| **파이프라인 코어** | `scripts/pipeline/{cli,state,adapters,attribution,verdict,contract,gate}.py` — 8페이즈 실행기. `doctor` · `init --feature` · `next` · `record` · `gate` · `advance` · `retry` · `escalate` · `resume` · `status` · `lint-phases`. **stdout 은 언제나 단일 JSON 봉투 하나** |
+| **페이즈 파일** | `harness/phases/{01-plan,02-cross-verify,03-implement,04-gate}.md` — `---` 로 감싼 JSON 프론트매터. 05~08 은 아직 없고 `lint-phases` 가 그 전이를 `FUTURE` 로 드러낸다 |
+| **진입점** | `.claude/commands/feature.md` (`/feature`) · `.claude/agents/{impl-writer,test-writer}.md` (각 3KB 이하 — 소유 경계·제출 형식·금지만 담고 규약은 담지 않는다) |
+| 테스트 | `scripts/test_harness.py` (70건) · `scripts/test_execute.py` (176건) · `scripts/test_pipeline.py` (132건) |
 | 파일럿 | `phases/lib-core/` · `phases/services-core/` · `phases/routes-core/` · `phases/app-core/` 각 5 step · `phases/app-shell/` 6 step · `phases/contract-wiring/` · `phases/forced-path/` · `phases/could-have/` 각 5 step · `phases/golden-set/` · `phases/deploy-ready/` 각 4 step — **열 런 50 step 완주.** 기록은 [PILOT-LOG.md](PILOT-LOG.md) |
 | **파이프라인 명세** | `docs/harness/pipeline/team-spec.md` — **8페이즈의 정본.** 리포 밖 로컬 플랜 3개를 스택 비종속으로 이식했다. 페이즈 01~08 · 종료 코드표 · 실패 3분류·매트릭스 · 수렴 판정 · 귀속 규칙 · 승격 임계값 · §E1~E14 · §P1~P6 |
 | 실측 | `harness/calibration.json` — `calibrate` 산출. 정책 5종이 여기서 유도된다 |
@@ -57,7 +60,7 @@ flowchart LR
     S0["0단계 · 완료<br/>docs 골격 + 순차 실행기"]
     S1["1단계 · 완료<br/>config · adapter · init · doctor"]
     S2["2단계 · 런 #1~#10 완주<br/>Shelfie lib/ · services/ · app/api/ · components/ · app/ · 계약 배선 · 강행 경로 · Could-have · 골든 세트 · 배포 가능 상태"]
-    S3["3단계 · 착수<br/>명세 이식 완료 · 스켈레톤 대기"]
+    S3["3단계 · 진행<br/>명세 이식 · 스켈레톤 01~04 동작"]
 
     S0 --> G1{"doctor가 깨진 config를<br/>전부 거부하는가"}
     G1 -->|통과| S1
@@ -76,7 +79,7 @@ flowchart LR
 | **0. 골격** | docs 골격 + 단순 순차 실행기 | — | 완료 |
 | **1. 계약 계층** | `harness/config.json` · `config.schema.json` · 어댑터 스키마 · `init` · `doctor` | 일부러 깨뜨린 config(역할 소유 겹침 · 계약 절 불일치 · 화이트리스트 밖 러너 등)를 `doctor`가 **전부 거부**하고, 정상 config는 통과 | **완료** — `scripts/test_harness.py`의 거부 8종 + 오탐 검사가 게이트다 |
 | **2. 파일럿** | 첫 실제 프로젝트(**Shelfie**)를 **현재 실행기로** 완주. 부족한 지점을 기록 | 스테이지별 실측 시간 · 테스트 개수 · 린트 위반 기준선 확보 | **런 #1~#10 완주** — `lib/`·`services/`·`app/api/`·`components/`·`app/`·계약 배선·강행 경로·Could-have·골든 세트·배포 가능 상태 50 step, 50/50 무재시도. 실측은 [PILOT-LOG.md](PILOT-LOG.md) |
-| **3. 8페이즈 승격** | 파일럿 실측을 근거로 목표 파이프라인을 이식 | **다섯 줄로 재정의됐다 ([ADR-H013](DECISIONS.md))** — ① 코어에 고유명사 grep **0건** ② 어댑터만 바꿔 스택 교체 시 코어 무변경 ③ 언어 교체 시 코어 무변경 ④ 그린필드 테스트 0개가 `PASS_WITH_GAPS` ⑤ 파일럿 기능 1건을 01~04로 **실물 완주** | **명세 이식 완료** · 스켈레톤 ~4일 |
+| **3. 8페이즈 승격** | 파일럿 실측을 근거로 목표 파이프라인을 이식 | **다섯 줄로 재정의됐다 ([ADR-H013](DECISIONS.md))** — ① 코어에 고유명사 grep **0건** ② 어댑터만 바꿔 스택 교체 시 코어 무변경 ③ 언어 교체 시 코어 무변경 ④ 그린필드 테스트 0개가 `PASS_WITH_GAPS` ⑤ 파일럿 기능 1건을 01~04로 **실물 완주** | **①②③④ 통과 · ⑤ 절반** — 스켈레톤이 01~04 를 돌리고 04-gate 가 실물 체인을 완주했다. 01~03 의 모델 호출 완주가 남았다 |
 
 **1단계에서 실제로 회수한 것**: 첫 `doctor` 실행이 어댑터의 `compile` 스테이지가 참조하는 `npm run typecheck`가 `package.json`에 없다는 것을 잡았다([team-spec §P5](pipeline/team-spec.md)). 게이트가 없었다면 첫 파일럿 런이 25분 돌고 나서 드러났을 불일치다.
 
@@ -94,7 +97,11 @@ flowchart LR
 
 **런 #9·#10이 더한 것**: `golden-set` 4 step이 TRD 8번의 골든 인식률 하네스를 만들어 배포 전 체크리스트가 **부를 수 있는 명령**을 갖게 했고(세트는 여전히 비어 있다 — 아래 30번), `deploy-ready` 4 step이 **배포 가능 상태**를 겨눴다 — 이월 부채를 닫고 문서에만 있던 계약(TRD 6.6 접근성 다섯 줄 · TR-011의 Edge Cases 12행)을 회귀로 잠갔다. 테스트 1183 → **1311건**. **런 #10의 step 2·3은 구현을 한 줄도 고치지 않았다** — 계약을 코드가 이미 지키고 있었고 없던 것은 지켜지는지 검사하는 장치였으며, 검사가 실제로 무는지를 컴포넌트를 일부러 망가뜨려 확인하고 되돌렸다. 이 런의 값어치는 **비용의 축을 처음으로 갈라 본 것**이다: 청구액을 `cache_read`·`cache_write`·`output_tokens` 셋으로 회귀하니(13 step) 유도 단가가 공표 단가와 거의 일치했고($0.492 · $10.77 · $24.58), **접두부는 매 turn 재독(단가 0.49)이 아니라 캐시 쓰기(단가 10.77, 22배)로 물린다**는 것이 드러났다. 접두부 열 런 최대(169,316자)인 step 2가 재독은 오히려 적고(turn 31 vs 47) 쓰기·산출량에서 비쌌다. 상관은 `cache_read` **0.960** · 출력 토큰 0.920 · turn 0.818 · 끌어온 양 0.803 · **접두부 총량 0.662**로, 28번이 찾던 예산의 자리는 접두부 총량이 아니라 **접두부 × turn**이고 그 옆에 아무도 세지 않던 **산출량**이 있다. [[ADR-H012]]의 두 줄 표도 같은 런 안에서 시험됐다(31번) — **호출 줄은 n=3으로 강해졌고**(두 표본 다 정확히 2 turn) **통독 줄의 "하한"은 반증됐다**(어림의 0.38배). 눈금 `크기 ÷ 1,700`의 분모는 파일 크기가 아니라 **세션이 읽는 방식**(`cat` 통독이냐 `grep`+`sed` 슬라이싱이냐)의 함수였다. 새 결함 **2건** — **M18**(`sources` 상한 검사가 그 step에 도달해서야 돌아 앞선 두 step을 897초 태운 뒤 막혔다. 사람이 사전 검사를 대신 돌려 재개했고 상한은 올리지 않았다) · **M19**(`next dev`가 가드레일 `CLAUDE.md`에 규칙 블록을 자동으로 덧붙였는데, 실행기가 가드레일의 **지문을 남기지 않아** 런 중 변경이 장부에 드러나지 않는다). 보고는 세 런 연속 0건이던 것이 **6건**으로 늘었고 그중 넷이 문서 ↔ 코드 어긋남이다 — 런 #8이 남긴 질문의 답이며, **회귀로 잠그지 않은 문서 계약은 지켜지지 않는다.** 상세는 [PILOT-LOG.md](PILOT-LOG.md).
 
-**어댑터 `verified` 승격은 아직 아니다.** 열 런 모두 `execute.py`(순차 실행기)로 돌았고 어댑터의 스테이지 체인·귀속 규칙을 소비하지 않았다. 다만 `calibrate`가 `test_report` 파싱과 스테이지 명령에 이어 런 #3에서 `scoped`의 `select` 문법까지 **실제로 소비했다** — 어댑터에서 검증된 부분이 계속 늘고 있고, 나머지(스테이지 체인·`attribution`)는 04-gate가 생겨야 검증된다.
+**3단계 스켈레톤이 더한 것 (2026-09-03)**: `04-gate`가 어댑터의 소비자가 됐고 **실물에서 체인을 완주했다** — `compile 2.38s → lint 7.29s → check 1.44s → scoped 2.83s → full 21.95s`, 등급 `PASS_WITH_GAPS`(스킵 3종이 gaps에 드러난다). **M16이 04-gate에서 처음 재현됐다**: 계약의 `lib/merge.ts · reduceBeforeLookup`이 테스트 **이름이 아니라 경로**(`src/lib/merge.test.ts` 등)로 조립됐고 `scoped/full = 12.9%`였다(런 #6~#8의 14.2~14.7%와 같은 자리).
+
+**그리고 소비자가 생기자마자 어댑터 결함이 하나 드러났다.** `attribution.compile_error_regex`가 `path(line,col)` 뒤의 `:` 를 소비하지 못해 **실제 타입 검사기 출력에 한 건도 매칭되지 않았다.** 한 글자(`:?`)를 더해 고쳤고, 이것이 `_unconsumed` 주석이 예고한 바로 그 자리다 — **선언만 있고 소비자가 없는 계층은 맞는지 알 수 없다.**
+
+**어댑터 `verified` 승격은 아직 아니다.** 스테이지 체인·선택자 조립·리포트 파싱은 실물에서 소비됐지만, **`attribution`의 실패 경로는 픽스처로만 검증됐다** — 실물 게이트가 통과해서 실패가 한 건도 없었다. 픽스처는 내가 만든 출력이지 진짜 러너 출력이 아니다. 그리고 01~03은 아직 모델 호출로 완주하지 않았다. 아래 14번을 본다.
 
 각 단계의 게이트를 통과하지 못하면 **다음 단계로 넘어가지 않는다.** "일단 넣고 나중에 고친다"는 이 로드맵이 막으려는 실패 자체다.
 
@@ -148,7 +155,7 @@ TRD의 기술 스택이 비어 있으면 어댑터를 고를 수 없고, PRD의 
 
 12. ~~**3단계 게이트 재검토**~~ — **해결 (2026-09-02, [ADR-H013](DECISIONS.md)). 답은 "대상을 구한다"가 아니라 "게이트를 바꾼다"였다.** 게이트의 목적은 *두 리포를 돌리는 것*이 아니라 **"코어에 스택이 박히지 않았음"을 보이는 것**이고, 대상 리포가 없다는 이유로 아홉 런째 열어 두는 것은 통과할 수 없는 조건으로 3단계를 영구히 막는 것과 같았다. 새 게이트는 다섯 줄이고 넷은 정적 검사(고유명사 grep · 어댑터 교체 · 언어 교체 · 그린필드 `PASS_WITH_GAPS`), 다섯째가 **실물 완주**다. **무엇을 잃는지 함께 적었다** — 어댑터의 `attribution` 정규식이 진짜 다른 스택 출력에 맞는지는 replay 픽스처로 검증되지 않으므로 두 번째 어댑터는 `verified: false`로 남는다. 원 서술을 남겨 둔다: "두 스택에서 완주"의 두 번째 스택(`gradle-java`) 대상 리포가 이 머신에 없다
 13. ~~**`scoped` 스테이지의 존재 이유를 다시 묻는다**~~ — **답이 뒤집혔다 (M16).** 런 #3·#4·#5는 전부 `-t <테스트 이름>`으로 쟀는데 그 문법은 파일 수집을 줄이지 않는다. **경로 필터로 재니 `full` 대비 14.6%(4.56s vs 31.23s) — 6.8배 싸다.** `loop_stage`는 이 스택에서 **성립한다.** 8페이즈의 `tests_from`은 계약 심볼을 테스트 이름이 아니라 파일 경로로 조립해야 한다 ([ADR-H009](DECISIONS.md)). 아래는 뒤집히기 전의 서술이다 — **런 #4가 답했다.** `full` 대비 83%(런 #3) → **101%**(런 #4, jsdom 이후). vitest가 테스트를 건너뛰어도 파일 환경은 세우므로 선택 실행이 이익을 내지 못한다. **이 스택에서 `loop_stage`는 켜면 손해다** — 8페이즈 스테이지 체인은 이것을 스택별 판정으로 다뤄야 한다
-14. 어댑터 `verified: true` 승격은 **04-gate가 어댑터를 실제로 소비한 뒤**다
+14. 어댑터 `verified: true` 승격 — **절반이 닫혔다 (2026-09-03).** `04-gate` 가 스테이지 체인·`select` 문법·`test_report` 파싱·`entrypoint_resolver` 를 실물에서 소비했고, `compile_error_regex` 는 실물 출력에 맞춰 한 번 고쳤다. **남은 것은 `attribution` 의 실패 경로다** — 실물 게이트가 통과해서 실패가 한 건도 없었고, 픽스처는 진짜 러너 출력이 아니다. 실패를 실제로 내는 런 하나가 이 항목을 닫는다
 15. ~~**이월 보고 4건을 받을 step을 명시적으로 배치한다**~~ — **해결. 다만 답이 "배치"가 아니라 "라우팅"이었다.** 소유 경계를 실제로 판정해 보니 4건 중 `main_owned_paths`에 걸리는 것은 2건뿐이었고, `src/lib/**`는 **처음부터 워커 소유라 막힌 적이 없었다** — `main_owned_paths`의 `*.ts`는 `*`가 디렉토리를 넘지 않아 리포 루트만 잡는다. 세 런을 막은 것은 config가 아니라 **step 파일이 워커가 소유한 경로를 습관적으로 금지한 한 줄**이었고, 설계자가 소유를 눈으로 판정했기 때문이다. `SKILL.md`에 보고를 손댈 파일 기준으로 분류하는 절을 넣었고(메인 소유는 사람이 런 전에, 역할 소유는 step이 이름으로 지정받아, 걸치면 문서 먼저), **판정은 `glob_any`로 하라**를 함께 박았다. 메인 소유분 4건은 런 #5 시작 전에 처리했다
 16. ~~**M10 — `RUNNING` 파일**~~ — **해결** ([ADR-H006](DECISIONS.md)). 생존 판정을 pid가 아니라 heartbeat로 한다 — **Windows에서 `os.kill(pid, 0)`은 프로세스를 죽이므로** POSIX 관용구를 그대로 옮겼다면 M10 수정이 M10의 사고를 그대로 일으켰을 것이다. 수정 중 M11(`_finalize`의 `git add -A`가 작업 트리 전체를 쓸어담는다)이 드러나 부분 해결했다
 17. ~~**`MAX_RETRIES = 3`을 정리한다**~~ — **해결** ([ADR-H007](DECISIONS.md)). 지우지 않고 **바닥값으로 강등**했고 상한은 `calibrate`가 `attempts`에서 유도한다. 핵심은 값이 아니라 **재는 것이 없었다**는 발견이다 — 20 step은 재시도 횟수를 어디에도 남기지 않았고 "재시도 0회"는 콘솔을 지켜본 사람의 기억이었다. 지금 `calibration.json`은 "기록 0 step · 미기록 20 step"이라고 스스로 적는다. 이것이 **실행기가 유도된 정책을 소비하는 첫 사례**이기도 하다

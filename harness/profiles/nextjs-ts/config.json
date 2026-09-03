@@ -64,6 +64,12 @@
     ".env*"
   ],
 
+  "cross_verify": {
+    "required": false,
+    "primary": null,
+    "fallback": "plan-reviewer"
+  },
+
   "budget": {"files_max": 10, "lines_max": 400, "model_calls_max": 24},
   "profile": {"small_max_units": 3, "inv_skip_below_chars": 400},
   "background_threshold_sec": 180,

@@ -883,14 +883,37 @@ def _stage_argv(root, adapter, stage_name, select):
     return argv
 
 
-def _parse_junit(root, adapter):
-    """junit XML 에서 테스트 수를 읽는다. 없으면 (None, None, None, False)."""
-    if adapter["test_report"]["format"] != "junit-xml":
-        return None, None, None, False
-    paths = sorted(p for g in adapter["test_report"]["glob"] for p in root.glob(g))
+EMPTY_REPORT = {"ran": None, "suites": None, "failures": None,
+                "matched": False, "failed_units": []}
+
+
+def parse_test_report(root, adapter, report_root=None):
+    """어댑터가 선언한 형식으로 테스트 리포트를 읽어 정규화한다.
+
+    반환: {format, ran, suites, failures, matched, failed_units[]}
+
+    **왜 여기에 있는가**: 파이프라인 코어(scripts/pipeline/)에는 스택 고유명사가
+    한 건도 없어야 한다 (ADR-H013 의 3단계 게이트 1번). 형식 이름으로 분기하는
+    자리를 코어에 두면 그 이름이 코어에 박히므로, 분기를 계약 계층인 이 파일에
+    두고 코어는 이 함수만 부른다.
+
+    `matched: False` 는 "리포트를 못 찾았다"이지 "테스트가 0개다"가 아니다.
+    둘을 같은 칸에 넣으면 경로 설정 오류가 초록불로 통과한다 (team-spec P1).
+    """
+    fmt = (adapter.get("test_report") or {}).get("format")
+    if fmt == "junit-xml":
+        return dict(_junit_report(root, adapter, report_root), format=fmt)
+    return dict(EMPTY_REPORT, format=fmt, failed_units=[])
+
+
+def _junit_report(root, adapter, report_root=None):
+    """junit XML 하나 이상을 합산한다. 못 찾으면 matched: False."""
+    base = report_root or root
+    paths = sorted(p for g in adapter["test_report"]["glob"] for p in base.glob(g))
     if not paths:
-        return None, None, None, False
+        return dict(EMPTY_REPORT, failed_units=[])
     tests = failures = suites = 0
+    units = []
     for path in paths:
         try:
             tree = ElementTree.parse(str(path))
@@ -906,7 +929,41 @@ def _parse_junit(root, adapter):
             for suite in found:
                 tests += int(suite.get("tests") or 0)
                 failures += int(suite.get("failures") or 0)
-    return tests, suites, failures, True
+        units.extend(_junit_failed_units(root_el))
+    return {"ran": tests, "suites": suites, "failures": failures,
+            "matched": True, "failed_units": units}
+
+
+def _junit_failed_units(root_el):
+    """실패한 테스트를 {unit, file, ftype, message, detail} 로 뽑는다.
+
+    `detail` 은 스택 원문 그대로다 — 프레임 추출은 여기서 하지 않는다.
+    어느 토큰이 진짜 파일인지는 리포의 파일 목록을 알아야 판정할 수 있고,
+    그 판정은 귀속 계층의 몫이다.
+    """
+    out = []
+    for case in root_el.iter("testcase"):
+        for tag in ("failure", "error"):
+            for node in case.findall(tag):
+                out.append({
+                    "unit": case.get("name") or "",
+                    "file": case.get("classname") or "",
+                    "ftype": node.get("type") or "",
+                    "message": (node.get("message") or "").strip(),
+                    "detail": (node.text or "").strip(),
+                })
+    return out
+
+
+def _parse_junit(root, adapter):
+    """junit XML 에서 테스트 수를 읽는다. 없으면 (None, None, None, False).
+
+    calibrate 가 쓰는 좁은 시각. 정본은 parse_test_report 다.
+    """
+    if adapter["test_report"]["format"] != "junit-xml":
+        return None, None, None, False
+    r = _junit_report(root, adapter)
+    return r["ran"], r["suites"], r["failures"], r["matched"]
 
 
 def _collect_retry(root):

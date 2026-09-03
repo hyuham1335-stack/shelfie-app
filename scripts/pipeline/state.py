@@ -1,0 +1,479 @@
+#!/usr/bin/env python3
+"""런 디렉터리 · 상태 · 이벤트 · 워크트리 지문 · 봉투.
+
+이 파일은 `scripts/` 를 sys.path 에 넣으므로 `state` 라는 이름이 프로세스 전역
+최상위 모듈이 된다. 형제 넷(cli·state·adapters·attribution) 다 stdlib 과
+충돌하지 않는 것을 확인했다.
+
+**모든 함수가 root 를 첫 인자로 받는다.** 모듈 전역 ROOT 에 의존하면 테스트가
+실물 `_workspace/` 를 건드리게 된다.
+
+**못 잰 값은 키를 만들지 않는다** — 0 이나 null 로 채우면 "재지 않았다"와
+"0 이었다"가 같은 칸에 들어간다 (ADR-H007 이 attempts 에서 지난 자리).
+"""
+
+import hashlib
+import json
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))            # 형제 모듈
+sys.path.insert(0, str(_HERE.parent))     # scripts/harness.py · execute.py
+
+import harness  # noqa: E402  — 소유 판정·스키마 검증·doctor 의 단일 출처
+import execute  # noqa: E402  — RunningFile · TZ. import 만으로 UTF-8 출력이 강제된다
+
+RunningFile = execute.RunningFile
+TZ = execute.StepExecutor.TZ
+STAMP_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
+
+WORKSPACE_REL = "_workspace"
+RUNS_REL = "_workspace/runs"
+
+# 페이즈 상태 어휘. `pending` 과 `submitted` 는 **없다** —
+#   pending   : 키 부재가 그것이다. 미진입 칸을 미리 파 두면 "안 돌았다"와
+#               "돌았는데 결과가 없다"가 같은 칸에 들어간다.
+#   submitted : record 가 검증·판정·전이를 한 프로세스에서 하므로 중간 상태가
+#               관측될 필요가 없다. 프로세스가 중간에 죽으면 running 으로 남고
+#               그것이 정확한 서술이다.
+PHASE_STATUS = ("running", "passed", "failed", "escalated", "skipped")
+
+COUNTERS = ("round", "repair", "xverify_return")
+
+# 닫힌 어휘다. budget.model_calls 가 next/record 이벤트 수에서 유도되는
+# 근사치이므로, 어휘가 열려 있으면 그 근사치의 정의가 조용히 흔들린다.
+EVENT_KINDS = (
+    "run_created", "phase_enter", "phase_pass", "phase_fail", "phase_skip",
+    "submit_received", "check_fail",
+    "stage_start", "stage_done", "stage_skipped",
+    "attribution", "dispatch", "counter_inc",
+    "escalated", "resumed", "horizon",
+)
+
+GRADES = ("PASS", "PASS_WITH_GAPS", "INCOMPLETE")
+
+
+# ------------------------------------------------------------------ 타임스탬프
+
+def stamp(now=None):
+    """실행기와 같은 형식·같은 TZ.
+
+    RunningFile.age_sec 이 이 형식을 strptime 하므로 다른 형식을 쓰면
+    생존 판정이 조용히 깨진다.
+    """
+    return (now or datetime.now(TZ)).strftime(STAMP_FORMAT)
+
+
+# -------------------------------------------------------------------- 런 경로
+
+class RunPaths:
+    """런 디렉터리의 자리들. 경로 조립을 한 곳에 모은다."""
+
+    __slots__ = ("root", "run_id", "run_dir")
+
+    def __init__(self, root, run_id):
+        self.root = Path(root)
+        self.run_id = run_id
+        self.run_dir = self.root / RUNS_REL / run_id
+
+    @property
+    def state(self):
+        return self.run_dir / "state.json"
+
+    @property
+    def events(self):
+        return self.run_dir / "events.jsonl"
+
+    @property
+    def gates(self):
+        return self.run_dir / "gates"
+
+    @property
+    def escalation(self):
+        return self.run_dir / "ESCALATION.md"
+
+    @property
+    def running(self):
+        return self.run_dir / "RUNNING"
+
+    @property
+    def request(self):
+        return self.run_dir / "00_original_request.md"
+
+    def rel(self, path):
+        """런 디렉터리 기준 상대 경로 — 보고서에 절대 경로를 싣지 않는다."""
+        try:
+            return Path(path).resolve().relative_to(self.run_dir.resolve()).as_posix()
+        except ValueError:
+            return str(path)
+
+
+def new_run_id(now=None, seed_bytes=b""):
+    """`YYYYMMDD-HHMM-xxxx` — 18자.
+
+    경로 240자 상한(team-spec E4)이 있고 런 디렉터리 이름이 모든 산출물
+    경로의 접두부가 되므로 짧게 유지한다.
+    """
+    head = (now or datetime.now(TZ)).strftime("%Y%m%d-%H%M")
+    tail = hashlib.sha1(seed_bytes + str(os.getpid()).encode("utf-8")).hexdigest()[:4]
+    return "%s-%s" % (head, tail)
+
+
+def _write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+
+
+def create_run(root, slug, request_path, profile=None, seed_bytes=None, now=None):
+    """런을 만들고 요청을 **바이트 그대로** 동결한다.
+
+    원격도 커밋 이력도 브랜치도 건드리지 않는다 (team-spec P6).
+    """
+    root = Path(root)
+    raw = Path(request_path).read_bytes()
+    run_id = new_run_id(now, seed_bytes if seed_bytes is not None else raw)
+    paths = RunPaths(root, run_id)
+    paths.run_dir.mkdir(parents=True, exist_ok=True)
+    paths.gates.mkdir(exist_ok=True)
+    # read_bytes -> write_bytes. 개행 변환도 인코딩 변환도 없다 — 의도 동결이
+    # 결정론의 앵커이므로 여기서 한 바이트라도 달라지면 앵커가 앵커가 아니다.
+    paths.request.write_bytes(raw)
+
+    config = harness._read_json(root / harness.CONFIG_REL)
+    adapter, calibration = _adapter_and_calibration(root, config)
+
+    s = {
+        "schema": 1,
+        "run_id": run_id,
+        "slug": slug,
+        "created_at": stamp(now),
+        "updated_at": stamp(now),
+        "run_status": "active",
+        "request": {
+            "path": "00_original_request.md",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        },
+        "profile": _initial_profile(profile),
+        "adapter": {"id": config.get("adapter"),
+                    "verified": bool((adapter or {}).get("verified"))},
+        "calibration": _calibration_summary(calibration),
+        "vcs": {"baseline": _vcs_baseline(root)},
+        "phase": "01-plan",
+        "phases": {},
+        "counters": {},
+        "escalated": False,
+        "contract": {"mode": "contract", "present": False},
+        "cross_verify": {"mode": _cross_verify_mode(config)},
+        "grade": None,
+        "gaps": [],
+        "budget": {"model_calls": {"total": 0,
+                                   "max": (config.get("budget") or {}).get("model_calls_max"),
+                                   "approx": True, "by_phase": {}}},
+    }
+    save(paths, s)
+    append_event(paths, "run_created", cmd="init", phase="01-plan",
+                 slug=slug, request_bytes=len(raw))
+    return paths, s
+
+
+def _initial_profile(profile):
+    """01 시점에는 계약이 없어 판정할 수 없다.
+
+    판정 기준이 계약의 유닛·진입점 항목 수인데(team-spec 3.1) 그 계약은
+    03 이 쓴다. 미정일 때는 라운드 상한이 큰 쪽(normal)으로 간다 —
+    보수적으로 더 검토하는 쪽이다. 03 이 계약을 세어 확정한다.
+    """
+    if profile:
+        return {"name": profile, "source": "user"}
+    return {"name": "normal", "source": "default",
+            "reason": "계약이 아직 없어 판정할 수 없다"}
+
+
+def _adapter_and_calibration(root, config):
+    adapter = calibration = None
+    try:
+        adapter = harness._read_json(
+            root / harness.ADAPTER_DIR_REL / ("%s.json" % config["adapter"]))
+    except (OSError, ValueError, KeyError):
+        pass
+    cal_rel = config.get("calibration_file")
+    if cal_rel:
+        try:
+            calibration = harness._read_json(root / cal_rel)
+        except (OSError, ValueError):
+            pass
+    return adapter, calibration
+
+
+def _calibration_summary(calibration):
+    if calibration is None:
+        return {"present": False}
+    return {"present": True,
+            "partial": bool(calibration.get("partial")),
+            "adapter_verified": bool(calibration.get("adapter_verified"))}
+
+
+def _cross_verify_mode(config):
+    """primary 도 fallback 도 없으면 skipped — 02 가 등급에 드러낸다."""
+    cv = config.get("cross_verify") or {}
+    if cv.get("primary"):
+        return "primary"
+    if cv.get("fallback"):
+        return "fallback"
+    return "skipped"
+
+
+def _vcs_baseline(root):
+    head = harness._git(root, "rev-parse", "HEAD")
+    branch = harness._git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    porcelain = harness._git(root, "status", "--porcelain")
+    return {
+        "head": (head.stdout.strip() if head and head.returncode == 0 else None),
+        "branch": (branch.stdout.strip() if branch and branch.returncode == 0 else None),
+        "dirty": bool(porcelain.stdout.strip()) if porcelain and porcelain.returncode == 0 else None,
+    }
+
+
+# ------------------------------------------------------------------ 읽기·쓰기
+
+def latest_run_id(root, include_done=False):
+    """가장 최근의 미완료 런. 없으면 None."""
+    runs = Path(root) / RUNS_REL
+    if not runs.is_dir():
+        return None
+    best = None
+    for d in sorted((p for p in runs.iterdir() if p.is_dir()), reverse=True):
+        try:
+            s = json.loads((d / "state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if include_done or s.get("run_status") != "done":
+            return s.get("run_id") or d.name
+        best = best or (s.get("run_id") or d.name)
+    return best
+
+
+def load(root, run_id=None):
+    """(RunPaths, state). 런이 없으면 (None, None)."""
+    rid = run_id or latest_run_id(root)
+    if rid is None:
+        return None, None
+    paths = RunPaths(root, rid)
+    if not paths.state.exists():
+        return None, None
+    return paths, json.loads(paths.state.read_text(encoding="utf-8"))
+
+
+def save(paths, s, now=None):
+    s["updated_at"] = stamp(now)
+    _write_json(paths.state, s)
+
+
+# -------------------------------------------------------------------- 이벤트
+
+def append_event(paths, kind, cmd=None, phase=None, now=None, **data):
+    """한 줄 한 JSON. 어휘 밖 kind 는 즉시 예외다."""
+    if kind not in EVENT_KINDS:
+        raise ValueError(
+            "알 수 없는 이벤트 kind: %r — 어휘는 닫혀 있다 (%s)"
+            % (kind, ", ".join(EVENT_KINDS)))
+    paths.events.parent.mkdir(parents=True, exist_ok=True)
+    seq = 0
+    if paths.events.exists():
+        seq = sum(1 for line in
+                  paths.events.read_text(encoding="utf-8").splitlines() if line.strip())
+    rec = {"ts": stamp(now), "run_id": paths.run_id, "seq": seq + 1,
+           "cmd": cmd, "phase": phase, "kind": kind, "data": data}
+    with paths.events.open("a", encoding="utf-8", newline="") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+# --------------------------------------------------------------- 페이즈·카운터
+
+def phase_status(s, phase_id):
+    """키가 없으면 None — 미진입이다."""
+    return ((s.get("phases") or {}).get(phase_id) or {}).get("status")
+
+
+def set_phase_status(s, phase_id, status, now=None, **fields):
+    if status not in PHASE_STATUS:
+        raise ValueError(
+            "알 수 없는 페이즈 status: %r — 어휘는 %s 여섯이 아니라 다섯이다"
+            % (status, ", ".join(PHASE_STATUS)))
+    node = s.setdefault("phases", {}).setdefault(phase_id, {})
+    node["status"] = status
+    node["at"] = stamp(now)
+    node.update(fields)
+    return node
+
+
+def counter_inc(s, name, max_):
+    """(used, max, exceeded). 어휘 밖 카운터는 예외."""
+    if name not in COUNTERS:
+        raise ValueError("알 수 없는 카운터: %r (%s)" % (name, ", ".join(COUNTERS)))
+    node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": max_})
+    node["max"] = max_
+    node["used"] = node.get("used", 0) + 1
+    return node["used"], max_, node["used"] >= max_ if max_ is not None else False
+
+
+# ------------------------------------------------------------------ 지문
+
+def _scope_signature(config):
+    globs = []
+    for role in config.get("roles") or []:
+        owns, excludes = harness.effective_owner_globs(role)
+        globs.append({"owns": sorted(owns), "excludes": sorted(excludes)})
+    return hashlib.sha1(
+        json.dumps(globs, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _in_scope(config, path):
+    """소유 판정은 doctor 가 쓰는 함수 하나로만 한다."""
+    return any(harness.owns_file(role, path) for role in (config.get("roles") or []))
+
+
+def _porcelain_paths(root):
+    r = harness._git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    if r is None or r.returncode != 0:
+        return None
+    out, fields = [], [f for f in r.stdout.split("\0") if f]
+    i = 0
+    while i < len(fields):
+        entry = fields[i]
+        if len(entry) < 4:
+            i += 1
+            continue
+        code, path = entry[:2], entry[3:]
+        out.append(path)
+        if code[0] in ("R", "C") and i + 1 < len(fields):
+            out.append(fields[i + 1])
+            i += 1
+        i += 1
+    return out
+
+
+def fingerprint(root, config, now=None):
+    """커밋 상태 + 소유 범위 미커밋 변경의 **내용** 해시.
+
+    - HEAD 만 보면 워킹트리 수정을 놓치고, status 만 보면 변경이 커밋으로
+      옮겨간 것을 놓친다. 둘 다 본다.
+    - **mtime 을 쓰지 않는다.** 되돌렸다가 같은 내용으로 다시 쓴 파일은
+      지문이 같아야 한다 — 아니면 advance 가 늘 거부한다.
+    - scope_globs_sha1 은 roles[].owns 가 런 도중 바뀐 것을 잡는다 (M19 와 같은 규율).
+    """
+    root = Path(root)
+    head = harness._git(root, "rev-parse", "HEAD")
+    changed = _porcelain_paths(root)
+    if changed is None:
+        algo, inputs = "fs-sha256", []
+        for rel in harness.list_files(root):
+            if _in_scope(config, rel):
+                inputs.append("F\t%s\t%s" % (rel, _sha256_file(root / rel)))
+    else:
+        algo = "git-sha256"
+        head_val = head.stdout.strip() if head and head.returncode == 0 else "NO-HEAD"
+        inputs = ["HEAD\t%s" % head_val]
+        for rel in changed:
+            if _in_scope(config, rel):
+                inputs.append("W\t%s\t%s" % (rel, _sha256_file(root / rel)))
+
+    value = hashlib.sha256("\n".join(sorted(inputs)).encode("utf-8")).hexdigest()
+    return {"algo": algo, "value": value, "at": stamp(now),
+            "scope_globs_sha1": _scope_signature(config),
+            "file_count": len(inputs)}
+
+
+def _sha256_file(path):
+    """없는 파일(삭제됨)은 고정 표식 — 삭제도 변경이다."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return "ABSENT"
+
+
+def fingerprint_matches(saved, fresh):
+    """**algo 가 같을 때만 비교가 성립한다.**
+
+    다른 방법으로 잰 두 값이 우연히 같아 "안 바뀌었다"가 되는 것을 구조적으로
+    막는다. algo 가 다르면 보수적으로 stale 이다.
+    """
+    if not saved or not fresh:
+        return False
+    if saved.get("algo") != fresh.get("algo"):
+        return False
+    if saved.get("scope_globs_sha1") != fresh.get("scope_globs_sha1"):
+        return False
+    return saved.get("value") == fresh.get("value")
+
+
+# ------------------------------------------------------------------ 에스컬레이션
+
+def escalate(paths, s, reason, options=None, phase=None, now=None):
+    """상태를 잠그고 ESCALATION.md 를 남긴다.
+
+    대화에 묻히지 않게 파일로도 남기는 것이 요점이다 — 이후 모든 커맨드가
+    에스컬레이션 패킷만 내고 exit 10 이다.
+    """
+    s["escalated"] = True
+    s["run_status"] = "escalated"
+    s["escalation"] = {"reason": reason, "phase": phase, "at": stamp(now),
+                       "options": list(options or [])}
+    if phase:
+        set_phase_status(s, phase, "escalated", now=now)
+    lines = ["# 에스컬레이션 — %s" % (phase or s.get("phase") or "?"),
+             "", "run_id: `%s`" % paths.run_id, "", "## 왜 멈췄는가", "", reason, ""]
+    if options:
+        lines += ["## 선택지", ""]
+        lines += ["%d. %s" % (i + 1, o) for i, o in enumerate(options)]
+        lines += [""]
+    lines += ["## 재개", "",
+              "사람이 답을 정한 뒤:",
+              "",
+              "```",
+              "python scripts/pipeline/cli.py resume --ack --answer-file <경로>",
+              "```", ""]
+    paths.escalation.write_text("\n".join(lines), encoding="utf-8")
+    append_event(paths, "escalated", cmd="escalate", phase=phase, reason=reason)
+    save(paths, s, now=now)
+
+
+# ---------------------------------------------------------------------- 봉투
+
+def envelope(cmd, ok, exit_, state, data, render, next_command):
+    """stdout 에 나가는 단일 JSON.
+
+    모델이 읽는 것은 `render` 와 `next_command` 둘뿐이다. 나머지는 사람과
+    테스트를 위한 것이고, 모델이 다른 필드로 판단하기 시작하면 이 계약이 깨진다.
+    """
+    s = state or {}
+    return {
+        "schema": 1,
+        "ok": bool(ok),
+        "cmd": cmd,
+        "exit": exit_,
+        "run_id": s.get("run_id"),
+        "phase": s.get("phase"),
+        "state_summary": {
+            "counters": s.get("counters") or {},
+            "escalated": bool(s.get("escalated")),
+            "grade": s.get("grade"),
+            "gaps": s.get("gaps") or [],
+        },
+        "data": data or {},
+        "render": render or "",
+        "next_command": next_command,
+    }
+
+
+def emit(env):
+    """봉투 하나를 stdout 에 쓰고 종료 코드를 돌려준다."""
+    sys.stdout.write(json.dumps(env, ensure_ascii=False, indent=None) + "\n")
+    sys.stdout.flush()
+    return env["exit"]

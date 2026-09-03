@@ -117,6 +117,25 @@
         "inv_skip_below_chars": {"type": "integer", "minimum": 0}
       }
     },
+    "cross_verify": {
+      "description": "01-plan 의 외부 교차검증기. 부재하면 폴백 에이전트로 대체하고, 둘 다 불가하면 02 를 스킵하되 등급 PASS_WITH_GAPS 로 드러낸다 — 조용히 통과가 아니다.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "description": "참이면 primary·fallback 이 둘 다 불가할 때 진행하지 않는다.",
+          "type": "boolean"
+        },
+        "primary": {
+          "description": "외부 교차검증기의 도구 식별자. null 이면 폴백만 쓴다.",
+          "type": ["string", "null"]
+        },
+        "fallback": {
+          "description": "폴백으로 쓸 서브에이전트 이름. null 이면 폴백이 없다.",
+          "type": ["string", "null"]
+        }
+      }
+    },
     "background_threshold_sec": {
       "description": "전체 회귀를 백그라운드로 돌릴 기준. 상수가 아니라 calibration.full.sec 과 비교하는 임계값이다.",
       "type": "integer",

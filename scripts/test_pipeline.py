@@ -306,6 +306,105 @@ class TestCounters:
         assert st.counter_inc(s, "repair", 2) == (2, 2, True)
 
 
+class TestModelCallBudget:
+    """M22 — 선언만 되고 아무도 세지 않던 예산.
+
+    P1 은 서브에이전트 10회를 태우고도 봉투에 "0/24" 를 찍었다. 재지 않는 예산은
+    소진되지 않으므로 exit 5 가 영원히 발화하지 않는다.
+    """
+
+    def test_a_new_run_starts_at_zero_with_the_configured_max(self, repo, request_file):
+        _, s = st.create_run(repo, "demo", request_file)
+        mc = s["budget"]["model_calls"]
+        assert mc["total"] == 0
+        assert mc["max"] == 24
+        assert mc["approx"] is True
+
+    def test_bump_raises_total_and_the_phase_bucket_together(self, repo, request_file):
+        _, s = st.create_run(repo, "demo", request_file)
+        st.bump_model_calls(s, "01-plan")
+        st.bump_model_calls(s, "01-plan")
+        st.bump_model_calls(s, "03-implement", 2)
+        mc = s["budget"]["model_calls"]
+        assert mc["total"] == 4
+        assert mc["by_phase"] == {"01-plan": 2, "03-implement": 2}
+
+    def test_bump_reports_exhaustion_at_the_max(self, repo, request_file):
+        _, s = st.create_run(repo, "demo", request_file)
+        s["budget"]["model_calls"]["max"] = 2
+        assert st.bump_model_calls(s, "01-plan") == (1, 2, False)
+        assert st.bump_model_calls(s, "01-plan") == (2, 2, True)
+
+    def test_no_max_never_exhausts(self, repo, request_file):
+        """max 가 null 이면 예산이 없는 것이지 0 인 것이 아니다."""
+        _, s = st.create_run(repo, "demo", request_file)
+        s["budget"]["model_calls"]["max"] = None
+        assert st.bump_model_calls(s, "01-plan") == (1, None, False)
+
+    def test_reviewer_submission_increments_the_count(self, run01):
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _, after = st.load(repo, paths.run_id)
+        assert after["budget"]["model_calls"]["total"] == 1
+        assert after["budget"]["model_calls"]["by_phase"] == {"01-plan": 1}
+
+    def test_main_authored_output_does_not_count(self, run01):
+        """플랜 본문은 메인이 쓴다. 서브에이전트 호출이 아니다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _, after = st.load(repo, paths.run_id)
+        assert after["budget"]["model_calls"]["total"] == 0
+
+    def test_a_rejected_resubmission_still_counts(self, run01):
+        """exit 8 로 튕긴 제출도 모델을 한 번 태운 뒤다 — 과다 계수가 안전 방향이다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        bad = _review("plan", findings=[
+            {"id": "F-1", "severity": "major", "title": "x", "quote": "원문에 없다"}])
+        j = paths.run_dir / "01_review_r1.json"
+        j.write_text(json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "01_review_r1.raw.md").write_text(
+            _raw([{"severity": "major", "quote": "다른 말"}]),
+            encoding="utf-8")
+        assert cli.run_record(repo, phase="01", file=str(j),
+                              reviewer="plan", round_=1)["exit"] == 8
+        _submit_review(repo, paths, _review("plan"))
+        _, after = st.load(repo, paths.run_id)
+        assert after["budget"]["model_calls"]["total"] == 2
+
+    def test_exhausted_budget_stops_the_run_with_exit_5(self, run01):
+        """예산이 소진되면 다음 모델 호출을 요구하지 않고 멈춘다."""
+        repo, paths, s = run01
+        s["budget"]["model_calls"]["max"] = 2
+        st.save(paths, s)
+        _submit_plan(repo, paths, _plan())
+        assert _submit_review(repo, paths, _review("plan"))["exit"] == 0
+        env = _submit_review(repo, paths, _review("xv"))
+        assert env["exit"] == 5, env["render"]
+        assert "예산" in env["render"]
+
+    def test_an_exhausted_run_does_not_lose_the_submission(self, run01):
+        """exit 5 는 제출을 버리는 것이 아니라 다음 호출을 막는 것이다."""
+        repo, paths, s = run01
+        s["budget"]["model_calls"]["max"] = 2
+        st.save(paths, s)
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, _review("xv"))
+        _, after = st.load(repo, paths.run_id)
+        assert st.phase_status(after, "01-plan") == "passed"
+
+    def test_the_packet_header_names_what_it_counts(self, run01):
+        """'근사' 라고만 적으면 무엇이 근사인지 알 수 없다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        env = cli.run_next(repo, run_id=paths.run_id)
+        assert "모델 호출 1/24" in env["render"]
+        assert "제출 기준" in env["render"]
+
+
 # ---------------------------------------------------------------------------
 # B. lint-phases — 페이즈 파일이 깨진 채로 /feature 가 시작하지 않는다
 # ---------------------------------------------------------------------------

@@ -322,6 +322,23 @@ def counter_inc(s, name, max_):
     return node["used"], max_, node["used"] >= max_ if max_ is not None else False
 
 
+def bump_model_calls(s, phase, n=1):
+    """(total, max, exhausted). 예산이 없으면(max=None) 소진되지 않는다.
+
+    **과다 계수가 안전 방향이다.** 이 숫자는 제출 수에서 유도한 근사치이고
+    (`approx: true`), 재제출은 그 전에 모델을 한 번 태운 뒤이므로 함께 센다.
+    일찍 걸리는 것이 영원히 안 걸리는 것보다 낫다 — 재지 않는 예산은 소진되지
+    않아 exit 5 가 발화하지 못한다.
+    """
+    node = s.setdefault("budget", {}).setdefault(
+        "model_calls", {"total": 0, "max": None, "approx": True, "by_phase": {}})
+    node["total"] = node.get("total", 0) + n
+    by = node.setdefault("by_phase", {})
+    by[phase] = by.get(phase, 0) + n
+    max_ = node.get("max")
+    return node["total"], max_, (max_ is not None and node["total"] >= max_)
+
+
 # ------------------------------------------------------------------ 지문
 
 def _scope_signature(config):

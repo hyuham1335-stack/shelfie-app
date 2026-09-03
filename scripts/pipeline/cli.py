@@ -778,7 +778,8 @@ def render_header(config, s):
         bits.append("카운터: %s" % used)
     budget = (s.get("budget") or {}).get("model_calls") or {}
     if budget.get("max"):
-        bits.append("모델 호출 %s/%s(근사)" % (budget.get("total"), budget["max"]))
+        bits.append("모델 호출 %s/%s(제출 기준 근사)"
+                    % (budget.get("total"), budget["max"]))
     out = " · ".join(bits)
     while len(out) > 300 and len(bits) > 1:
         bits.pop()
@@ -880,7 +881,46 @@ def run_record(root, phase, file, reviewer=None, round_=None, run_id=None):
     if handler is None:
         return st.envelope("record", False, 2, s, {"phase": pid},
                            "`%s` 의 제출 처리는 아직 구현되지 않았다." % pid, None)
-    return handler(root, paths, s, phase_item, ctx, Path(file), reviewer, round_)
+    exhausted = _count_model_calls(paths, s, phase_item, ctx, reviewer)
+    env = handler(root, paths, s, phase_item, ctx, Path(file), reviewer, round_)
+    return _budget_stop(paths, env) if exhausted else env
+
+
+def _count_model_calls(paths, s, phase_item, ctx, reviewer):
+    """이 제출이 태운 모델 호출을 센다. 반환: 예산이 소진됐는가.
+
+    메인이 쓴 산출물(`reviewer` 가 없는 제출)은 서브에이전트 호출이 아니므로
+    세지 않는다. 역할 병렬 페이즈는 제출 하나가 역할 수만큼의 호출을 뜻한다.
+    """
+    front = phase_item["front"]
+    if reviewer:
+        n = 1
+    elif (front.get("allow") or {}).get("parallel"):
+        n = len(ctx["config"].get("roles") or [])
+    else:
+        n = 0
+    if not n:
+        return False
+    _total, _max, exhausted = st.bump_model_calls(s, front["id"], n)
+    st.save(paths, s)
+    return exhausted
+
+
+def _budget_stop(paths, env):
+    """제출은 살리고 다음 호출만 막는다 — exit 5 는 소진이지 거부가 아니다."""
+    if not env.get("ok") or env.get("exit") not in (0, 11):
+        return env
+    env["ok"] = False
+    env["exit"] = 5
+    env["next_command"] = None
+    env["render"] = (
+        "## 모델 호출 예산이 소진됐다\n\n"
+        "이번 제출은 기록됐다. 다음 호출을 요구하지 않고 여기서 멈춘다.\n"
+        "계속하려면 사람이 `budget.model_calls_max` 를 올리거나 범위를 줄인다.\n\n"
+        "직전 지시문:\n\n%s" % env.get("render", ""))
+    st.append_event(paths, "check_fail", cmd="record", exit=5,
+                    reason="model_call_budget")
+    return env
 
 
 def _normalize_phase(phase, loaded):

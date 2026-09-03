@@ -1086,6 +1086,64 @@ class TestReviewConvergence:
         assert env["exit"] == 0, env["render"]
 
 
+class TestCrossVerifySource:
+    """폴백이 섞이면 1라운드 수렴이 막힌다 — 이 리포의 모든 런이 그랬다."""
+
+    def _set_primary(self, repo, value):
+        p = repo / "harness" / "config.json"
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+        cfg["cross_verify"]["primary"] = value
+        p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def test_the_shipped_config_declares_a_primary(self, repo):
+        """MCP 가 실제로 붙어 있는데 config 가 null 이면 폴백만 돈다."""
+        cfg = json.loads(
+            (ROOT / "harness" / "config.json").read_text(encoding="utf-8"))
+        assert cfg["cross_verify"]["primary"], "primary 가 비어 있다"
+
+    def test_primary_makes_the_mode_primary(self, repo, request_file):
+        self._set_primary(repo, "some-external-reviewer")
+        _, s = st.create_run(repo, "demo", request_file)
+        assert s["cross_verify"]["mode"] == "primary"
+
+    def test_no_primary_falls_back(self, repo, request_file):
+        self._set_primary(repo, None)
+        _, s = st.create_run(repo, "demo", request_file)
+        assert s["cross_verify"]["mode"] == "fallback"
+
+    def test_the_packet_names_the_cross_verifier(self, repo, phases, request_file):
+        """페이즈 파일 본문은 플레이스홀더가 풀리지 않는다 — 봉투가 알려줘야 한다."""
+        self._set_primary(repo, "some-external-reviewer")
+        paths, s = st.create_run(repo, "demo", request_file)
+        env = cli.run_next(repo, run_id=paths.run_id)
+        assert "## 교차검증" in env["render"]
+        assert "some-external-reviewer" in env["render"]
+
+    def test_the_packet_says_when_it_is_only_a_fallback(self, repo, phases,
+                                                        request_file):
+        """폴백이라는 사실이 드러나야 1라운드 수렴이 막히는 이유를 안다."""
+        self._set_primary(repo, None)
+        paths, s = st.create_run(repo, "demo", request_file)
+        env = cli.run_next(repo, run_id=paths.run_id)
+        assert "폴백" in env["render"]
+        assert "plan-reviewer" in env["render"]
+
+    def test_no_stack_proper_noun_reaches_the_core(self):
+        """도구 이름은 config 에만 둔다 — 코어는 읽기만 한다."""
+        name = json.loads(
+            (ROOT / "harness" / "config.json").read_text(encoding="utf-8")
+        )["cross_verify"]["primary"]
+        for rel in ("scripts/pipeline/cli.py", "harness/phases/01-plan.md",
+                    "harness/phases/02-cross-verify.md"):
+            assert name not in (ROOT / rel).read_text(encoding="utf-8"), rel
+
+    def test_doctor_flags_a_missing_fallback_agent_file(self, repo, phases):
+        """P1 직전에 plan-reviewer.md 부재를 doctor 가 못 잡았다."""
+        (repo / ".claude" / "agents" / "plan-reviewer.md").unlink(missing_ok=True)
+        bad = [c for c in cli._pipeline_checks(repo) if c["status"] == "FAIL"]
+        assert any("plan-reviewer" in (c.get("message") or "") for c in bad), bad
+
+
 class TestInitAndNext:
 
     def test_init_creates_a_run_and_next_renders_the_first_packet(self, repo, phases):

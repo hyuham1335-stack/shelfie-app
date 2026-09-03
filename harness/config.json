@@ -66,7 +66,7 @@
 
   "cross_verify": {
     "required": false,
-    "primary": null,
+    "primary": "mcp__plan-review__review_plan",
     "fallback": "plan-reviewer"
   },
 

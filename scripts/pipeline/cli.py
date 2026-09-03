@@ -382,15 +382,22 @@ def _pipeline_checks(root):
         config = harness._read_json(root / harness.CONFIG_REL)
     except (OSError, ValueError):
         config = {}
-    missing = [r_["agent"] for r_ in (config.get("roles") or [])
-               if not (root / ".claude" / "agents" / ("%s.md" % r_.get("agent"))).exists()]
+    #    폴백 교차검증기도 같이 본다 — config 가 이름을 부르는데 파일이 없으면
+    #    01 이 라운드마다 그 에이전트를 못 찾는다. 계약 계층은 roles 만 훑으므로
+    #    이 구멍은 여기서만 닫힌다.
+    wanted = [(r_.get("agent"), "03-implement 가 호출할 대상이다")
+              for r_ in (config.get("roles") or [])]
+    fb = (config.get("cross_verify") or {}).get("fallback")
+    if fb:
+        wanted.append((fb, "01 의 폴백 교차검증기다"))
+    missing = ["%s (%s)" % (a, why) for a, why in wanted
+               if not (root / ".claude" / "agents" / ("%s.md" % a)).exists()]
     if not config.get("roles"):
         out.append({"name": "역할 에이전트 정의", "status": "SKIP",
                     "message": "config 를 읽지 못했다"})
     elif missing:
         out.append({"name": "역할 에이전트 정의", "status": "FAIL",
-                    "message": "없다: %s — 03-implement 가 호출할 대상이다"
-                               % ", ".join(".claude/agents/%s.md" % m for m in missing)})
+                    "message": "없다: %s" % ", ".join(missing)})
     else:
         out.append({"name": "역할 에이전트 정의", "status": "PASS"})
 
@@ -784,6 +791,9 @@ def render_packet(root, phase, ctx, s, checks=None):
     if produces:
         parts.append("## 쓸 파일\n\n" +
                      "\n".join("- `%s`" % p for p in produces))
+    xv = _cross_verify_render(ctx["config"], s, front)
+    if xv:
+        parts.append(xv)
     warns = [c for c in (checks or []) if c.get("warn")]
     if warns:
         parts.append("## 경고\n\n" + "\n".join("- %s" % c["message"] for c in warns))
@@ -794,6 +804,33 @@ def render_packet(root, phase, ctx, s, checks=None):
         cmd = ("python scripts/pipeline/cli.py record --phase %s --file <산출물> "
                "--run-id %s" % (pid.split("-")[0], s["run_id"]))
     return "\n\n".join(p for p in parts if p), cmd
+
+
+def _cross_verify_render(config, s, front):
+    """교차검증기가 누구인지 봉투가 말한다.
+
+    페이즈 파일 본문은 `${...}` 가 풀리지 않으므로(`_section` 이 원문을 그대로
+    싣는다) 이 이름은 여기서만 나올 수 있다. **코어에 도구 이름을 박지 않는다** —
+    config 를 읽을 뿐이고, 그래서 스택·도구를 바꿔도 코어는 그대로다.
+    """
+    if not (front.get("review") or {}).get("reviewers"):
+        return ""
+    if not any(r.get("kind") == "cross_verify"
+               for r in front["review"]["reviewers"]):
+        return ""
+    cv = config.get("cross_verify") or {}
+    mode = ((s.get("cross_verify") or {}).get("mode")) or "skipped"
+    if mode == "primary":
+        return ("## 교차검증\n\n외부 관측기 `%s` 를 쓴다. 이것이 있으면 "
+                "**1라운드 수렴이 열린다** — 둘 다 폴백이 아니고 Major 이상이 "
+                "0건이면 그 회차에서 끝난다." % cv.get("primary"))
+    if mode == "fallback":
+        return ("## 교차검증\n\n외부 관측기가 없어 폴백 `%s` 를 쓴다. "
+                "**폴백이 섞이면 1라운드 수렴을 허용하지 않는다** — 독립 관측 "
+                "둘이라는 전제가 약해지기 때문이고, 최소 2라운드를 돈다."
+                % cv.get("fallback"))
+    return ("## 교차검증\n\n교차검증기가 없다. 02 는 스킵되고 등급이 "
+            "`PASS_WITH_GAPS` 로 강등된다 — 조용히 통과가 아니다.")
 
 
 def render_header(config, s):

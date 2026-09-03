@@ -17,7 +17,7 @@
  * 의도된 결과이며(ADR-003), 재추천 상한을 저장소로 지키려는 시도는 그 전제를
  * 문서 없이 우회하는 것이다.
  */
-import { MAX_IDENTIFIED_BOOKS } from "./env";
+import { MAX_IDENTIFIED_BOOKS, MAX_UNIDENTIFIED_BOOKS } from "./env";
 import type { AnalyzeResponse, ErrorCode, MoodQuestion, Recommendation } from "@/types/api";
 import type {
   BookReference,
@@ -236,6 +236,70 @@ const EMPTY_SESSION_DATA = {
 } satisfies Omit<SessionData, "sessionId" | "recommendCount">;
 
 /* ------------------------------------------------------------------ *
+ * 병합 — 재시도는 **실패한 사진만** 다시 보낸다
+ * ------------------------------------------------------------------ */
+
+/**
+ * 이미 책장에 있던 책과 이번 응답의 책을 합친다.
+ *
+ * 재시도 요청에는 실패한 사진만 실린다. 응답으로 책장을 **덮으면** 앞서 성공했던
+ * 사진의 책이 "서버가 없다고 해서"가 아니라 "묻지 않았기 때문에" 사라진다.
+ * 그래서 덮지 않고 합친다.
+ *
+ * `photoIndex`를 보지 않는 것이 이 함수의 요점이다. `merge.ts`의 `dedupeByIsbn`은
+ * `photoIndex` 최솟값을 남기는데, 재시도 응답의 좌표는 **새로 보낸 `files` 배열**을
+ * 기준으로 다시 매겨지므로 최솟값이 나중에 온 사본을 가리킬 수 있다. 그러면
+ * "먼저 있던 것을 남긴다"와 정반대가 된다. 게다가 그 함수의 제약
+ * (`T extends { isbn13: string; photoIndex: number }`)을 `ShelfBook`이 만족하지도
+ * 못한다 — `resolved`에는 `photoIndex`가 없다. 그래서 재사용하지 않는다.
+ *
+ * `origin`도 비교에 쓰지 않는다. 같은 `isbn13`이면 먼저 있던 쪽이 남고, 사용자가
+ * 손으로 고쳐 승격한 `resolved`는 언제나 `prev` 쪽이므로 결과적으로 살아남는다.
+ */
+export function mergeShelfBooks(
+  prev: readonly ShelfBook[],
+  next: readonly ShelfBook[]
+): ShelfBook[] {
+  return dedupeFirstWins(prev, next, (entry) => entry.book.isbn13, MAX_IDENTIFIED_BOOKS);
+}
+
+/**
+ * 미확인 목록을 합친다. 중복 키가 `isbn13`이 아니라 `rawText`인 이유는 단순하다 —
+ * 확인되지 않은 책에는 ISBN이 없다. 있는 것은 사진에서 읽어낸 원문뿐이다.
+ */
+export function mergeUnidentified(
+  prev: readonly UnidentifiedBook[],
+  next: readonly UnidentifiedBook[]
+): UnidentifiedBook[] {
+  return dedupeFirstWins(prev, next, (book) => book.rawText, MAX_UNIDENTIFIED_BOOKS);
+}
+
+/**
+ * `prev`를 앞에 두고 이어 붙인 뒤 키의 **첫 등장만** 남기고, 상한까지 앞에서부터
+ * 자른다. 인자는 변형하지 않는다.
+ *
+ * 상한에 걸렸을 때 뒤를 버리는 것은 `BOOK_RESOLVED`가 이미 지키는 방향과 같다 —
+ * 먼저 확인된 책이 나중 것에 밀려나지 않는다.
+ */
+function dedupeFirstWins<T>(
+  prev: readonly T[],
+  next: readonly T[],
+  keyOf: (item: T) => string,
+  limit: number
+): T[] {
+  const seen = new Set<string>();
+  const merged: T[] = [];
+  for (const item of [...prev, ...next]) {
+    if (merged.length >= limit) break;
+    const key = keyOf(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
+/* ------------------------------------------------------------------ *
  * 리듀서
  * ------------------------------------------------------------------ */
 
@@ -247,22 +311,36 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return startAnalyzing(state, action.photoCount);
 
     case "ANALYZE_RETRIED":
-      // 실패한 사진만 다시 시도한다. 응답이 전체를 다시 채우므로 이전 결과는 버린다 —
-      // 이 두 상태에서 확인된 책은 0권이거나(unidentifiedOnly) 아직 없다(error).
-      if (state.status === "unidentifiedOnly") return startAnalyzing(state, action.photoCount);
+      // 재시도는 **실패한 사진만** 다시 보낸다. 그래서 이전 결과를 버리지 않고
+      // 들고 들어간다 — 버리면 성공했던 사진의 책이 응답에 없다는 이유로 사라진다.
+      // `reviewing`이 여기 있어야 하는 이유가 그것이고, 없었기 때문에 부분 실패
+      // 배너의 "이 사진만 다시 시도"가 화면을 바꾸지 못했다.
+      if (state.status === "reviewing" || state.status === "unidentifiedOnly") {
+        return retryAnalyzing(state, action.photoCount);
+      }
       // 추천 실패로 들어온 error에서는 되돌릴 분석이 없다. 여기서 재분석을 열어 두면
       // 추천 한 번의 외부 장애에 분석 비용을 다시 내게 된다 (ARCHITECTURE 상태 관리).
       if (state.status !== "error" || state.failedStage !== "analyze") return state;
-      return startAnalyzing(state, action.photoCount);
+      // 분석 실패로 들어온 error도 보존형이다. `reviewing → analyzing → 실패 → error`
+      // 경로가 열린 순간 "error에는 책이 0권"이라는 전제가 깨지기 때문이다. 여기만
+      // 초기화형으로 남기면 **두 번째 재시도가 첫 재시도가 지킨 책을 지운다.**
+      return retryAnalyzing(state, action.photoCount);
 
     case "ANALYZE_SUCCEEDED": {
       if (state.status !== "analyzing") return state;
       const { result } = action;
-      const books: ShelfBook[] = result.identified.map((book) => ({ origin: "photo", book }));
+      // 응답은 **이번에 보낸 사진**의 결과일 뿐이다. 첫 분석이면 `state.books`가
+      // 비어 있어 합치나 덮으나 같고, 재시도면 앞서 확인된 책이 이 자리에서 지켜진다.
+      const books = mergeShelfBooks(
+        state.books,
+        result.identified.map((book): ShelfBook => ({ origin: "photo", book }))
+      );
       const next = {
         ...state,
         books,
-        unidentified: result.unidentified,
+        unidentified: mergeUnidentified(state.unidentified, result.unidentified),
+        // 이 셋은 **이번 요청에 대한 사실**이라 누적하지 않고 교체한다. 실패한 사진
+        // 인덱스는 이번에 보낸 배열 기준이고, 지난 회차의 좌표는 그 배열에 없다.
         overflowCount: result.overflowCount,
         unidentifiedOverflowCount: result.unidentifiedOverflowCount,
         failedPhotoIndexes: result.failedPhotoIndexes,
@@ -497,7 +575,13 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
   }
 }
 
-/** analyzing 진입은 두 경로가 있지만 하는 일이 같다 — 이전 결과를 비우고 장수를 기록한다 */
+/**
+ * 첫 분석 진입 (`ANALYZE_STARTED` 전용). 이전 결과를 비우고 장수를 기록한다.
+ *
+ * 재시도 진입(`retryAnalyzing`)과 겸하게 만들지 않는다 — 하는 일이 정반대(비운다 /
+ * 지킨다)인 두 동작을 플래그 하나로 묶으면 어느 호출부가 어느 쪽을 원했는지가
+ * 호출부에서 읽히지 않는다.
+ */
 function startAnalyzing(state: SessionState, photoCount: number): SessionState {
   if (!Number.isInteger(photoCount) || photoCount < 1) return state;
   return {
@@ -506,6 +590,28 @@ function startAnalyzing(state: SessionState, photoCount: number): SessionState {
     recommendCount: state.recommendCount,
     ...EMPTY_SESSION_DATA,
     photoCount,
+  };
+}
+
+/**
+ * 재시도 진입 (`ANALYZE_RETRIED` 전용). **이미 확인된 책장을 들고** analyzing으로 간다.
+ *
+ * 지우는 것은 지난 회차의 실패 흔적뿐이다 — 에러 표시 셋과, 이번 요청의 좌표계로
+ * 곧 다시 채워질 `failedPhotoIndexes`·초과 카운트. `mood`·`questions` 같은 추천
+ * 단계의 값은 분석 재시도와 무관하므로 손대지 않는다.
+ */
+function retryAnalyzing(state: SessionState, photoCount: number): SessionState {
+  if (!Number.isInteger(photoCount) || photoCount < 1) return state;
+  return {
+    ...state,
+    status: "analyzing",
+    photoCount,
+    failedPhotoIndexes: [],
+    overflowCount: 0,
+    unidentifiedOverflowCount: 0,
+    errorCode: null,
+    failedStage: null,
+    requestId: null,
   };
 }
 

@@ -324,6 +324,7 @@ stateDiagram-v2
     unidentifiedOnly --> analyzing: 실패한 사진만 재시도
     unidentifiedOnly --> idle: 다시 찍기
     reviewing --> reviewing: 미확인 책 수정·재검색
+    reviewing --> analyzing: 실패한 사진만 재시도 (확인된 책은 지킨다)
     reviewing --> moodInput: 추천 단계로 이동
     moodInput --> guidedQuestions: 기분을 비운 채 진행
     guidedQuestions --> guidedQuestions: 질문 수신

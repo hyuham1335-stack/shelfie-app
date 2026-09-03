@@ -4,12 +4,14 @@ import {
   canRecommendAgain,
   createSessionState,
   hasVerifiedBooks,
+  mergeShelfBooks,
+  mergeUnidentified,
   sessionReducer,
   toBookReferences,
   toRecommendBooks,
 } from "./session";
-import type { SessionAction, SessionState, SessionStatus } from "./session";
-import { MAX_IDENTIFIED_BOOKS } from "./env";
+import type { SessionAction, SessionState, SessionStatus, ShelfBook } from "./session";
+import { MAX_IDENTIFIED_BOOKS, MAX_UNIDENTIFIED_BOOKS } from "./env";
 import type { AnalyzeResponse, MoodQuestion, Recommendation } from "@/types/api";
 import type { IdentifiedBook, ResolvedCandidate, UnidentifiedBook } from "@/types/book";
 
@@ -295,11 +297,14 @@ describe("전이 — 미확인 책의 승격 (US-002)", () => {
 
 describe("전이 — 재시도와 처음으로", () => {
   it("unidentifiedOnly → analyzing: 실패한 사진만 재시도", () => {
-    const state = sessionReducer(unidentifiedOnly(), { type: "ANALYZE_RETRIED", photoCount: 1 });
+    const before = unidentifiedOnly();
+    const state = sessionReducer(before, { type: "ANALYZE_RETRIED", photoCount: 1 });
 
     expect(state.status).toBe("analyzing");
     expect(state.photoCount).toBe(1);
-    expect(state.unidentified).toEqual([]);
+    // 재시도는 **이번에 보낸 사진**의 결과만 받는다. 읽어낸 원문을 여기서 버리면
+    // 사용자가 손으로 고치던 미확인 목록이 응답에 없다는 이유로 사라진다.
+    expect(state.unidentified).toEqual(before.unidentified);
   });
 
   it("error → analyzing: 재시도", () => {
@@ -534,7 +539,9 @@ describe("정의되지 않은 전이 — 던지지 않고 상태를 그대로 �
   /** 상태도에 있는 (출발 상태 → 액션) 조합 */
   const 허용된조합: Record<string, SessionStatus[]> = {
     ANALYZE_STARTED: ["idle"],
-    ANALYZE_RETRIED: ["unidentifiedOnly", "error"],
+    // `reviewing`이 여기 있는 이유: 부분 실패 배너의 "이 사진만 다시 시도"는 확인된
+    // 책이 이미 있는 화면에서 눌린다. 빠져 있으면 그 버튼이 아무것도 하지 않는다.
+    ANALYZE_RETRIED: ["reviewing", "unidentifiedOnly", "error"],
     ANALYZE_SUCCEEDED: ["analyzing"],
     ANALYZE_FAILED: ["analyzing"],
     BOOK_RESOLVED: ["reviewing", "unidentifiedOnly"],
@@ -681,7 +688,7 @@ describe("실패 단계가 나가는 문을 고른다 (error의 failedStage)", (
  * 전체 재분석을 요구했다. 아래 표는 ARCHITECTURE 상태도의 전이를 한 줄씩 옮긴 것이며
  * **개수까지 고정한다.** 상태도가 늘면 이 표가 먼저 깨진다.
  */
-describe("상태도 전수 대조 — 전이 25개", () => {
+describe("상태도 전수 대조 — 전이 26개", () => {
   interface 전이 {
     from: string;
     to: SessionStatus;
@@ -737,6 +744,12 @@ describe("상태도 전수 대조 — 전이 25개", () => {
       to: "reviewing",
       build: reviewing,
       action: { type: "BOOK_RESOLVED", rawText: "총균쇠", book: 승격된책() },
+    },
+    {
+      from: "reviewing",
+      to: "analyzing",
+      build: reviewing,
+      action: { type: "ANALYZE_RETRIED", photoCount: 1 },
     },
     { from: "reviewing", to: "moodInput", build: reviewing, action: { type: "MOOD_STEP_ENTERED" } },
     {
@@ -810,8 +823,8 @@ describe("상태도 전수 대조 — 전이 25개", () => {
     { from: "error(분석 실패)", to: "idle", build: errorState, action: { type: "RESTARTED" } },
   ];
 
-  it("리듀서가 아는 전이는 정확히 25개다 (상태도와 같은 수)", () => {
-    expect(전이표).toHaveLength(25);
+  it("리듀서가 아는 전이는 정확히 26개다 (상태도와 같은 수)", () => {
+    expect(전이표).toHaveLength(26);
   });
 
   it.each(전이표.map((t): [string, SessionStatus, 전이] => [t.from, t.to, t]))(
@@ -820,6 +833,314 @@ describe("상태도 전수 대조 — 전이 25개", () => {
       expect(sessionReducer(전이.build(), 전이.action).status).toBe(to);
     },
   );
+});
+
+/**
+ * 합치기 규칙 자체 (`mergeShelfBooks` · `mergeUnidentified`).
+ *
+ * 재시도 응답은 **이번에 보낸 사진**의 결과일 뿐이라, 앞 회차에서 확인된 책은
+ * 응답에 없다. 덮어쓰면 성공했던 사진의 책이 조용히 사라진다.
+ */
+describe("합치기 — mergeShelfBooks · mergeUnidentified", () => {
+  function 사진책(n: number, overrides: Partial<IdentifiedBook> = {}): ShelfBook {
+    return {
+      origin: "photo",
+      book: 확인된책({ isbn13: isbn(n), proof: `proof-${n}`, ...overrides }),
+    };
+  }
+
+  function 승격책(n: number, overrides: Partial<ResolvedCandidate> = {}): ShelfBook {
+    return {
+      origin: "resolved",
+      book: 승격된책({ isbn13: isbn(n), proof: `resolved-${n}`, ...overrides }),
+    };
+  }
+
+  it("prev를 앞에 두고 next를 뒤에 이어 붙인다", () => {
+    expect(mergeShelfBooks([사진책(1)], [사진책(2), 사진책(3)])).toEqual([
+      사진책(1),
+      사진책(2),
+      사진책(3),
+    ]);
+  });
+
+  it("같은 isbn13은 첫 등장만 남는다 — 남는 쪽은 prev다", () => {
+    const 먼저 = 사진책(1, { claudeNote: "처음 읽은 메모", proof: "proof-first" });
+    const 나중 = 사진책(1, { claudeNote: "다시 읽은 메모", proof: "proof-second" });
+
+    expect(mergeShelfBooks([먼저], [나중])).toEqual([먼저]);
+  });
+
+  it("photoIndex를 보지 않는다 — 나중 사본의 좌표가 더 작아도 prev가 남는다", () => {
+    // 재시도 응답의 photoIndex는 **이번에 보낸 배열** 기준이라 0부터 다시 매겨진다.
+    // 최솟값을 남기는 방식(merge.ts의 dedupeByIsbn)을 쓰면 여기서 나중 사본이 이긴다.
+    const 먼저 = 사진책(1, { photoIndex: 2, proof: "proof-first" });
+    const 나중 = 사진책(1, { photoIndex: 0, proof: "proof-second" });
+
+    expect(mergeShelfBooks([먼저], [나중])).toEqual([먼저]);
+  });
+
+  it("origin을 비교에 쓰지 않는다 — 손으로 승격한 책이 사진 사본에 밀리지 않는다", () => {
+    const 승격 = 승격책(1);
+
+    expect(mergeShelfBooks([승격], [사진책(1)])).toEqual([승격]);
+  });
+
+  it("합친 길이가 상한을 넘으면 앞에서부터 그 수까지만 남는다", () => {
+    const prev = Array.from({ length: MAX_IDENTIFIED_BOOKS }, (_, i) => 사진책(100 + i));
+    const merged = mergeShelfBooks(prev, [사진책(900)]);
+
+    expect(merged).toHaveLength(MAX_IDENTIFIED_BOOKS);
+    // 밀려나는 것은 새로 온 쪽이다 — 먼저 확인된 책이 뒤로 밀리지 않는다.
+    expect(merged).toEqual(prev);
+  });
+
+  it("인자를 변형하지 않는다", () => {
+    const prev = [사진책(1)];
+    const next = [사진책(1), 사진책(2)];
+
+    mergeShelfBooks(prev, next);
+
+    expect(prev).toEqual([사진책(1)]);
+    expect(next).toEqual([사진책(1), 사진책(2)]);
+  });
+
+  it("미확인은 rawText 기준으로 첫 등장만 남긴다 — isbn13이 없기 때문이다", () => {
+    const 먼저 = 미확인책({ rawText: "총균쇠", reason: "no_match" });
+    const 나중 = 미확인책({ rawText: "총균쇠", reason: "lookup_failed" });
+
+    expect(mergeUnidentified([먼저], [나중, 미확인책({ rawText: "코스모ㅅ" })])).toEqual([
+      먼저,
+      미확인책({ rawText: "코스모ㅅ" }),
+    ]);
+  });
+
+  it("미확인의 상한은 MAX_UNIDENTIFIED_BOOKS다", () => {
+    const prev = Array.from({ length: MAX_UNIDENTIFIED_BOOKS }, (_, i) =>
+      미확인책({ rawText: `원문 ${i}` }),
+    );
+    const merged = mergeUnidentified(prev, [미확인책({ rawText: "밀려나는 원문" })]);
+
+    expect(merged).toHaveLength(MAX_UNIDENTIFIED_BOOKS);
+    expect(merged).toEqual(prev);
+  });
+});
+
+/**
+ * reviewing에서의 재시도 (US-001 부분 실패 회복).
+ *
+ * 이 블록이 막는 결함은 둘이다 — ① `reviewing`에서 `ANALYZE_RETRIED`가 아무것도
+ * 하지 않아 "이 사진만 다시 시도"가 화면을 바꾸지 못하는 것, ② 전이는 되지만
+ * 응답이 책장을 **덮어써** 앞 회차에서 확인된 책이 사라지는 것. 하나가 고쳐지고
+ * 다른 하나가 남는 구현이 실재하므로 아래 it 블록은 서로 나뉘어 있다.
+ */
+describe("전이 — reviewing에서의 재시도와 책장 보존", () => {
+  /** 재시도를 걸어 analyzing까지 간다 */
+  function 재시도(from: SessionState, photoCount: number): SessionState {
+    return sessionReducer(from, { type: "ANALYZE_RETRIED", photoCount });
+  }
+
+  it("reviewing → analyzing: 확인된 책이 있어도 재시도는 분석 화면으로 간다", () => {
+    const state = 재시도(reviewing(), 1);
+
+    expect(state.status).toBe("analyzing");
+    expect(state.photoCount).toBe(1);
+  });
+
+  it("재시도 진입은 지난 회차의 실패 흔적만 지운다", () => {
+    const 부분실패 = 상태(분석시작, {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({
+        unidentified: [미확인책()],
+        overflowCount: 3,
+        unidentifiedOverflowCount: 5,
+        failedPhotoCount: 1,
+        failedPhotoIndexes: [2],
+      }),
+    });
+
+    const state = 재시도(부분실패, 1);
+
+    expect(state.failedPhotoIndexes).toEqual([]);
+    expect(state.overflowCount).toBe(0);
+    expect(state.unidentifiedOverflowCount).toBe(0);
+    expect(state.errorCode).toBeNull();
+    expect(state.failedStage).toBeNull();
+    expect(state.requestId).toBeNull();
+    // 지우는 것은 실패 흔적뿐이다. 읽어낸 것은 그대로 들고 들어간다.
+    expect(state.books).toEqual(부분실패.books);
+    expect(state.unidentified).toEqual(부분실패.unidentified);
+    expect(state.recommendCount).toBe(부분실패.recommendCount);
+    expect(state.sessionId).toBe(SESSION_ID);
+  });
+
+  it("사진 장수가 정수가 아니거나 1 미만이면 reviewing에서도 전이하지 않는다", () => {
+    const before = reviewing();
+
+    expect(재시도(before, 0)).toBe(before);
+    expect(재시도(before, -1)).toBe(before);
+    expect(재시도(before, 1.5)).toBe(before);
+  });
+
+  it("재시도 성공 응답에 없는 책도 책장에 남는다 (AC-2 — 전이와 별개다)", () => {
+    const 진행중 = 재시도(reviewing(), 1);
+    const 다른책 = 확인된책({ isbn13: isbn(7), title: "코스모스", proof: "proof-7" });
+
+    const state = sessionReducer(진행중, {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ identified: [다른책] }),
+    });
+
+    expect(state.status).toBe("reviewing");
+    // 이번 응답은 이번에 보낸 사진의 결과일 뿐이다. 1번은 앞 회차의 성과다.
+    expect(state.books).toEqual([
+      { origin: "photo", book: 확인된책() },
+      { origin: "photo", book: 다른책 },
+    ]);
+  });
+
+  it("전체 재전송으로 같은 isbn13이 다시 와도 한 권만 남고, 남는 것은 재시도 전 항목이다", () => {
+    const 먼저 = 확인된책({ photoIndex: 2, claudeNote: "처음 읽은 메모", proof: "proof-first" });
+    // 재시도 응답의 좌표는 이번에 보낸 배열 기준이라 0으로 다시 매겨진다.
+    const 나중 = 확인된책({ photoIndex: 0, claudeNote: "다시 읽은 메모", proof: "proof-second" });
+    const 전 = 상태(분석시작, {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ identified: [먼저] }),
+    });
+
+    const state = sessionReducer(재시도(전, 2), {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ identified: [나중] }),
+    });
+
+    expect(state.books).toHaveLength(1);
+    expect(state.books).toEqual([{ origin: "photo", book: 먼저 }]);
+  });
+
+  it("미확인 목록도 합쳐지고 같은 원문은 한 번만 남는다", () => {
+    const state = sessionReducer(재시도(reviewing(), 1), {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({
+        identified: [],
+        unidentified: [미확인책(), 미확인책({ rawText: "코스모ㅅ 칼세이건" })],
+      }),
+    });
+
+    expect(state.unidentified.map((book) => book.rawText)).toEqual(["총균쇠", "코스모ㅅ 칼세이건"]);
+  });
+
+  it("직접 확인해 승격한 책은 재시도 뒤에도 남는다", () => {
+    const 승격후 = sessionReducer(reviewing(), {
+      type: "BOOK_RESOLVED",
+      rawText: "총균쇠",
+      book: 승격된책(),
+    });
+
+    const state = sessionReducer(재시도(승격후, 1), {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ identified: [], unidentified: [] }),
+    });
+
+    expect(state.status).toBe("reviewing");
+    expect(state.books).toContainEqual({ origin: "resolved", book: 승격된책() });
+  });
+
+  it("합친 결과가 0권이면 unidentifiedOnly로 간다", () => {
+    const state = sessionReducer(재시도(unidentifiedOnly(), 1), {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ identified: [], unidentified: [미확인책({ rawText: "다른 원문" })] }),
+    });
+
+    expect(state.status).toBe("unidentifiedOnly");
+    expect(state.books).toEqual([]);
+    expect(state.unidentified).toHaveLength(2);
+  });
+
+  it("실패한 사진 목록과 장수는 누적이 아니라 이번 회차 값으로 교체된다 (AC-5)", () => {
+    const 전 = 상태(분석시작, {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ failedPhotoCount: 2, failedPhotoIndexes: [1, 2] }),
+    });
+    expect(전.failedPhotoIndexes).toEqual([1, 2]);
+    expect(전.photoCount).toBe(3);
+
+    // 실패한 2장만 다시 보낸다. 다음 응답의 좌표는 그 2장 배열 기준이다.
+    const state = sessionReducer(재시도(전, 2), {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ failedPhotoCount: 1, failedPhotoIndexes: [0] }),
+    });
+
+    expect(state.failedPhotoIndexes).toEqual([0]);
+    // 부분 실패 배너의 분모는 **이번에 보낸 장수**다. 3이면 사용자가 고치지 않은
+    // 사진까지 분모에 들어간다.
+    expect(state.photoCount).toBe(2);
+  });
+
+  it("초과 카운트 둘도 이번 응답 값으로 교체된다", () => {
+    const 전 = 상태(분석시작, {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ overflowCount: 4, unidentifiedOverflowCount: 7 }),
+    });
+
+    const state = sessionReducer(재시도(전, 1), {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ overflowCount: 1, unidentifiedOverflowCount: 0 }),
+    });
+
+    expect(state.overflowCount).toBe(1);
+    expect(state.unidentifiedOverflowCount).toBe(0);
+  });
+
+  it("재시도가 실패해도 책장이 비지 않고, 그 error에서 다시 재시도해도 유지된다 (AC-6)", () => {
+    const 전 = reviewing();
+
+    const 실패 = sessionReducer(재시도(전, 2), {
+      type: "ANALYZE_FAILED",
+      code: "UPSTREAM_UNAVAILABLE",
+      requestId: "req-retry",
+    });
+
+    expect(실패.status).toBe("error");
+    expect(실패.failedStage).toBe("analyze");
+    // "error에는 책이 0권"이라는 전제는 이 경로가 열린 순간 깨진다.
+    expect(실패.books).toEqual(전.books);
+    expect(실패.unidentified).toEqual(전.unidentified);
+
+    const 다시 = sessionReducer(실패, { type: "ANALYZE_RETRIED", photoCount: 2 });
+
+    expect(다시.status).toBe("analyzing");
+    // 두 번째 재시도가 첫 재시도가 지킨 책을 지우지 않는다.
+    expect(다시.books).toEqual(전.books);
+    expect(다시.unidentified).toEqual(전.unidentified);
+  });
+
+  it("새 사진으로 시작하는 분석은 여전히 세션을 비운다 — 합치기가 새 분석까지 오염시키지 않는다", () => {
+    // 책장을 들고 error까지 간 뒤 "처음으로"를 누른 경로다. 상태도에 reviewing에서
+    // 곧장 나가는 RESTARTED는 없다.
+    const 실패 = sessionReducer(재시도(reviewing(), 2), {
+      type: "ANALYZE_FAILED",
+      code: "UPSTREAM_UNAVAILABLE",
+      requestId: "req-restart",
+    });
+    expect(실패.books).toHaveLength(1);
+
+    const 처음으로 = sessionReducer(실패, { type: "RESTARTED" });
+    const 새분석 = sessionReducer(처음으로, 분석시작);
+
+    expect(새분석.status).toBe("analyzing");
+    expect(새분석.books).toEqual([]);
+    expect(새분석.unidentified).toEqual([]);
+
+    const 새책 = 확인된책({ isbn13: isbn(9), title: "다른 책장의 책", proof: "proof-9" });
+    const state = sessionReducer(새분석, {
+      type: "ANALYZE_SUCCEEDED",
+      result: 분석응답({ identified: [새책] }),
+    });
+
+    // 옛 책장이 새 세션에 묻어 오지 않는다.
+    expect(state.books).toEqual([{ origin: "photo", book: 새책 }]);
+    expect(state.unidentified).toEqual([]);
+  });
 });
 
 describe("셀렉터 — 요청 경계용 최소 형태", () => {

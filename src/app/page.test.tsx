@@ -664,6 +664,46 @@ describe("세션 셸", () => {
   });
 
   /* ---------------------------------------------------------------- *
+   * 확인된 책이 있는 화면에서의 사진 재시도 (US-001 부분 실패 회복)
+   *
+   * 이 자리에서 어긋날 수 있는 것이 둘이다. 리듀서가 `reviewing`의 재시도를
+   * 무시하면 버튼이 죽은 것처럼 보이고, 전이만 되고 응답이 책장을 **덮으면**
+   * 앞 회차에서 확인된 책이 이유 없이 사라진다. 아래 세 단언이 그 둘을 각각
+   * 잡는다 — 하나라도 빼면 한쪽 결함이 통과한다.
+   * ---------------------------------------------------------------- */
+
+  it("확인된 책이 있는 화면의 재시도는 분석 중으로 바뀌고, 응답에 없던 책도 다시 선다", async () => {
+    await analyzeInto(makeAnalyze({ failedPhotoCount: 1, failedPhotoIndexes: [1] }));
+    expect(screen.getByText("코스모스")).toBeInTheDocument();
+
+    // 응답을 손에 쥐고 있어야 "분석 중" 화면을 볼 수 있다.
+    let finish!: (result: ApiResult<AnalyzeResponse>) => void;
+    analyzeMock.mockReturnValue(
+      new Promise<ApiResult<AnalyzeResponse>>((resolve) => {
+        finish = resolve;
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "이 사진만 다시 시도" }));
+
+    // ① 화면이 실제로 바뀐다. `reviewing`에서 재시도가 무시되면 여기서 멈춘다.
+    const progress = await screen.findByRole("status");
+    expect(progress.textContent).toContain("다시 읽고 있어요");
+    // ② 분석 중에는 목록을 그리지 않는다.
+    expect(screen.queryByText("코스모스")).toBeNull();
+
+    // 두 번째 응답은 **이번에 보낸 1장**의 결과뿐이다 — 코스모스는 여기 없다.
+    await act(async () => {
+      finish(ok(makeAnalyze({ identified: [], unidentified: [makeAmbiguous()] })));
+    });
+
+    // ③ 앞 회차에서 확인된 책이 "이번 응답에 없다"는 이유로 사라지지 않는다.
+    await screen.findByRole("heading", { name: "책장을 이렇게 읽었어요" });
+    expect(screen.getByText("코스모스")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "확인된 책 1권" })).toBeInTheDocument();
+  });
+
+  /* ---------------------------------------------------------------- *
    * 실패 단계별 회복 (ARCHITECTURE 상태 관리, 상태도 error → recommending·moodInput)
    * ---------------------------------------------------------------- */
 

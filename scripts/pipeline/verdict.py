@@ -161,19 +161,45 @@ def check_review(payload, raw_text, previous_open):
     keys = {finding_key(f) for f in findings}
     resolved = {r.get("id") for r in payload.get("resolved_from_previous") or []}
     resolved_keys = {r.get("key") for r in payload.get("resolved_from_previous") or []}
+
+    # 재제기는 1급 어휘다. 제목이 지적의 신원이라 다듬은 제목으로 다시 올리면
+    # 같은 지적이 "신규" 이자 동시에 "증발" 이 되어 한 번의 재제기가 두 곳에서
+    # 오탐을 낸다. 리뷰어가 무엇을 다시 올리는지 말할 수 있게 한다.
+    prev_by_id = {p["id"]: p for p in previous_open or []}
+    reraised, carried = {}, set()
+    for f in findings:
+        src = f.get("reraised_from_previous")
+        if not src:
+            continue
+        if src not in prev_by_id:
+            errors.append(
+                "%s 의 reraised_from_previous 가 열려 있는 이전 지적을 "
+                "가리키지 않는다: %r — 없는 것을 가리키면 단조성 검사를 "
+                "우회하는 구멍이 된다" % (f.get("id"), src))
+            continue
+        reraised[finding_key(f)] = src
+        carried.add(src)
+
     for prev in previous_open or []:
-        if prev["key"] in keys or prev["key"] in resolved_keys or prev["id"] in resolved:
+        if (prev["key"] in keys or prev["key"] in resolved_keys
+                or prev["id"] in resolved or prev["id"] in carried):
             continue
         errors.append(
             "이전 회차의 %s 가 이번 findings 에도 resolved_from_previous 에도 "
             "없다 — 지적이 조용히 증발했다" % prev["id"])
 
     if errors:
-        return {"ok": False, "exit": 8, "errors": errors, "keys": [], "blocking": 0}
+        return {"ok": False, "exit": 8, "errors": errors, "keys": [],
+                "closed": [], "blocking": 0}
     blocking = sum(1 for f in findings if f.get("severity") in BLOCKING)
+    closed = sorted({p["key"] for p in previous_open or []
+                     if p["id"] in resolved or p["key"] in resolved_keys})
     return {"ok": True, "exit": 0, "errors": [],
             "keys": [{"key": finding_key(f), "id": f.get("id"),
-                      "severity": f.get("severity")} for f in findings],
+                      "severity": f.get("severity"),
+                      "reraised_from": reraised.get(finding_key(f))}
+                     for f in findings],
+            "closed": closed,
             "blocking": blocking}
 
 

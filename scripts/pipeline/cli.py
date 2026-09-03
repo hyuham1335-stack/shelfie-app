@@ -1079,7 +1079,7 @@ def _record_01_review(root, paths, s, phase_item, ctx, file, reviewer, round_):
     raw_text = raw_path.read_text(encoding="utf-8")
 
     rounds = node.setdefault("rounds", {})
-    prev_open = _previous_open(rounds, round_)
+    prev_open = _previous_open(rounds, round_, reviewer)
     got = verdict.check_review(payload, raw_text, prev_open)
     if not got["ok"]:
         st.append_event(paths, "check_fail", cmd="record", phase="01-plan",
@@ -1092,7 +1092,8 @@ def _record_01_review(root, paths, s, phase_item, ctx, file, reviewer, round_):
 
     slot = rounds.setdefault(str(round_), {})
     slot[reviewer] = {"mode": payload.get("mode") or "primary",
-                      "keys": got["keys"], "blocking": got["blocking"]}
+                      "keys": got["keys"], "blocking": got["blocking"],
+                      "closed": got["closed"]}
     st.save(paths, s)
 
     expected = [r["code"] for r in
@@ -1110,17 +1111,28 @@ def _record_01_review(root, paths, s, phase_item, ctx, file, reviewer, round_):
     return _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds)
 
 
-def _previous_open(rounds, round_):
-    """이전 회차들에서 열려 있던 지적. 사라지면 단조성 검사가 잡는다."""
-    out, seen = [], set()
+def _previous_open(rounds, round_, reviewer=None):
+    """**아직 열려 있는** 이전 회차의 지적. 사라지면 단조성 검사가 잡는다.
+
+    닫힌 것은 뺀다. 안 빼면 3라운드 제출이 1라운드에서 이미 해소된 지적까지
+    다시 적어야 통과하고, 그 목록이 리뷰어 프롬프트에 실리므로 **접두부가
+    라운드마다 자란다** (M21 ②).
+
+    `reviewer` 를 주면 그 리뷰어가 낸 것만 돌려준다. 두 리뷰어가 모두 `F-1` 을
+    쓰므로 id 대조를 전역으로 하면 한 줄이 서로 다른 두 지적을 동시에
+    해소로 계수한다 (M21 ③).
+    """
+    open_, closed = {}, set()
     for rn in sorted(rounds, key=int):
         if int(rn) >= round_:
             continue
-        for sub in rounds[rn].values():
+        for code, sub in rounds[rn].items():
             for k in sub.get("keys") or []:
-                if k["key"] not in seen:
-                    seen.add(k["key"])
-                    out.append(k)
+                open_.setdefault(k["key"], dict(k, reviewer=code))
+            closed |= set(sub.get("closed") or [])
+    out = [k for key, k in open_.items() if key not in closed]
+    if reviewer is not None:
+        out = [k for k in out if k.get("reviewer") == reviewer]
     return out
 
 

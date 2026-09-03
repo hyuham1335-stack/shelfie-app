@@ -64,6 +64,9 @@
  "resolved_from_previous":[]}
 ```
 
+재제기(`reraised_from_previous`, finding 안에 적는다)와 해소의 규칙은
+`01-plan.md` 와 같다 — 같은 판정기를 지난다.
+
 `mode` 가 `fallback` 이면 그 사실이 상태와 보고서에 남는다. 폴백은 독립 관측이
 약해진 것이고, 약해졌다는 사실이 드러나야 그 뒤의 판단이 정직해진다.
 

@@ -958,6 +958,94 @@ class TestReviewConvergence:
         env = _submit_review(repo, paths, _review("plan", round_=2), round_=2)
         assert env["exit"] == 8, "이전 open 지적이 findings 에도 resolved 에도 없다"
 
+    # ── M21: 단조성 검사가 세 방향으로 샜다
+
+    def test_a_reraised_finding_is_neither_new_nor_vanished(self, run01):
+        """① 제목이 지적의 신원이라 다듬은 제목이 오탐을 두 번 낸다.
+
+        `finding_key = sha1(category|target_role|title)` 이므로 리뷰어가 같은
+        지적을 다른 제목으로 다시 올리면 '신규 지적' 이자 동시에 '증발한 지적'
+        이 된다. 재제기를 1급 어휘로 두어 둘 다 아니게 한다.
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        first = {"id": "F-1", "severity": "major", "title": "범위가 넓다",
+                 "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("plan", findings=[first]))
+        _submit_review(repo, paths, _review("xv"))
+
+        reraised = {"id": "F-1", "severity": "major",
+                    "title": "범위가 여전히 넓다", "quote": "범위가 넓다",
+                    "reraised_from_previous": "F-1"}
+        env = _submit_review(
+            repo, paths, _review("plan", round_=2, findings=[reraised]), round_=2)
+        assert env["exit"] == 0, env["render"]
+        _, after = st.load(repo, paths.run_id)
+        assert st.phase_status(after, "01-plan") != "passed", "재제기는 미해결이다"
+
+    def test_a_reraise_must_point_at_something_open(self, run01):
+        """없는 지적을 가리키는 재제기는 단조성을 우회하는 구멍이 된다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        f1 = {"id": "F-1", "severity": "major", "title": "범위", "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("plan", findings=[f1]))
+        _submit_review(repo, paths, _review("xv"))
+        ghost = {"id": "F-9", "severity": "major", "title": "x", "quote": "범위가 넓다",
+                 "reraised_from_previous": "F-404"}
+        env = _submit_review(
+            repo, paths, _review("plan", round_=2, findings=[ghost]), round_=2)
+        assert env["exit"] == 8, env["render"]
+        assert "reraised_from_previous" in " ".join(env["data"]["errors"])
+
+    def test_previous_open_drops_what_an_earlier_round_closed(self, run01):
+        """② 해소가 누적되지 않아 3라운드가 1라운드에 닫힌 지적까지 또 적어야 했다.
+
+        그 목록이 리뷰어 프롬프트에 실리므로 접두부가 라운드마다 자란다.
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        f1 = {"id": "F-1", "severity": "major", "title": "범위", "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("plan", findings=[f1]))
+        _submit_review(repo, paths, _review("xv"))
+
+        _submit_review(repo, paths,
+                       _review("plan", round_=2,
+                               resolved=[{"id": "F-1", "resolved_by": "좁혔다"}]),
+                       round_=2)
+        f2 = {"id": "F-2", "severity": "major", "title": "다른 것",
+              "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("xv", round_=2, findings=[f2]), round_=2)
+
+        # 3라운드: F-1 은 1라운드에서 닫혔으므로 다시 적지 않아도 통과해야 한다.
+        env = _submit_review(
+            repo, paths,
+            _review("plan", round_=3,
+                    resolved=[{"id": "F-2", "resolved_by": "고쳤다"}]),
+            round_=3)
+        assert env["exit"] == 0, env["render"]
+
+    def test_an_id_from_one_reviewer_does_not_close_anothers_finding(self, run01):
+        """③ 두 리뷰어가 모두 F-1·F-2… 를 쓰므로 id 한 줄이 둘을 동시에 닫았다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        mine = {"id": "F-1", "severity": "major", "title": "내 지적",
+                "quote": "범위가 넓다"}
+        theirs = {"id": "F-1", "severity": "major", "title": "남의 지적",
+                  "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("plan", findings=[mine]))
+        _submit_review(repo, paths, _review("xv", findings=[theirs]))
+
+        # plan 이 자기 F-1 을 닫는 것은 정당하다.
+        assert _submit_review(
+            repo, paths,
+            _review("plan", round_=2,
+                    resolved=[{"id": "F-1", "resolved_by": "내 것을 고쳤다"}]),
+            round_=2)["exit"] == 0
+
+        # 그러나 xv 의 F-1 은 여전히 열려 있다. 아무 말 없이 넘어갈 수 없다.
+        env = _submit_review(repo, paths, _review("xv", round_=2), round_=2)
+        assert env["exit"] == 8, "남의 F-1 이 다른 리뷰어의 id 한 줄로 닫혔다"
+
     def test_raw_without_severity_headings_is_rejected(self, run01):
         """M20 — 이 규칙이 코드에만 있고 문서에 없어서 P1 의 제출 6건 전부에
         메인이 사후에 헤딩을 붙였다. 원문 대조라는 검사의 취지와 어긋난다."""

@@ -9,18 +9,20 @@
 
 ## 1. 무엇을 만들었나
 
-`/feature {요청}` 한 번이 **요청 동결 → 계획 → 교차검증 → 구현 → 게이트**까지 끌고 가는 실행기다. 페이즈마다 `next`(지시문 받기) → 모델이 산출물 작성 → `record`(제출·검증) 두 번의 왕복만 있고, 검증을 통과하면 실행기가 다음 페이즈 지시문을 바로 낸다.
+`/feature {요청}` 한 번이 **요청 동결 → 계획 → 교차검증 → 구현 → 게이트 → 코드리뷰 → PR → PR리뷰 → 보고서**까지 끌고 가는 실행기다. 페이즈마다 `next`(지시문 받기) → 모델이 산출물 작성 → `record`(제출·검증) 두 번의 왕복만 있고, 검증을 통과하면 실행기가 다음 페이즈 지시문을 바로 낸다.
 
-**지금 동작하는 것은 01~04 뿐이다.** 05~08(코드리뷰 · PR · PR리뷰 · 보고서)은 명세만 있고 페이즈 파일이 없다. `/feature` 는 **PR 을 만들지 않고 push 하지 않는다** (`.claude/commands/feature.md:5-7`).
+**여덟이 다 섰다.** 01~08 페이즈 파일이 전부 있고 `lint-phases` 의 `FUTURE` 전이는 0건이다 — 다섯 번의 증분 동안 다음 진입점을 가리키던 그 한 줄이 처음으로 사라졌다. `/feature` 는 **`git push` 까지 실행기가 하고, PR 생성·갱신과 코멘트 게시는 메인 세션이 forge 도구로** 한다. **머지는 범위 밖이다** ([ADR-H015](harness/DECISIONS.md)).
+
+**다만 배선이 섰다는 것과 흐름이 돈다는 것은 다르다.** 05~08 네 페이즈는 아직 **실물 런을 한 번도 돌지 않았다.** 아래 테스트 388건은 배선이 맞다는 뜻이지 흐름이 돌았다는 뜻이 아니다 — 아직 한 번도 안 돈 경로 넷은 §7 에 적어 둔다.
 
 | 층 | 실물 | 규모 |
 |---|---|---|
-| 실행기 | `scripts/pipeline/{cli,state,verdict,contract,gate,attribution,adapters}.py` | **3,650줄** · Python 3.8 stdlib만 (서드파티 0) |
+| 실행기 | `scripts/pipeline/{cli,state,verdict,contract,gate,attribution,adapters,ledger,precheck,review,trace_contract,mask,pr,promote,review07,report}.py` — 16개 모듈 | **7,424줄** · Python 3.8 stdlib만 (서드파티 0) |
 | 계약 계층 | `scripts/harness.py` — `doctor` · `calibrate` · `init` · glob 엔진 | 1,272줄 |
-| 페이즈 파일 | `harness/phases/{01-plan,02-cross-verify,03-implement,04-gate}.md` | JSON 프론트매터 + 산문 |
-| 진입점 | `.claude/commands/feature.md` · `.claude/agents/{plan-reviewer,impl-writer,test-writer}.md` | 에이전트 정의는 각 3KB 이하 |
+| 페이즈 파일 | `harness/phases/{01-plan,02-cross-verify,03-implement,04-gate,05-code-review,06-pr,07-pr-review,08-report}.md` | **8개** · JSON 프론트매터 + 산문 |
+| 진입점 | `.claude/commands/feature.md` · `.claude/agents/{plan-reviewer,impl-writer,test-writer}.md` · 리뷰어 스킬 5종(`.claude/skills/*-reviewer/`) | 에이전트 정의는 각 3KB 이하 |
 | 기록 | `scripts/session_log.py` — `SessionEnd` 훅이 부르는 원장 수집기 | 원장은 `docs/pipeline-ledger.jsonl` (§7) |
-| 테스트 | `test_pipeline.py` 175 · `test_execute.py` 176 · `test_harness.py` 70 | **421건** (파일럿 앱은 1,333건) |
+| 테스트 | `test_pipeline.py` 388 · `test_execute.py` 176 · `test_harness.py` 70 | **634건** (파일럿 앱은 1,333건) |
 
 실행기가 Python stdlib 인 이유는 셋이다 — 스택마다 실행기를 다시 만들지 않기 위해, **게이트가 깨진 프로젝트에서도 돌기 위해**, 프로젝트 의존성 그래프를 오염시키지 않기 위해 (`team-spec.md:98-103`). 서드파티 금지의 대가로 페이즈 프론트매터는 YAML 이 아니라 `---` 로 감싼 **JSON** 이다.
 
@@ -111,7 +113,7 @@
 |---|---|
 | 접두부 통합 예산의 **값** | 8페이즈 자신의 실측. 형태는 정해졌고(접두부 × turn, 옆에 산출량) 값은 없다 |
 | 리뷰어 호출 고정비 | 첫 3런의 원장 |
-| 05~08 실행 비용 | 페이즈 파일 자체가 아직 없다 |
+| 05~08 실행 비용 | **사유가 바뀌었다** — 페이즈 파일은 여덟이 다 섰고, 이제는 리뷰어를 실제로 띄운 런이 **0회**인 것이 사유다 |
 | P1 런의 소요·비용·토큰 | 8페이즈 실행기가 아직 청구서를 남기지 않는다 |
 
 값 없이 상수를 굳히면 **근거 없는 숫자를 모든 파생 프로젝트가 물려받는다.** 그것이 이 설계가 막으려는 실패다.
@@ -183,12 +185,20 @@ P1 실측: impl 이 `src/lib/session.ts` 하나(**+114/−8**), test 가 `sessio
 | ID | 문제 | 해결 | 커밋 |
 |---|---|---|---|
 | **M22** | `budget.model_calls_max: 24` 가 선언돼 있고 봉투가 그 칸을 렌더하는데 **증가시키는 코드가 없었다.** P1 은 서브에이전트 10회를 태우고도 끝까지 **"0/24"** 를 찍었다 — 예산 소진(exit 5)이 **영원히 발화하지 않는다** | `bump_model_calls` 가 `total`·`by_phase` 를 함께 올리고, 리뷰어 제출마다 1회·역할 병렬 페이즈는 역할 수만큼 센다. **과다 계수를 택했다** — 재제출은 그 전에 모델을 한 번 태운 뒤이고, **일찍 걸리는 것이 영원히 안 걸리는 것보다 낫다**. 봉투 문구도 "근사" → **"제출 기준 근사"** | `18e7d48` (테스트 132 → 142) |
-| **M23** | 계약 파서가 `-` 로 시작하는 **모든 줄**을 유닛으로 셌다. 설명용 중첩 불릿을 쓰자 **유닛 19개 · unmatched 15건**이 나왔고 `page.test.tsx` 가 **스코프 선택에서 빠졌다**. 안 잡았으면 **04는 초록불인데 AC-4는 검증되지 않은 채 통과**했을 것이다. 게다가 **템플릿 자신이 그 형태**여서 파싱하면 유령 유닛이 나왔다 | 최상위 불릿만 유닛으로 세고, 컨테이너·심볼 쌍이 아닌 것은 **조용히 버리지 않고 `dropped[]` 에 사유와 함께** 남긴다. 템플릿은 형태만 고쳤다. `doctor` 에 **"템플릿이 자기 파서를 통과하는지"** 검사를 더했다 — 기존 검사는 절 제목만 봤다. 실물이 `units=19` → `units=4 · unmatched=0` 이 됐다 | `b1855f9` (142 → 149) |
+| **M23** | 계약 파서가 `-` 로 시작하는 **모든 줄**을 유닛으로 셌다. 설명용 중첩 불릿을 쓰자 **유닛 19개 · unmatched 15건**이 나왔고 `page.test.tsx` 가 **스코프 선택에서 빠졌다**. 안 잡았으면 **04는 초록불인데 AC-4는 검증되지 않은 채 통과**했을 것이다. 게다가 **템플릿 자신이 그 형태**여서 파싱하면 유령 유닛이 나왔다 | 최상위 불릿만 유닛으로 세고, 컨테이너·심볼 쌍이 아닌 것은 **조용히 버리지 않고 `dropped[]` 에 사유와 함께** 남긴다. 템플릿은 형태만 고쳤다. `doctor` 에 **"템플릿이 자기 파서를 통과하는지"** 검사를 더했다 — 기존 검사는 절 제목만 봤다. **템플릿이 `units=2`(유령 1개) → `units=1 · dropped=[]` 가 됐다.** 왼쪽 칸의 `19 → 4` 는 P1 런에서 **사람이 계약 형태를 손으로 고쳐** 나온 값이고 (`PILOT-LOG.md:2321`), 이 커밋이 고친 것은 **다음 계약이 그 형태를 베끼지 않게 하는 쪽**이다 | `b1855f9` (142 → 149) |
 | **M20** | 검증기는 **원문의 심각도 헤딩 개수 = findings 개수**를 요구하는데, 페이즈 파일의 "제출 형식" 절이 `.raw.md` 형태를 **한 줄도 적지 않았다.** 리뷰어가 모르면 exit 8 이고, **메인이 사후에 헤딩을 붙여 맞추는 것이 유일한 길**이 된다 — 원문 대조라는 검사의 취지와 정면으로 어긋난다. P1 에서 제출 **6건 전부**에 메인이 손댔다 | 01·02 "제출 형식"에 원문 형태를 예시와 함께 적고, 05 제출 형식에도 **미리** 적었다. 회귀 둘 — 헤딩 없는 원문이 exit 8 로 튕기는지, 그리고 **페이즈 파일이 그 규칙을 실제로 적고 있는지**. 뒤엣것이 이 수정이 다시 지워지는 것을 막는다 | `8fa5c81` (149 → 151) |
 | **M21** | 단조성 검사가 세 방향으로 샜다 — ① 지적의 신원이 제목이라 **다듬은 제목**으로 재제기하면 "신규"이자 동시에 "증발"로 **오탐이 두 번** 난다(2라운드에서 실제로 걸림) ② 해소가 누적되지 않아 3라운드 제출이 1라운드에서 이미 닫힌 지적까지 다시 적어야 통과했고, **그 목록이 리뷰어 프롬프트에 실려 접두부가 라운드마다 자랐다** ③ 두 리뷰어가 모두 `F-1`·`F-2` 를 써서 한 줄이 **서로 다른 두 지적을 동시에 해소**로 계수했다 | ① `reraised_from_previous` 를 1급 어휘로 (열린 지적을 안 가리키면 exit 8, **재제기는 해소가 아니므로 그 지적은 계속 열려 있다**) ② 닫힌 키를 제외 ③ **id 대조를 리뷰어별로 한정** — 남의 지적은 `key` 로만 닫는다 | `ec18281` (151 → 155) |
-| 후속 | `cross_verify.primary` 가 `null` 이라 교차검증이 늘 폴백이었고, **폴백이 섞이면 1라운드 수렴이 거부**된다 → 모든 런이 최소 2라운드 강제 | `primary` 를 채우고, 봉투가 `## 교차검증` 절로 **누구를 쓰는지와 1라운드 수렴이 열리는지**를 함께 말한다. **도구 이름은 config 에만 두고 코어는 읽기만 한다** — 이름이 코어에 새면 실패하는 테스트를 동봉했다 | `94ade78` (155 → 162) |
+| 후속 | `cross_verify.primary` 가 `null` 이라 교차검증이 늘 폴백이었고, **폴백이 섞이면 1라운드 수렴이 거부**된다 → 모든 런이 최소 2라운드 강제 | `primary` 를 채우고, 봉투가 `## 교차검증` 절로 **누구를 쓰는지와 1라운드 수렴이 열리는지**를 함께 말한다. **도구 이름은 config 에만 두고 코어는 읽기만 한다** — 이름이 코어에 새면 실패하는 테스트를 동봉했다. 함께: `doctor` 가 **폴백 에이전트 파일의 부재**도 잡는다. 그 전에는 `config.roles[]` 만 훑어서 **P1 직전에 `plan-reviewer.md` 가 없는 것을 못 잡았다** — config 가 이름을 부르는데 파일이 없으면 01 이 라운드마다 헛돈다 | `94ade78` (155 → 162) |
+| 후속 | 이 문서를 매 작업마다 갱신하는 일을 훅 하나에 다 시킬 수 없었다. **훅은 셸 명령이라 §5 가 요구하는 해석("무엇을 조용히 통과시킬 뻔했는가")을 쓸 수 없고**, 쓰게 하려면 훅 안에서 모델을 부르는 수밖에 없다 — 그러면 **검증하는 사람 없이 문서에 추측이 쌓인다.** 이 문서 머리가 금지한 그것이다 | **사실과 해석을 갈랐다.** 사실은 `SessionEnd` 훅 → `session_log.py` 가 `docs/pipeline-ledger.jsonl` 에 append 하고, 해석은 `/log` 가 **사람이 부를 때만** §5 로 승격한다. `calibrate` 가 재고 ADR 이 해석하는 것, `findings.jsonl` 이 쌓이고 `promote` 가 올리는 것과 같은 구조다 | `b9a8274` (파이썬 408 → 421) |
+| 후속 | `05-code-review` 를 지어 `lint-phases` 가 가리키던 FUTURE 한 줄을 닫았다. 짓는 과정에서 **0건을 "지적 없음"으로 읽게** 만드는 자리가 여럿 나왔다 — 가장 무거운 것은 **리뷰어 다섯이 전부 실패해도 findings 가 0건**이라 아무도 보지 않은 코드가 통과하는 것이었다. 그 밖에 추적 파일만 보는 `missing_impl` 이 **03 이 방금 쓴 새 파일에서 정확히 반대로** 동작하고, `git status --porcelain` 이 **새 디렉터리를 한 줄로 뭉쳐** 파일 열 개짜리 폴더가 예산에 1 로 잡히고, public 심볼 정규식이 **한글 식별자를 놓쳐** `out_of_contract` 가 조용히 아무것도 안 잡았다 | `review05.status` 를 **findings 개수와 분리**해 상태에 남기고 **계획된 리뷰어가 0개인 것도 `failed`** 로 센다. `-uall` 로 새 디렉터리를 펼치고, 심볼 정규식을 비ASCII 까지 넓히고, 드롭을 **헤딩 대조 뒤로** 옮겼다 — 먼저 하면 리뷰어 원문의 헤딩 수와 어긋나 **리뷰어 잘못이 아닌 것으로 리뷰어를 벌한다**. 미검증 상속값(`review_repair.max` · 승격 임계값 여섯 · `findings_max` · `baseline_runs`)은 **재지 않았으므로 굳히지 않고 그렇게 표기**했다 | `9ac34da` (파이썬 421 → 530) |
 
 **수정 순서는 M22 → M23 → M20 → M21 이었고 근거는 하나였다** — 셋 다 "05~08로 늘면 문제가 배가된다"이므로 **05를 짓기 전에 닫았다.** 파이프라인 테스트 132 → 162건.
+
+**M20~M23 과 교차검증 행의 결정 근거**는 `DECISIONS.md` 의 **ADR-H014** 다 — 예산 계수에서 과다 계수를 택한 이유와 교차검증 소스를 선언한 이유가 거기 있다. 마지막 `후속` 행(세션 원장)은 별개이고 §7 이 그 설계를 자세히 적는다.
+
+> **이 승격의 근거는 원장이 아니라 git 이다.** `docs/pipeline-ledger.jsonl` 의 유일한 줄이 `commits: []` 여서 커밋 여섯 중 **0개**를 담고 있었다. 원인은 세션 경계 판정이 `base != branch` 로 **이름만** 비교하는 데 있다 — 이번에는 이름이 달랐지만 `main` 과 `feat-pipeline-skeleton` 이 **같은 커밋을 가리켜** `main..HEAD` 가 정당하게 비었다. `/log` 가 이 경우를 위해 둔 예외 조항(`log.md:24-26`)을 따라 git 에서 읽었고, **그 사실을 여기 적는다.** 가드는 이름이 아니라 sha 를 비교해야 한다.
+
+**마지막 `후속` 행(05-code-review)의 근거는 원장이다** — `docs/pipeline-ledger.jsonl` 이 세션 `e6b8a328` 에 커밋 `9ac34da` 를 담고 있었다 (`commits_since.kind: prev_entry`). 다만 원장이 세는 테스트는 파일럿 앱의 1,333건뿐이라 **파이썬 421 → 530 은 원장이 아니라** 커밋 본문과 `def test_` 정적 계수에서 왔다. 테스트를 새로 돌려 만든 값이 아니다.
 
 ### 5.1 앞선 순차 실행기 런에서 와서 8페이즈 설계를 바꾼 것
 
@@ -207,41 +217,53 @@ P1 실측: impl 이 `src/lib/session.ts` 하나(**+114/−8**), test 가 `sessio
 ```mermaid
 flowchart TD
     subgraph ENTRY[".claude/ — 진입점과 역할 정의"]
-        CMD["commands/feature.md<br/>/feature 슬래시 커맨드 · 01~04 절차와 금지"]
+        CMD["commands/feature.md<br/>/feature 슬래시 커맨드 · 01~08 절차와 금지"]
         AGP["agents/plan-reviewer.md<br/>플랜 리뷰어 · 교차검증 폴백"]
         AGI["agents/impl-writer.md<br/>구현 역할"]
         AGT["agents/test-writer.md<br/>테스트 역할"]
         SET["settings.json<br/>훅 2개 — Stop · PreToolUse"]
     end
 
-    subgraph CORE["scripts/pipeline/ — 실행기 · 스택 비종속 3,650줄"]
-        CLI["cli.py<br/>doctor·init·next·record·gate·advance·retry·escalate·resume·status·lint-phases"]
+    subgraph CORE["scripts/pipeline/ — 실행기 · 스택 비종속 7,424줄 · 16개 모듈"]
+        CLI["cli.py<br/>doctor·init·next·record·gate·advance·retry·escalate·resume<br/>status·lint-phases·precheck·contract-trace<br/>approve·mask·pr·promote·review07·report"]
         STA["state.py<br/>런 디렉터리·카운터·워크트리 지문·봉투"]
         VER["verdict.py<br/>인용 부분문자열 검증·단조성·수렴 판정"]
         CON["contract.py<br/>계약 파싱·경로 기반 테스트 선택자"]
         GAT["gate.py<br/>스테이지 체인·replay 러너"]
         ATT["attribution.py<br/>실패 귀속·핑퐁 방지·소유 검사"]
         ADA["adapters.py<br/>스택 지식이 들어오는 유일한 문"]
+        PRE["precheck.py<br/>05·06 진입 전 무료 정적 검사"]
+        TRC["trace_contract.py<br/>계약 ↔ 코드 대조 5종"]
+        REV["review.py<br/>05 리뷰어 라우팅·작성자≠리뷰어"]
+        LDG["ledger.py<br/>규칙 원장 · taxonomy 가 어휘의 단일 출처"]
+        MSK["mask.py<br/>바깥으로 나가는 payload 만 마스킹"]
+        PR6["pr.py<br/>06 · git 만 부른다 · 요청서를 낸다"]
+        PRM["promote.py<br/>07 · 원장 → 규칙 승격"]
+        R07["review07.py<br/>07 · 외부+내장 리뷰 판정·escaped_05"]
+        RPT["report.py<br/>08 · 재지 못한 것을 드러낸다"]
     end
 
     subgraph CFG["harness/ — 설정과 페이즈"]
-        CJ["config.json<br/>역할·소유 glob·계약 절·예산·교차검증기"]
+        CJ["config.json<br/>역할·소유 glob·계약 절·예산·교차검증기<br/>리뷰어 5종·secret_files·external_pr_review"]
         CAL["calibration.json<br/>스테이지 실측 → 정책 5종을 유도"]
         ADJ["adapters/nextjs-ts.json<br/>스테이지 명령·리포트 경로·귀속 정규식"]
-        PH["phases/01-plan ~ 04-gate.md<br/>JSON 프론트매터 + 산문"]
+        PH["phases/01-plan ~ 08-report.md<br/>여덟 · JSON 프론트매터 + 산문"]
         TPL["templates/contract.md<br/>계약 템플릿"]
     end
 
     subgraph DOC["docs/harness/ — 명세와 기록"]
         SPEC["pipeline/team-spec.md<br/>8페이즈 정본 명세"]
         PL["PILOT-LOG.md<br/>런별 실측 원장"]
-        DEC["DECISIONS.md<br/>ADR-H001~H014"]
+        DEC["DECISIONS.md<br/>ADR-H001~H015"]
+        TAX["pipeline/ledger/taxonomy.json<br/>원장 어휘·승격 목적지·리뷰 범위의 단일 출처"]
+        FND["pipeline/ledger/findings.jsonl<br/>append-only · 아직 0줄"]
+    end
+
+    subgraph SKL[".claude/skills/ — 05 리뷰어 5종"]
+        RS["{data-layer,security,architecture,test-quality,docs}-reviewer<br/>스택 비종속 관점 · 프로젝트 보강 절은 비운 채로"]
     end
 
     subgraph NONE["아직 없는 것"]
-        N1["harness/phases/05~08.md<br/>명세만 있고 파일 없음"]
-        N2["scripts/pipeline/ledger.py<br/>규칙 원장 · 없음"]
-        N3["docs/harness/pipeline/ledger/taxonomy.json<br/>lint-phases 가 SKIP 으로 표시"]
         N4[".claude/agent-memory/<br/>세 파일이 참조하는데 없음"]
     end
 
@@ -250,8 +272,22 @@ flowchart TD
     CLI --> VER
     CLI --> CON
     CLI --> GAT
+    CLI --> PRE
+    CLI --> TRC
+    CLI --> REV
+    CLI --> PR6
+    CLI --> PRM
+    CLI --> R07
+    CLI --> RPT
     GAT --> ATT
     GAT --> ADA
+    PR6 --> MSK
+    PRM --> LDG
+    R07 --> LDG
+    REV --> LDG
+    LDG --> TAX
+    LDG --> FND
+    REV --> RS
     CLI --> CJ
     CLI --> PH
     ADA --> ADJ
@@ -271,6 +307,7 @@ sequenceDiagram
     participant C as scripts/pipeline/cli.py
     participant A as 서브에이전트
     participant N as 어댑터 → npm
+    participant F as forge (GitHub MCP)
 
     U->>M: /feature {요청}
     M->>C: doctor
@@ -307,8 +344,50 @@ sequenceDiagram
     C->>N: compile → lint → check → scoped → full → e2e → build → docs
     N-->>C: junit 리포트
     C-->>M: exit 0 통과 · exit 4 면 repair_dispatch 로 타겟 수리
+
+    rect rgb(254,249,235)
+    Note over M,A: 05-code-review — 계약대로인가 + 봐야 할 눈이 봤는가
+    M->>C: precheck --phase 05
+    C-->>M: exit 0 · exit 9 면 사람 판단 · exit 10 이면 인프라
+    M->>C: contract-trace
+    C-->>M: 05_trace.json · 검사 5종
+    M->>A: 리뷰어 스킬 N종 · 라우팅은 결정론 · 한 메시지 · 병렬
+    A-->>M: 관점별 findings
+    M->>C: record --phase 05 --file ...
+    C-->>M: 원장에 append · 승격 후보를 staged 로
+    end
+
+    rect rgb(253,242,248)
+    Note over M,F: 06-pr — 밖으로 내보내도 되는가 · 승인은 사용자
+    M->>C: precheck --phase 06
+    M->>C: pr
+    C-->>M: exit 9 · 승인 대기 (상태 미잠금)
+    M->>U: 승인을 묻는다
+    U-->>M: 승인
+    M->>C: approve --phase 06
+    M->>C: pr
+    C->>C: git push · 마스킹 · 06_pr_body.md + 06_pr_req.json
+    C-->>M: 요청서 · 실행기는 forge 를 부르지 않는다
+    M->>F: PR 생성·갱신 · body 는 그대로 옮긴다
+    F-->>M: PR 번호
+    M->>C: record --phase 06 --file ...
+    end
+
+    rect rgb(240,249,255)
+    Note over M,F: 07-pr-review — 봇이 없다가 통과가 되지 않게
+    M->>C: review07 --external
+    C-->>M: 봇 꺼짐 → disabled → 생략 불성립 · 내장 리뷰가 돈다
+    M->>M: /code-review --effort {지시된 값}
+    M->>C: record --phase 07 --file ...
+    C-->>M: escaped_05 계산 · pr_repair 필요하면 되돌림
+    M->>C: promote --scan
+    end
+
+    M->>C: promote --flush
+    M->>C: report
+    C-->>M: 08_report_data.json 으로 필수 5절 · 재지 못한 것을 드러낸다
     M->>C: next
-    C-->>M: exit 11 · 런 완료 · 05~08 은 미구현
+    C-->>M: exit 11 · 런 완료 · 머지는 범위 밖
 ```
 
 **모델이 하는 일은 둘뿐이다** — 산출물 파일을 쓰고, `record` 를 호출한다. 봉투(stdout 의 JSON 하나)에서 읽는 것도 `render` 와 `next_command` 둘뿐이다.
@@ -326,9 +405,18 @@ flowchart LR
     P3 --> TW["test-writer<br/>src/**/*.test.ts · tsx"]
     P4["04-gate<br/>repair_dispatch"] --> IW
     P4 --> TW
+    P5["05-code-review<br/>라우팅은 결정론 · 병렬"] --> RV["리뷰어 스킬 5종<br/>data · sec · arch · test · docs"]
+    P5 -.review_repair.-> IW
+    P5 -.review_repair.-> TW
+    P6["06-pr<br/>승인: user"] --> FG["메인 세션 · forge 도구<br/>실행기는 부르지 않는다"]
+    P7["07-pr-review<br/>승인: inherited:06"] --> FG
+    P7 --> CR["/code-review<br/>내장 리뷰"]
+    P8["08-report"] --> RUN["docs/harness/pipeline/runs/{run_id}.md"]
 
-    P1 --> P2 --> P3 --> P4
+    P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8
 ```
+
+**05 이후로는 서브에이전트가 아닌 것이 둘 붙는다** — 리뷰어는 스킬이고, PR 을 실제로 만드는 것은 forge 도구를 든 메인 세션이다. 실행기는 `git` 과 `npm` 밖으로 나가지 않는다 ([ADR-H015](harness/DECISIONS.md)).
 
 **폴백이 섞이면 1라운드 수렴을 허용하지 않는다** — "독립 관측 두 개"라는 전제가 약해지기 때문이다. P1 이 3라운드를 돈 이유가 이것이다.
 
@@ -368,13 +456,16 @@ flowchart LR
 
 ### 6.7 실행기가 둘 공존한다
 
-`/feature`(8페이즈, `harness/phases/01~04.md`)와 `harness` 스킬 → `scripts/execute.py`(순차, `phases/{task}/step{N}.md`)가 **미통합 상태로 함께 있다.** 순차 실행기는 01~04 가 기능 1건을 완주할 때까지 **회귀 안전망**으로 남긴다.
+`/feature`(8페이즈, `harness/phases/01~08.md`)와 `harness` 스킬 → `scripts/execute.py`(순차, `phases/{task}/step{N}.md`)가 **미통합 상태로 함께 있다.** 순차 실행기는 01~08 이 기능 1건을 완주할 때까지 **회귀 안전망**으로 남긴다.
 
 ---
 
 ## 7. 앞으로
 
-- **05~08 이 다음이다** — `harness/phases/05-code-review.md` ~ `08-report.md` 와 `scripts/pipeline/ledger.py`, 그리고 `contract-trace` · `precheck` · `approve` · `mask` · `promote` · `report` 서브커맨드. `lint-phases` 가 그 전이를 `FUTURE` 로 드러내며 진입점을 가리키고 있다.
+- **첫 실물 런이 다음이다 — 그리고 그것이 이 증분이 만든 부채다.** 05~08 은 한 증분으로 지어졌고, "다음 실물 런이 05 의 결함을 드러낸 뒤에 06 을 짓는다" 던 순서를 밟지 않았다 (사용자 결정, [ADR-H015](harness/DECISIONS.md)). 그래서 **다음 런은 네 페이즈의 결함을 한꺼번에 받는다.** M20~M23 은 한 페이즈 위에서 드러난 넷이었고, 이번에는 네 층이 동시에 처음 돈다 — **결함이 어느 층에서 왔는지 가르는 비용이 그때보다 크다.**
+
+    **아직 한 번도 안 돈 경로 넷을 적어 둔다** — ① 요청서 → forge → `record --phase 06` 왕복 ② `escaped_05` 가 값을 갖는 경로(원장에 07 줄이 쌓이는 것) ③ `promote --apply` 의 규칙 전용 브랜치와 자체 게이트 ④ `pr_repair` 수리 루프.
+- **승격 원장이 아직 비어 있다** — `docs/harness/pipeline/ledger/findings.jsonl` 0줄, `rules_changelog.md` 데이터 행 0. 규칙 승격은 **05 리뷰어를 실제로 띄운 런**이 있어야 시작된다.
 - **다음 런이 1라운드 수렴의 첫 표본이다** — `cross_verify.primary` 를 채웠으므로, 리뷰어 둘이 모두 Major 0건이면 1라운드로 끝날 수 있다. P1 은 폴백이라 구조적으로 최소 2라운드였다.
 - **실패를 내는 런이 필요하다** — `attribution` 의 실패 경로가 아직 한 번도 안 돌았다. 일부러 만들지 않고 자연히 실패할 때를 기다린다.
 - **접두부 통합 예산의 값** — 형태는 정해졌고(접두부 × turn) 값은 8페이즈 자신의 실측이 있어야 정해진다.
@@ -407,13 +498,13 @@ flowchart LR
 
 ### 8.1 한 줄 소개
 
-> AI 코딩 에이전트가 기능 하나를 **계획 → 교차검증 → 구현 → 게이트**까지 완주하도록 만드는 8페이즈 파이프라인을 설계·구현했다. 절감은 A/B 로 재고, 재지 않은 값은 상수로 굳히지 않았다.
+> AI 코딩 에이전트가 기능 하나를 **계획 → 교차검증 → 구현 → 게이트 → 코드리뷰 → PR → 보고서**까지 완주하도록 만드는 8페이즈 파이프라인을 설계·구현했다. 절감은 A/B 로 재고, 재지 않은 값은 상수로 굳히지 않았다.
 
 ### 8.2 프로젝트 항목
 
 **Shelfie — AI 개발 파이프라인 (개인 프로젝트, 2026-09)**
 Next.js 16 · TypeScript · React 19 / 실행기는 Python 3.8 stdlib (서드파티 0)
-실행기 3,650줄 · 파이프라인 테스트 175건 (전체 파이썬 테스트 421건) · 앱 테스트 1,333건
+실행기 7,424줄 · 파이프라인 테스트 388건 (전체 파이썬 테스트 634건) · 앱 테스트 1,333건
 
 ### 8.3 성과 불릿 (이력서용)
 

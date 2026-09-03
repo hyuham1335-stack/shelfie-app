@@ -6,9 +6,10 @@
 
 종료 코드가 둘로 갈리는 것이 요점이다:
 
-- **exit 9** — 사용자 판단 대기. 상태를 잠그지 않는다. 예산 초과·브랜치
-  불일치·base behind 가 여기다. **자동 분할도 자동 리베이스도 하지 않는다** —
-  범위와 히스토리는 사람의 것이다.
+- **exit 9** — 사용자 판단 대기. 상태를 잠그지 않고 **카운터도 소모하지
+  않는다** (§2.5 — 정책은 소모하지 않는다). 예산 초과·브랜치 불일치·base
+  behind 가 여기다. **자동 분할도 자동 리베이스도 하지 않는다** — 범위와
+  히스토리는 사람의 것이다.
 - **exit 10** — 인프라 실패. 상태를 잠그고, **카운터를 소모하지 않는다** (§E9).
   프로브가 실패한 채로 전체 회귀를 돌리면 한꺼번에 빨간불이 되고, 그것을
   코드 문제로 읽게 된다.
@@ -53,8 +54,12 @@ def run(root, scope="pr", changed=None, config=None, adapter=None):
         return _result(10, checks, budget, "infra", changed,
                        counter_consumed=False, infra=infra)
     if policy_failed:
+        # **정책 실패도 카운터를 소모하지 않는다** (§2.5 의 실패 3분류).
+        # 전에는 True 를 반환했으나 그것을 읽는 코드가 없어 실제로는 아무것도
+        # 태우지 않았다 — 선언과 실제가 갈라져 있었고, 명세에 정책이 예산을
+        # 태워야 한다는 근거는 없다. 선언을 실제에 맞췄다.
         return _result(9, checks, budget, "policy", changed,
-                       counter_consumed=True)
+                       counter_consumed=False)
     return _result(0, checks, budget, None, changed, counter_consumed=False)
 
 
@@ -72,8 +77,11 @@ def _result(exit_, checks, budget, classification, changed, counter_consumed,
                      "쪼개거나 리베이스하지 않는다.")}
 
 
-def _add(checks, name, ok, kind, message=""):
-    checks.append({"name": name, "ok": ok, "kind": kind, "message": message})
+def _add(checks, name, ok, kind, message="", **extra):
+    """`extra` 는 사람이 읽는 문구 말고 **기계가 쓰는 값**이다 (behind 수 등).
+    문구에서 숫자를 다시 파싱하는 것은 문구를 고치는 순간 조용히 깨진다."""
+    checks.append(dict({"name": name, "ok": ok, "kind": kind,
+                        "message": message}, **extra))
 
 
 # ------------------------------------------------------------------- 변경 집합
@@ -180,9 +188,11 @@ def _check_divergence(root, config, checks):
     if behind:
         _add(checks, "base", False, "policy",
              "base(%s) 가 %d 커밋 앞서 있다. **자동으로 리베이스하지 않는다** — "
-             "머지할지 리베이스할지는 사람이 정한다." % (base, behind))
+             "머지할지 리베이스할지는 사람이 정한다." % (base, behind),
+             behind=behind, ahead=ahead)
         return
-    _add(checks, "base", True, "policy", "%s 대비 +%d" % (base, ahead))
+    _add(checks, "base", True, "policy", "%s 대비 +%d" % (base, ahead),
+         behind=0, ahead=ahead)
 
 
 def _check_infra(adapter, changed, checks):

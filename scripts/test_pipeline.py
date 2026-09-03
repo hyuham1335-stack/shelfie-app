@@ -417,7 +417,7 @@ class TestModelCallBudget:
 # ---------------------------------------------------------------------------
 
 PHASE_IDS = ["01-plan", "02-cross-verify", "03-implement", "04-gate",
-             "05-code-review"]
+             "05-code-review", "06-pr", "07-pr-review", "08-report"]
 
 
 @pytest.fixture
@@ -483,17 +483,33 @@ class TestLintPhases:
                      "path", "${config.project.no_such_key}/x.md"))
         assert _fails(_lint(repo), "placeholder")
 
-    def test_future_on_success_is_a_warning_not_a_failure(self, repo, phases):
-        """마지막 페이즈는 아직 없는 다음을 가리킨다. 정본 그래프를 잘라내지 않는다.
+    def test_every_transition_lands_on_a_real_phase(self, repo, phases):
+        """**여덟이 다 서면서 이 단언의 성질이 바뀌었다.**
 
-        **이 단언의 대상은 페이즈가 늘 때마다 옮겨간다** — 05 가 생기면서
-        `05-code-review` 에서 `06-pr` 로 갔다. 지우는 것이 아니라 옮기는 것이
-        요점이다: FUTURE 한 줄이 다음 작업의 진입점을 계속 가리켜야 한다.
+        05 까지는 "FUTURE 한 줄이 다음 진입점을 가리킨다"였고, 그 대상이
+        04 → 05 → 06 으로 옮겨 다녔다. 08 이 마지막이라 **옮길 곳이 없다** —
+        이제 잠글 것은 "모든 전이가 실재하는 페이즈로 떨어지고, 마지막은
+        전이하지 않는다"다. FUTURE 가 0건인 것이 이제 정상이다.
+
+        FUTURE 판정 자체는 지우지 않았다 — 09 를 가리키는 페이즈가 생기면
+        그때 다시 한 줄이 뜬다. `test_future_transition_still_warns` 가 그
+        기제를 따로 잠근다.
         """
         findings = _lint(repo)
-        future = [f for f in findings if f["rule"] == "on_success" and f["status"] == "WARN"]
-        assert future, "다음 페이즈로의 전이가 FUTURE 로 남아 있어야 한다"
-        assert "06-pr" in future[0]["message"]
+        future = [f for f in findings
+                  if f["rule"] == "on_success" and f["status"] == "WARN"]
+        assert future == [], "여덟이 다 섰으므로 FUTURE 는 0건이다"
+        assert _fails(findings, "on_success") == []
+
+    def test_future_transition_still_warns(self, repo, phases):
+        """기제는 살아 있다 — 없는 다음을 가리키면 FAIL 이 아니라 WARN 이다."""
+        _rewrite(phases / "08-report.md",
+                 lambda f: f.__setitem__("on_success", "09-nope"))
+        findings = _lint(repo)
+        future = [f for f in findings
+                  if f["rule"] == "on_success" and f["status"] == "WARN"]
+        assert len(future) == 1
+        assert "09-nope" in future[0]["message"]
         assert _fails(findings, "on_success") == []
 
     def test_backward_orphan_on_success_fails(self, repo, phases):
@@ -2835,13 +2851,21 @@ class TestPhase05File:
         loaded, _ = cli.load_phases(ROOT)
         assert loaded["04-gate"]["front"]["on_success"] == "05-code-review"
 
-    def test_05_points_at_06_which_is_the_next_future(self, repo):
-        """FUTURE 표시는 지우는 것이 아니라 **다음 진입점으로 옮긴다.**"""
+    def test_실물_페이즈에_FUTURE_가_남지_않았다(self, repo):
+        """**여덟이 다 섰다.** 다섯 번의 증분 동안 다음 진입점을 가리키던
+        그 한 줄이 처음으로 사라진다."""
         findings = cli.lint_phases(ROOT)
         future = [f for f in findings
                   if f["rule"] == "on_success" and f["status"] == "WARN"]
-        assert len(future) == 1
-        assert "06-pr" in future[0]["message"]
+        assert future == [], future
+
+    def test_실물_페이즈가_여덟이고_08_은_전이하지_않는다(self, repo):
+        loaded, broken = cli.load_phases(ROOT)
+        assert broken == []
+        assert sorted(loaded) == ["01-plan", "02-cross-verify", "03-implement",
+                                  "04-gate", "05-code-review", "06-pr",
+                                  "07-pr-review", "08-report"]
+        assert loaded["08-report"]["front"].get("on_success") is None
 
     def test_lint_passes_on_the_real_phases(self, repo):
         bad = [f for f in cli.lint_phases(ROOT) if f["status"] == "FAIL"]
@@ -3043,3 +3067,1179 @@ class TestPhase05Ledgering:
         env = cli.run_record(repo, "05", str(f), reviewer="arch", round_=1,
                              run_id=run_id)
         assert env["exit"] == 8
+
+
+# ---------------------------------------------------------------------------
+# J. 등급의 단일 출처 — 06~08 이 얹히기 전에 먼저 세운다
+# ---------------------------------------------------------------------------
+
+
+class TestGradeSingleSource:
+    """등급은 강등만 한다. 그 전에는 나중에 쓰는 쪽이 이겼다."""
+
+    def test_처음_등급은_그대로_설정된다(self):
+        s = {}
+        assert st.demote(s, "PASS") == "PASS"
+
+    def test_더_나쁜_등급으로만_움직인다(self):
+        s = {"grade": "PASS"}
+        assert st.demote(s, "PASS_WITH_GAPS") == "PASS_WITH_GAPS"
+        assert st.demote(s, "INCOMPLETE") == "INCOMPLETE"
+
+    def test_승격은_거부된다(self):
+        """게이트가 05 뒤에 다시 돌아도 PASS_WITH_GAPS 가 PASS 로 되돌아가지 않는다."""
+        s = {"grade": "PASS_WITH_GAPS"}
+        assert st.demote(s, "PASS") == "PASS_WITH_GAPS"
+        s = {"grade": "INCOMPLETE"}
+        assert st.demote(s, "PASS_WITH_GAPS") == "INCOMPLETE"
+
+    def test_gap_은_중복없이_쌓인다(self):
+        s = {}
+        st.demote(s, "PASS_WITH_GAPS", "review05:failed")
+        st.demote(s, "PASS_WITH_GAPS", "review05:failed")
+        st.demote(s, "PASS_WITH_GAPS", "stage_absent:e2e")
+        assert s["gaps"] == ["review05:failed", "stage_absent:e2e"]
+
+    def test_등급이_None_이면_gap_만_쌓고_등급은_안_건드린다(self):
+        s = {"grade": "PASS"}
+        assert st.demote(s, None, "some_gap") == "PASS"
+        assert s["gaps"] == ["some_gap"]
+
+    def test_어휘_밖_등급은_예외다(self):
+        with pytest.raises(ValueError):
+            st.demote({}, "GREEN")
+
+    def test_gate_가_state_의_등급_어휘를_본다(self):
+        """gate.py 가 상수를 다시 적으면 두 곳이 갈라진다."""
+        sys.path.insert(0, str(_SCRIPTS / "pipeline"))
+        import gate as gate_mod
+        assert (gate_mod.GRADE_PASS, gate_mod.GRADE_GAPS,
+                gate_mod.GRADE_INCOMPLETE) == st.GRADES
+
+    def test_06_08_의_이벤트_어휘가_있다(self):
+        """어휘 밖 kind 는 append_event 가 ValueError 를 던진다."""
+        for kind in ("approved", "approval_revoked", "pr_pushed",
+                     "pr_opened", "promoted"):
+            assert kind in st.EVENT_KINDS
+
+    def test_07_수리_카운터가_있다(self):
+        assert "pr_repair" in st.COUNTERS
+
+    def test_봉투가_승인과_PR_을_노출한다(self):
+        env = st.envelope("x", True, 0, {"approval": {"06": {"granted": True}},
+                                         "pr": {"number": 7}}, {}, "", None)
+        assert env["state_summary"]["approval"]["06"]["granted"] is True
+        assert env["state_summary"]["pr"]["number"] == 7
+
+
+# ---------------------------------------------------------------------------
+# K. precheck 의 선언과 실제를 맞춘다 — 06 이 이 모듈을 그대로 재사용한다
+# ---------------------------------------------------------------------------
+
+
+class TestPrecheckSpecAlignment:
+    """§2.5 는 정책이 카운터를 소모하지 않는다고 하고, §2.3 은 exit 10 이
+    상태를 잠근다고 한다. 둘 다 코드와 어긋나 있었다."""
+
+    def test_정책_실패는_카운터를_소모하지_않는다(self, repo):
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 40)          # files_max: 10 초과
+        got = pc.run(repo, scope="pr")
+        assert got["exit"] == 9
+        assert got["classification"] == "policy"
+        assert got["counter_consumed"] is False
+
+    def test_인프라_실패가_상태를_실제로_잠근다(self, repo, request_file,
+                                              monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _branch(repo, "feat-x")
+        p = repo / "src" / "services"
+        p.mkdir(parents=True)
+        (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        cli.run_init(repo, "x", request_file)
+        env = cli.run_precheck(repo, scope="pr")
+        assert env["exit"] == 10
+        _paths, s = st.load(repo)
+        assert s["escalated"] is True
+        assert (repo / "_workspace" / "runs" / s["run_id"]
+                / "ESCALATION.md").exists()
+
+    def test_정책_실패는_상태를_잠그지_않는다(self, repo, request_file):
+        _branch(repo, "feat-x")
+        cli.run_init(repo, "x", request_file)
+        _bulk_change(repo, 40)
+        env = cli.run_precheck(repo, scope="pr")
+        assert env["exit"] == 9
+        _paths, s = st.load(repo)
+        assert s["escalated"] is False
+
+    def test_at_05_와_at_06_이_갈린다(self, repo, request_file):
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 1)
+        cli.run_init(repo, "x", request_file)
+        cli.run_precheck(repo, scope="pr", phase="05")
+        cli.run_precheck(repo, scope="pr", phase="06")
+        _paths, s = st.load(repo)
+        assert s["precheck"]["at_05"]["files"] >= 0
+        assert s["precheck"]["at_06"]["files"] >= 0
+        assert "base_behind" in s["precheck"]["at_06"]
+
+    def test_런_없이도_돈다(self, repo):
+        """06 이 쓰기 전에 05 가 쓰던 성질이다 — 잃지 않는다."""
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 1)
+        env = cli.run_precheck(repo, scope="pr", phase="06")
+        assert env["exit"] == 0
+
+
+# ---------------------------------------------------------------------------
+# L. mask — 외부로 나가는 페이로드에만. 원장·내부 보고서는 원문 보존
+# ---------------------------------------------------------------------------
+
+import mask as mask_mod  # noqa: E402
+
+
+def _secrets(repo, **kv):
+    p = repo / ".env.local"
+    p.write_text("\n".join("%s=%s" % (k, v) for k, v in kv.items()) + "\n",
+                 encoding="utf-8")
+    return p
+
+
+class TestMask:
+
+    def test_비밀_파일의_값만_가리고_키_이름은_남긴다(self, repo):
+        _secrets(repo, ANTHROPIC_API_KEY="sk-ant-실제값-99")
+        got = mask_mod.mask_text(repo, "설정: ANTHROPIC_API_KEY=sk-ant-실제값-99 끝")
+        assert "sk-ant-실제값-99" not in got["text"]
+        assert "ANTHROPIC_API_KEY" in got["text"]
+        assert "[MASKED]" in got["text"]
+
+    def test_값이_다른_문맥에_나와도_가린다(self, repo):
+        """PR 본문에는 KEY=VALUE 형태가 아니라 로그 조각으로 실릴 수 있다."""
+        _secrets(repo, ALADIN_TTB_KEY="ttbkey12345")
+        got = mask_mod.mask_text(repo, "요청 실패: ...&ttbkey=ttbkey12345&q=1")
+        assert "ttbkey12345" not in got["text"]
+
+    def test_베어러_토큰_패턴(self, repo):
+        got = mask_mod.mask_text(repo, "Authorization: Bearer abc.DEF-123_xyz")
+        assert "abc.DEF-123_xyz" not in got["text"]
+        assert "Bearer" in got["text"]
+
+    def test_커넥션_문자열의_비밀번호만_가린다(self, repo):
+        got = mask_mod.mask_text(repo, "postgres://admin:hunter2@db.example.com:5432/x")
+        assert "hunter2" not in got["text"]
+        assert "db.example.com" in got["text"]      # 호스트는 남는다
+        assert "admin" in got["text"]               # 사용자 이름도 남는다
+
+    def test_클라우드_액세스_키_패턴(self, repo):
+        got = mask_mod.mask_text(repo, "key=AKIAIOSFODNN7EXAMPLE rest")
+        assert "AKIAIOSFODNN7EXAMPLE" not in got["text"]
+
+    def test_32자_난수처럼_보이는_것을_통째로_가리지_않는다(self, repo):
+        """식별자·해시가 지워지면 스택트레이스가 무의미해진다."""
+        sha = "c1c558f9ce1b9e16ee4b4acb0be95976fcdb2257"
+        got = mask_mod.mask_text(repo, "계약 sha256=%s 이다" % sha)
+        assert sha in got["text"]
+
+    def test_비밀_파일_부재는_경고이지_실패가_아니다(self, repo):
+        got = mask_mod.mask_text(repo, "평범한 본문")
+        assert got["secret_files_missing"] == [".env.local", ".env"]
+        assert got["ok"] is True
+        assert got["text"] == "평범한 본문"
+
+    def test_짧은_값은_비밀로_보지_않는다(self, repo):
+        """빈 값이나 true/1 같은 것을 가리면 본문이 걸레가 된다."""
+        _secrets(repo, DEBUG="1", NODE_ENV="test", REAL="비밀값입니다0123")
+        got = mask_mod.mask_text(repo, "NODE_ENV=test 이고 DEBUG=1 이다")
+        assert got["text"] == "NODE_ENV=test 이고 DEBUG=1 이다"
+
+    def test_cli_가_파일을_읽어_파일로_쓴다(self, repo):
+        _secrets(repo, K="비밀값입니다0123")
+        src = repo / "in.md"
+        src.write_text("본문 비밀값입니다0123\n", encoding="utf-8")
+        env = cli.run_mask(repo, str(src), str(repo / "out.md"))
+        assert env["exit"] == 0
+        out = (repo / "out.md").read_text(encoding="utf-8")
+        assert "비밀값입니다0123" not in out
+        assert "[MASKED]" in out
+
+    def test_없는_파일은_exit_1(self, repo):
+        env = cli.run_mask(repo, str(repo / "없다.md"), str(repo / "out.md"))
+        assert env["exit"] == 1
+
+
+# ---------------------------------------------------------------------------
+# N. approve — 승인은 이벤트다. 지문과 등급을 함께 못박는다
+# ---------------------------------------------------------------------------
+
+
+def _enter_06(repo, request_file, phases, grade="PASS"):
+    """05 까지를 상태로 위조하고 06 에 세운다. **지문은 실물이다.**"""
+    run_id, paths = _enter_05(repo, request_file, phases)
+    _p, s = st.load(repo, run_id)
+    st.set_phase_status(s, "05-code-review", "passed")
+    s["phase"] = "06-pr"
+    s["grade"] = grade
+    s["review05"] = {"status": "ok", "reviewers_planned": 1, "reviewers_ok": 1,
+                     "mode": "merged", "major": 0, "need_more_context": [],
+                     "dropped_by_enforcement": 0, "truncated": False}
+    config = harness._read_json(repo / harness.CONFIG_REL)
+    s["fingerprint"] = st.fingerprint(repo, config)
+    st.save(_p, s)
+    return run_id, paths
+
+
+class TestApprove:
+
+    def test_승인이_지문과_등급을_함께_남긴다(self, repo, request_file, phases):
+        run_id, _paths = _enter_06(repo, request_file, phases)
+        env = cli.run_approve(repo, "06", run_id=run_id)
+        assert env["exit"] == 0
+        _p, s = st.load(repo, run_id)
+        a = s["approval"]["06"]
+        assert a["granted"] is True
+        assert a["mode"] == "user"
+        assert a["scope"] == "push+pr"
+        assert a["grade_at_grant"] == "PASS"
+        assert a["fingerprint"]["value"] == s["fingerprint"]["value"]
+
+    def test_auto_도_push_pr_까지만_승인한다(self, repo, request_file, phases):
+        """06 시점의 등급은 외부 리뷰를 못 본 '예상' 이다 (§3.6)."""
+        run_id, _paths = _enter_06(repo, request_file, phases)
+        env = cli.run_approve(repo, "06", auto=True, run_id=run_id)
+        assert env["exit"] == 0
+        _p, s = st.load(repo, run_id)
+        assert s["approval"]["06"]["mode"] == "auto"
+        assert s["approval"]["06"]["scope"] == "push+pr"
+
+    def test_revoke_가_승인을_되돌리고_사유를_남긴다(self, repo, request_file,
+                                                    phases):
+        run_id, _paths = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        env = cli.run_approve(repo, "06", revoke=True, run_id=run_id)
+        assert env["exit"] == 0
+        _p, s = st.load(repo, run_id)
+        assert s["approval"]["06"]["granted"] is False
+        assert s["approval"]["06"]["revoked_at"]
+
+    def test_05_가_안_끝났으면_exit_3(self, repo, request_file, phases):
+        run_id, paths = _enter_05(repo, request_file, phases)
+        env = cli.run_approve(repo, "06", run_id=run_id)
+        assert env["exit"] == 3
+
+    def test_런이_없으면_exit_3(self, repo):
+        env = cli.run_approve(repo, "06")
+        assert env["exit"] == 3
+
+    def test_승인_뒤_코드가_바뀌면_지문이_어긋난다(self, repo, request_file,
+                                                  phases):
+        """이 어긋남을 06 이 exit 6 으로 읽는다 — 승인 자동 무효."""
+        run_id, _paths = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        (repo / "src" / "lib" / "match.ts").write_text(
+            "export function matchTitle(): number { return 1 }\n",
+            encoding="utf-8")
+        config = harness._read_json(repo / harness.CONFIG_REL)
+        _p, s = st.load(repo, run_id)
+        saved = s["approval"]["06"]["fingerprint"]
+        assert not st.fingerprint_matches(saved, st.fingerprint(repo, config))
+
+    def test_승인이_이벤트로_남는다(self, repo, request_file, phases):
+        run_id, paths = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        kinds = [json.loads(l)["kind"]
+                 for l in paths.events.read_text(encoding="utf-8").splitlines() if l]
+        assert "approved" in kinds
+
+
+# ---------------------------------------------------------------------------
+# O. 06-pr — 승인 · push · PR 요청서. 실행기는 forge 를 부르지 않는다
+# ---------------------------------------------------------------------------
+
+import pr as pr_mod  # noqa: E402
+
+
+def _remote(repo, tmp_path):
+    """로컬 bare 리포를 origin 으로 붙인다 — 네트워크를 타지 않는다."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)],
+                   capture_output=True)
+    _git(repo, "remote", "add", "origin", str(bare))
+    _git(repo, "push", "-q", "origin", "main")
+    return bare
+
+
+class TestPr06Preflight:
+    """비용 오름차순이고 첫 실패에서 멈춘다. **브랜치를 자동 생성하지 않는다.**"""
+
+    def test_보호_브랜치_위면_exit_3(self, repo, request_file, phases):
+        run_id, _p = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 3
+        assert "main" in env["render"]
+
+    def test_브랜치_패턴_불일치면_exit_3(self, repo, request_file, phases):
+        _branch(repo, "wip")
+        run_id, _p = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 3
+
+    def test_승인이_없으면_exit_9_이고_상태를_잠그지_않는다(self, repo,
+                                                            request_file, phases,
+                                                            tmp_path):
+        _branch(repo, "feat-x")
+        run_id, _p = _enter_06(repo, request_file, phases)
+        _remote(repo, tmp_path)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 9
+        assert "승인" in env["render"]
+        assert "머지는 포함하지 않습니다" in env["render"]
+        _pp, s = st.load(repo, run_id)
+        assert s["escalated"] is False
+
+    def test_승인_뒤_코드가_바뀌면_exit_6(self, repo, request_file, phases,
+                                          tmp_path):
+        _branch(repo, "feat-x")
+        run_id, _p = _enter_06(repo, request_file, phases)
+        _remote(repo, tmp_path)
+        cli.run_approve(repo, "06", run_id=run_id)
+        (repo / "src" / "lib" / "match.ts").write_text(
+            "export function matchTitle(): number { return 2 }\n",
+            encoding="utf-8")
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 6
+        assert "재승인" in env["render"]
+
+    def test_철회된_승인은_승인이_아니다(self, repo, request_file, phases,
+                                          tmp_path):
+        _branch(repo, "feat-x")
+        run_id, _p = _enter_06(repo, request_file, phases)
+        _remote(repo, tmp_path)
+        cli.run_approve(repo, "06", run_id=run_id)
+        cli.run_approve(repo, "06", revoke=True, run_id=run_id)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 9
+
+
+class TestPr06Body:
+
+    def test_본문_최상단이_완료_등급_한_줄이다(self, repo, request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases,
+                                  grade="PASS_WITH_GAPS")
+        _pp, s = st.load(repo, run_id)
+        s["gaps"] = ["stage_absent:e2e"]
+        st.save(_pp, s)
+        body = pr_mod.build_body(repo, paths, s,
+                                 harness._read_json(repo / harness.CONFIG_REL))
+        first = body.strip().splitlines()[0]
+        assert "PASS_WITH_GAPS" in first
+        assert "stage_absent:e2e" in body
+
+    def test_본문에_필수_절이_전부_있다(self, repo, request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        body = pr_mod.build_body(repo, paths, s,
+                                 harness._read_json(repo / harness.CONFIG_REL))
+        for sec in ("## 개요", "## 작업 내용", "## 기술적 고려사항",
+                    "## 참고사항", "## 체크리스트"):
+            assert sec in body, sec
+
+    def test_본문이_마스킹을_거친다(self, repo, request_file, phases, tmp_path):
+        _branch(repo, "feat-x")
+        _secrets(repo, K="아주비밀한값0123")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        req = repo / "_workspace" / "requests" / "req.md"
+        req.write_text("아주비밀한값0123 을 쓰는 기능\n", encoding="utf-8")
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        cli.run_pr(repo, run_id=run_id)
+        out = (paths.run_dir / "06_pr_body.md").read_text(encoding="utf-8")
+        assert "아주비밀한값0123" not in out
+
+
+class TestPr06Push:
+
+    def test_성공하면_계약을_지우고_push_하고_요청서를_낸다(self, repo,
+                                                          request_file, phases,
+                                                          tmp_path):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        contract = repo / "_workspace" / "contract_x.md"
+        assert contract.exists()
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 0, env["render"]
+        assert not contract.exists(), "계약 파일은 push 직전에 지운다"
+        assert (paths.run_dir / "06_pr_body.md").exists()
+        req = json.loads((paths.run_dir / "06_pr_req.json")
+                         .read_text(encoding="utf-8"))
+        assert req["head"] == "feat-x"
+        assert req["base"] == "main"
+        assert req["forge"] == "github"
+        assert req["body_file"].endswith("06_pr_body.md")
+        _pp, s = st.load(repo, run_id)
+        assert s["pr"]["pushed"] is True
+
+    def test_원격이_없으면_exit_9_삼지선다(self, repo, request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, _p = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 9
+        assert "원격" in env["render"]
+        for opt in ("①", "②", "③"):
+            assert opt in env["render"]
+
+    def test_non_fast_forward_는_에스컬레이션이다(self, repo, request_file,
+                                                 phases, tmp_path):
+        """force-push 금지이므로 자동 해결이 없다 (§E8)."""
+        _branch(repo, "feat-x")
+        run_id, _p = _enter_06(repo, request_file, phases)
+        bare = _remote(repo, tmp_path)
+        _git(repo, "push", "-q", "-u", "origin", "feat-x")
+        # 원격만 앞서게 만든다 — 다른 클론이 커밋을 얹은 상황
+        other = tmp_path / "other"
+        subprocess.run(["git", "clone", "-q", str(bare), str(other)],
+                       capture_output=True)
+        _git(other, "checkout", "-q", "feat-x")
+        (other / "z.txt").write_text("z\n", encoding="utf-8")
+        _git(other, "add", "-A")
+        _git(other, "-c", "user.email=t@e.com", "-c", "user.name=t",
+             "commit", "-qm", "other")
+        _git(other, "push", "-q", "origin", "feat-x")
+        cli.run_approve(repo, "06", run_id=run_id)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 10
+        _pp, s = st.load(repo, run_id)
+        assert s["escalated"] is True
+
+    def test_force_push_를_쓰지_않는다(self):
+        src = (ROOT / "scripts" / "pipeline" / "pr.py").read_text(encoding="utf-8")
+        assert "--force" not in src and "-f\"" not in src
+
+
+class TestRecord06:
+    """PR 결과를 되돌려 받는다. **번호가 갈라지는 것을 여기서 막는다.**"""
+
+    def _pushed(self, repo, request_file, phases, tmp_path):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 0, env["render"]
+        return run_id, paths
+
+    def _result(self, paths, **kw):
+        d = {"number": 231, "url": "https://example.com/pull/231",
+             "state": "open", "action": "created"}
+        d.update(kw)
+        p = paths.run_dir / "06_pr_result.json"
+        p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def test_결과가_state_pr_에_들어가고_07_로_간다(self, repo, request_file,
+                                                    phases, tmp_path):
+        run_id, paths = self._pushed(repo, request_file, phases, tmp_path)
+        f = self._result(paths)
+        env = cli.run_record(repo, "06", str(f), run_id=run_id)
+        assert env["exit"] in (0, 11), env["render"]
+        _p, s = st.load(repo, run_id)
+        assert s["pr"]["number"] == 231
+        assert s["pr"]["state"] == "open"
+        assert s["phase"] == "07-pr-review"
+
+    def test_번호가_정수가_아니면_exit_8(self, repo, request_file, phases,
+                                        tmp_path):
+        run_id, paths = self._pushed(repo, request_file, phases, tmp_path)
+        f = self._result(paths, number="231")
+        env = cli.run_record(repo, "06", str(f), run_id=run_id)
+        assert env["exit"] == 8
+
+    def test_상태_어휘_밖은_exit_8(self, repo, request_file, phases, tmp_path):
+        run_id, paths = self._pushed(repo, request_file, phases, tmp_path)
+        f = self._result(paths, state="draft")
+        env = cli.run_record(repo, "06", str(f), run_id=run_id)
+        assert env["exit"] == 8
+
+    def test_번호가_갈라지면_exit_8(self, repo, request_file, phases, tmp_path):
+        """갱신이어야 할 것을 새로 만들면 07 이 어느 PR 을 볼지 모르게 된다."""
+        run_id, paths = self._pushed(repo, request_file, phases, tmp_path)
+        _p, s = st.load(repo, run_id)
+        s["pr"]["number"] = 7
+        st.save(_p, s)
+        f = self._result(paths, number=231)
+        env = cli.run_record(repo, "06", str(f), run_id=run_id)
+        assert env["exit"] == 8
+        assert "갈라" in env["render"] or "번호" in env["render"]
+
+    def test_push_전에는_exit_3(self, repo, request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        f = self._result(paths)
+        env = cli.run_record(repo, "06", str(f), run_id=run_id)
+        assert env["exit"] == 3
+
+    def test_PR_이_이벤트로_남는다(self, repo, request_file, phases, tmp_path):
+        run_id, paths = self._pushed(repo, request_file, phases, tmp_path)
+        cli.run_record(repo, "06", str(self._result(paths)), run_id=run_id)
+        kinds = [json.loads(l)["kind"]
+                 for l in paths.events.read_text(encoding="utf-8").splitlines() if l]
+        assert "pr_opened" in kinds
+
+
+# ---------------------------------------------------------------------------
+# P. promote — 승격은 07 에서 런당 한 번. 05 는 staged 까지였다
+# ---------------------------------------------------------------------------
+
+import promote as promo_mod  # noqa: E402
+
+
+def _fill_ledger(repo, key_title, category, severity, runs):
+    """임계를 넘기도록 같은 유형을 여러 런에 걸쳐 원장에 쌓는다."""
+    ldg.seed(repo)
+    for rid in runs:
+        ldg.append(repo, rid, "05", [
+            {"category": category, "severity": severity, "target_role": "impl",
+             "title": key_title, "resolution": "repaired",
+             "reported_by": ["arch"], "source": "reviewer"}])
+
+
+def _verdict_file(paths, verdicts):
+    p = paths.run_dir / "07_promo_verdict.json"
+    p.write_text(json.dumps({"verdicts": verdicts}, ensure_ascii=False),
+                 encoding="utf-8")
+    return p
+
+
+class TestPromoteScan:
+
+    def test_후보가_0_이면_모델을_부르지_않고_종결한다(self, repo, request_file,
+                                                      phases):
+        """초기 런의 최빈 경로다 — 원장이 비어 있다."""
+        ldg.seed(repo)
+        run_id, _p = _enter_06(repo, request_file, phases)
+        env = cli.run_promote(repo, scan=True, run_id=run_id)
+        assert env["exit"] == 0
+        assert env["data"]["candidates"] == []
+        assert env["data"]["needs_model"] is False
+        _pp, s = st.load(repo, run_id)
+        assert s["promotions"] == []
+
+    def test_임계를_넘으면_후보가_올라온다(self, repo, request_file, phases):
+        _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
+                     ["r1", "r2"])
+        run_id, _p = _enter_06(repo, request_file, phases)
+        env = cli.run_promote(repo, scan=True, run_id=run_id)
+        assert env["exit"] == 0
+        assert len(env["data"]["candidates"]) == 1
+        assert env["data"]["needs_model"] is True
+
+    def test_한_런에_몰린_것은_후보가_아니다(self, repo, request_file, phases):
+        """distinct_runs >= 2 — 그 런의 특성이지 학습 대상이 아니다."""
+        _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
+                     ["r1", "r1"])
+        run_id, _p = _enter_06(repo, request_file, phases)
+        env = cli.run_promote(repo, scan=True, run_id=run_id)
+        assert env["data"]["candidates"] == []
+        assert len(env["data"]["held"]) == 1
+
+
+def _staged_authz(repo, request_file, phases):
+    _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
+                 ["r1", "r2"])
+    run_id, paths = _enter_06(repo, request_file, phases)
+    cli.run_promote(repo, scan=True, run_id=run_id)
+    return run_id, paths
+
+
+def _one_verdict(**kw):
+    """판정은 **어느 후보를 올리는지 가리켜야 한다** — rule_id 는 새로 짓는
+    목적지 이름이라 후보의 기본 이름과 다를 수 있다."""
+    d = {"action": "create", "judgement": "new", "rule_id": "authz-catchall",
+         "category": "AUTHZ_MISSING_RULE", "enforceable": "prose",
+         "rationale": "캐치올 위치는 기계가 못 본다"}
+    d.update(kw)
+    return d
+
+
+class TestPromoteVerdict:
+
+    def test_duplicate_에서_create_는_금지다(self, repo, request_file, phases):
+        run_id, paths = _staged_authz(repo, request_file, phases)
+        f = _verdict_file(paths, [_one_verdict(judgement="duplicate",
+                                               action="create")])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id)
+        assert env["exit"] == 8
+        assert "duplicate" in json.dumps(env["data"], ensure_ascii=False)
+
+    def test_contradicts_는_쓰기를_차단하고_에스컬레이션한다(self, repo,
+                                                          request_file, phases):
+        run_id, paths = _staged_authz(repo, request_file, phases)
+        f = _verdict_file(paths, [_one_verdict(judgement="contradicts")])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id)
+        assert env["exit"] == 10
+        _pp, s = st.load(repo, run_id)
+        assert s["escalated"] is True
+
+    def test_기계로_막을_수_있는_규칙의_산문_승격은_exit_8(self, repo,
+                                                        request_file, phases):
+        _fill_ledger(repo, "경계를 넘는 import", "BOUNDARY_VIOLATION",
+                     "critical", ["r1", "r2"])
+        run_id, paths = _enter_06(repo, request_file, phases)
+        cli.run_promote(repo, scan=True, run_id=run_id)
+        f = _verdict_file(paths, [_one_verdict(rule_id="no-restricted-imports",
+                                               category="BOUNDARY_VIOLATION",
+                                               enforceable="prose")])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id)
+        assert env["exit"] == 8
+
+    def test_런당_create_상한은_3건이다(self, repo, request_file, phases):
+        run_id, paths = _staged_authz(repo, request_file, phases)
+        f = _verdict_file(paths, [_one_verdict(rule_id="r%d" % i)
+                                  for i in range(4)])
+        # 넷 다 같은 후보를 가리키지만, 상한 검사는 create 의 **개수**를 본다
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id)
+        assert env["exit"] == 8
+        assert "3" in json.dumps(env["data"], ensure_ascii=False)
+
+
+class TestPromoteApply:
+
+    def _ready(self, repo, request_file, phases):
+        run_id, paths = _staged_authz(repo, request_file, phases)
+        f = _verdict_file(paths, [_one_verdict()])
+        return run_id, paths, f
+
+    def test_적용이_changelog_에_줄을_남긴다(self, repo, request_file, phases):
+        run_id, paths, f = self._ready(repo, request_file, phases)
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id)
+        assert env["exit"] == 0, env["render"]
+        log = (repo / "docs" / "harness" / "pipeline" / "ledger"
+               / "rules_changelog.md").read_text(encoding="utf-8")
+        assert "authz-catchall" in log
+        assert run_id in log
+
+    def test_적용이_promotions_를_applied_로_만든다(self, repo, request_file,
+                                                   phases):
+        run_id, paths, f = self._ready(repo, request_file, phases)
+        cli.run_promote(repo, apply=True, verdict_file=str(f), run_id=run_id)
+        _pp, s = st.load(repo, run_id)
+        assert s["promotions"]
+        assert all(p["status"] in ("applied", "rejected", "skipped")
+                   for p in s["promotions"])
+        assert any(p["status"] == "applied" for p in s["promotions"])
+
+    def test_산출_파일이_07_promo_applied_다(self, repo, request_file, phases):
+        run_id, paths, f = self._ready(repo, request_file, phases)
+        cli.run_promote(repo, apply=True, verdict_file=str(f), run_id=run_id)
+        assert (paths.run_dir / "07_promo_applied.json").exists()
+
+    def test_lint_승격인데_베이스라인_diff_가_없으면_rejected(self, repo,
+                                                            request_file,
+                                                            phases):
+        """규칙은 추가했는데 아무것도 안 막는 것이 조용히 통과하지 않는다."""
+        _fill_ledger(repo, "경계를 넘는 import", "BOUNDARY_VIOLATION",
+                     "critical", ["r1", "r2"])
+        run_id, paths = _enter_06(repo, request_file, phases)
+        cli.run_promote(repo, scan=True, run_id=run_id)
+        f = _verdict_file(paths, [_one_verdict(rule_id="no-restricted-imports",
+                                               category="BOUNDARY_VIOLATION",
+                                               enforceable="lint",
+                                               baseline_diff="")])
+        cli.run_promote(repo, apply=True, verdict_file=str(f), run_id=run_id)
+        _pp, s = st.load(repo, run_id)
+        assert any(p["status"] == "rejected" for p in s["promotions"])
+        assert "베이스라인" in json.dumps(s["promotions"], ensure_ascii=False)
+
+    def test_승격이_이벤트로_남는다(self, repo, request_file, phases):
+        run_id, paths, f = self._ready(repo, request_file, phases)
+        cli.run_promote(repo, apply=True, verdict_file=str(f), run_id=run_id)
+        kinds = [json.loads(l)["kind"]
+                 for l in paths.events.read_text(encoding="utf-8").splitlines()
+                 if l]
+        assert "promoted" in kinds
+
+
+class TestPromoteFlush:
+
+    def test_flush_가_staged_잔여를_종결한다(self, repo, request_file, phases):
+        run_id, _p = _staged_authz(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        assert any(p["status"] == "staged" for p in s["promotions"])
+        env = cli.run_promote(repo, flush=True, run_id=run_id)
+        assert env["exit"] == 0
+        _pp, s = st.load(repo, run_id)
+        assert not any(p["status"] == "staged" for p in s["promotions"])
+        assert all(p["status"] in ("applied", "rejected", "skipped")
+                   for p in s["promotions"])
+
+
+# ---------------------------------------------------------------------------
+# Q. review07 — 생략 조건은 결정론이다. 봇이 없으면 생략이 성립하지 않는다
+# ---------------------------------------------------------------------------
+
+import review07 as rv7  # noqa: E402
+
+
+def _enter_07(repo, request_file, phases, review05_status="ok", major=0):
+    run_id, paths = _enter_06(repo, request_file, phases)
+    _p, s = st.load(repo, run_id)
+    st.set_phase_status(s, "06-pr", "passed")
+    s["phase"] = "07-pr-review"
+    s["pr"] = {"number": 231, "state": "open", "pushed": True, "head": "feat-x"}
+    s["review05"] = dict(s["review05"], status=review05_status, major=major)
+    st.save(_p, s)
+    return run_id, paths
+
+
+def _enable_bot(repo, **kw):
+    """봇을 켠다. **끈 상태가 기본**이라 켜는 쪽이 명시적이어야 한다."""
+    p = repo / harness.CONFIG_REL
+    d = harness._read_json(p)
+    d["external_pr_review"] = dict(
+        {"enabled": True, "bot_logins": ["some-bot"], "poll_sec": 1,
+         "timeout_sec": 1}, **kw)
+    p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _external(paths, **kw):
+    d = {"status": "reviewed", "major": 0, "findings": [],
+         "change_requested": False}
+    d.update(kw)
+    p = paths.run_dir / "07_external.json"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+class TestReview07Skip:
+
+    def test_봇이_꺼져_있으면_생략이_성립하지_않는다(self, repo, request_file,
+                                                    phases):
+        """'봇이 없으니 리뷰가 없었다' 가 '통과' 가 되지 않는다 (§3.7)."""
+        run_id, paths = _enter_07(repo, request_file, phases)
+        env = cli.run_review07(repo, run_id=run_id)
+        assert env["exit"] == 0
+        assert env["data"]["external"]["status"] == "disabled"
+        assert env["data"]["skip"] is False
+        assert env["data"]["effort"] == "low"
+
+    def test_reviewed_이고_major_0_이면_생략한다(self, repo, request_file,
+                                                phases):
+        run_id, paths = _enter_07(repo, request_file, phases)
+        _enable_bot(repo)
+        f = _external(paths)
+        env = cli.run_review07(repo, external=str(f), run_id=run_id)
+        assert env["data"]["skip"] is True
+        assert env["data"]["effort"] == "skipped"
+
+    def test_05_가_ok_가_아니면_medium_이다(self, repo, request_file, phases):
+        """리뷰 결손을 비싼 쪽으로 메운다."""
+        run_id, paths = _enter_07(repo, request_file, phases,
+                                  review05_status="degraded")
+        _enable_bot(repo)
+        f = _external(paths)
+        env = cli.run_review07(repo, external=str(f), run_id=run_id)
+        assert env["data"]["skip"] is False
+        assert env["data"]["effort"] == "medium"
+
+    def test_external_major_가_있으면_생략하지_않는다(self, repo, request_file,
+                                                     phases):
+        run_id, paths = _enter_07(repo, request_file, phases)
+        _enable_bot(repo)
+        # major 는 봇의 자진 신고가 아니라 **findings 구조에서 센다.**
+        f = _external(paths, findings=[
+            {"title": "인가 누락", "severity": "major", "quote": "x"}])
+        env = cli.run_review07(repo, external=str(f), run_id=run_id)
+        assert env["data"]["skip"] is False
+
+    def test_not_a_review_는_생략_불성립이고_등급을_떨어뜨린다(self, repo,
+                                                             request_file,
+                                                             phases):
+        run_id, paths = _enter_07(repo, request_file, phases)
+        _enable_bot(repo)
+        f = _external(paths, status="not_a_review")
+        env = cli.run_review07(repo, external=str(f), run_id=run_id)
+        assert env["data"]["skip"] is False
+        assert env["data"]["effort"] == "low"
+        _pp, s = st.load(repo, run_id)
+        assert s["grade"] == "PASS_WITH_GAPS"
+        assert any("external" in g for g in s["gaps"])
+
+    def test_어휘_밖_status_는_exit_8(self, repo, request_file, phases):
+        run_id, paths = _enter_07(repo, request_file, phases)
+        _enable_bot(repo)
+        f = _external(paths, status="좋았음")
+        env = cli.run_review07(repo, external=str(f), run_id=run_id)
+        assert env["exit"] == 8
+
+
+class TestReview07Severity:
+
+    def test_심각도를_못_가르면_Major_로_낙하한다(self):
+        """모르는 것이 괜찮은 것이 되면 안 된다 (§E1)."""
+        got = rv7.normalize_external({"status": "reviewed", "findings": [
+            {"title": "뭔가 이상하다", "quote": "x"}]})
+        assert got["findings"][0]["severity"] == "major"
+        assert got["major"] == 1
+
+    def test_구조가_없으면_not_a_review_다(self):
+        """헤딩 텍스트가 아니라 구조로 판정한다 — 봇 출력 언어에 안 기댄다."""
+        got = rv7.normalize_external({"body": "리뷰했습니다. 좋아 보이네요."})
+        assert got["status"] == "not_a_review"
+
+    def test_사람_코멘트는_수리_대상이_아니다(self):
+        got = rv7.normalize_external({"status": "reviewed", "findings": [
+            {"title": "이건 어때요", "severity": "major", "source": "human"}]})
+        assert got["findings"] == []
+        assert len(got["human_comments"]) == 1
+        assert got["major"] == 0
+
+
+class TestReview07Audit:
+
+    def test_audit_run_은_생략_조건을_만족해도_medium_을_강제한다(
+            self, repo, request_file, phases, monkeypatch):
+        run_id, paths = _enter_07(repo, request_file, phases)
+        _enable_bot(repo)
+        f = _external(paths)
+        monkeypatch.setattr(rv7, "audit_due", lambda root: True)
+        env = cli.run_review07(repo, external=str(f), run_id=run_id)
+        assert env["data"]["skip"] is False
+        assert env["data"]["effort"] == "medium"
+        assert env["data"]["audit_run"] is True
+        _pp, s = st.load(repo, run_id)
+        assert s["audit"]["is_audit_run"] is True
+
+    def test_audit_주기는_5런마다다(self, repo):
+        d = repo / "_workspace" / "runs"
+        d.mkdir(parents=True, exist_ok=True)
+        for i in range(4):
+            (d / ("2026090%d-0000-000%d" % (i, i))).mkdir()
+        assert rv7.audit_due(repo) is False
+        (d / "20260905-0000-0005").mkdir()
+        assert rv7.audit_due(repo) is True
+
+
+# ---------------------------------------------------------------------------
+# R. record --phase 07 — escaped_05 를 세고, 변경 요청은 차단이다
+# ---------------------------------------------------------------------------
+
+
+def _r07(paths, **kw):
+    d = {"external": {"status": "reviewed", "major": 0},
+         "code_review": "low", "findings": [], "change_requested": False,
+         "human_comments": []}
+    d.update(kw)
+    p = paths.run_dir / "07_pr_review.json"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+class TestRecord07:
+
+    def test_깨끗하면_08_로_간다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        env = cli.run_record(repo, "07", str(_r07(paths)), run_id=run_id)
+        assert env["exit"] in (0, 11), env["render"]
+        _p, s = st.load(repo, run_id)
+        assert s["phase"] == "08-report"
+        assert s["review07"]["escaped_05"] == 0
+
+    def test_05_가_못_잡은_것이_escaped_05_로_센다(self, repo, request_file,
+                                                  phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        f = _r07(paths, findings=[
+            {"id": "G-1", "category": "TX_BOUNDARY", "severity": "major",
+             "target_role": "impl", "title": "트랜잭션 경계가 없다",
+             "source": "code-review", "quote": "x"}])
+        cli.run_record(repo, "07", str(f), run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        assert s["review07"]["escaped_05"] == 1
+
+    def test_05_가_이미_낸_것은_dedup_된다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        same = {"category": "TX_BOUNDARY", "severity": "major",
+                "target_role": "impl", "title": "트랜잭션 경계가 없다"}
+        ldg.append(repo, run_id, "05", [dict(same, resolution="repaired",
+                                             reported_by=["arch"],
+                                             source="reviewer")])
+        f = _r07(paths, findings=[dict(same, id="G-1", source="code-review",
+                                       quote="x")])
+        cli.run_record(repo, "07", str(f), run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        assert s["review07"]["escaped_05"] == 0
+
+    def test_변경_요청_미해결은_exit_10(self, repo, request_file, phases):
+        """PR 체크가 빨간불인데 파이프라인이 초록불인 척하지 않는다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        f = _r07(paths, change_requested=True, findings=[
+            {"id": "G-1", "category": "TX_BOUNDARY", "severity": "major",
+             "target_role": "impl", "title": "고쳐라", "source": "external",
+             "quote": "x"}])
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] == 10
+
+    def test_변경_요청인데_findings_가_비면_exit_8(self, repo, request_file,
+                                                  phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        f = _r07(paths, change_requested=True, findings=[])
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] == 8
+
+    def test_어휘_밖_source_는_exit_8(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        f = _r07(paths, findings=[
+            {"id": "G-1", "category": "TX_BOUNDARY", "severity": "major",
+             "target_role": "impl", "title": "x", "source": "내가지어낸출처",
+             "quote": "x"}])
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] == 8
+
+    def test_PR_이_머지됐으면_아무것도_안_하고_끝낸다(self, repo, request_file,
+                                                     phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        s["pr"]["state"] = "merged"
+        st.save(_p, s)
+        env = cli.run_record(repo, "07", str(_r07(paths)), run_id=run_id)
+        assert env["exit"] in (0, 11)
+        _p, s = st.load(repo, run_id)
+        assert any("pr_closed" in g or "pr_merged" in g for g in s["gaps"])
+
+    def test_사람_코멘트는_수리_대상이_아니다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        f = _r07(paths, human_comments=[{"body": "이건 어때요"}])
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] in (0, 11)
+
+
+# ---------------------------------------------------------------------------
+# S. 08-report — 재지 못한 것이 조용히 통과하지 않는다
+# ---------------------------------------------------------------------------
+
+import report as rep_mod  # noqa: E402
+
+
+def _enter_08(repo, request_file, phases, grade="PASS"):
+    ldg.seed(repo)
+    run_id, paths = _enter_07(repo, request_file, phases)
+    _p, s = st.load(repo, run_id)
+    st.set_phase_status(s, "07-pr-review", "passed")
+    s["phase"] = "08-report"
+    s["grade"] = grade
+    s["promotions"] = []
+    s["review07"] = {"external": {"status": "disabled", "major": 0},
+                     "code_review": "low", "escaped_05": 0}
+    st.save(_p, s)
+    return run_id, paths
+
+
+def _report_data(paths, **kw):
+    d = {"narrative": {"문제": "재시도가 안 됐다", "원인": "상태 머신",
+                       "해결": "리듀서 수정", "결과": "통과",
+                       "배운 점": "AC 가 증상을 잠가야 한다"}}
+    d.update(kw)
+    p = paths.run_dir / "08_report_data.json"
+    p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
+class TestReport08:
+
+    def test_필수_섹션_다섯이_전부_있다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        env = cli.run_report(repo, run_id=run_id)
+        assert env["exit"] == 0, env["render"]
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        for sec in rep_mod.REQUIRED_SECTIONS:
+            assert sec in out, sec
+
+    def test_캘리브레이션_상태가_partial_과_unverified_를_드러낸다(
+            self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "partial" in out or "옛 값" in out
+        assert "verified" in out or "미검증" in out
+
+    def test_staged_잔여가_있으면_exit_6(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        s["promotions"] = [{"rule_id": "r", "status": "staged", "reason": None}]
+        st.save(_p, s)
+        _report_data(paths)
+        env = cli.run_report(repo, run_id=run_id)
+        assert env["exit"] == 6
+        assert "flush" in env["render"]
+
+    def test_INCOMPLETE_면_08_을_돌리지_않는다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases,
+                                  grade="INCOMPLETE")
+        _report_data(paths)
+        env = cli.run_report(repo, run_id=run_id)
+        assert env["exit"] == 3
+        assert "ESCALATION" in env["render"]
+
+    def test_입력이_없으면_exit_3(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        env = cli.run_report(repo, run_id=run_id)
+        assert env["exit"] == 3
+
+    def test_같은_run_id_로_다시_쓰면_덮어쓴다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        _report_data(paths, narrative={"문제": "두 번째 판"})
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "두 번째 판" in out
+        assert out.count("## 완료 등급") == 1
+
+    def test_승격_목록은_원장에서_자동으로_나온다(self, repo, request_file,
+                                                phases):
+        """모델이 빠뜨릴 수 없다 — 서술이 비어도 표는 나온다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        s["promotions"] = [{"rule_id": "authz-catchall", "status": "applied",
+                            "category": "AUTHZ_MISSING_RULE", "reason": "x"}]
+        st.save(_p, s)
+        _report_data(paths, narrative={})
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "authz-catchall" in out
+
+    def test_보고서는_파이프라인을_실패시키지_않는다(self, repo, request_file,
+                                                   phases):
+        """섹션이 비어도 산출은 된다 — 원장에 기록만 한다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths, narrative={})
+        env = cli.run_report(repo, run_id=run_id)
+        assert env["exit"] == 0
+
+    def test_gaps_가_건너뛴_게이트로_나열된다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases,
+                                  grade="PASS_WITH_GAPS")
+        _p, s = st.load(repo, run_id)
+        s["gaps"] = ["stage_absent:e2e", "adapter_unverified"]
+        st.save(_p, s)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "stage_absent:e2e" in out
+        assert "adapter_unverified" in out
+
+    def test_모델_호출_수는_근사로_표기된다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "근사" in out
+
+
+# ---------------------------------------------------------------------------
+# T. doctor — 06 이 exit 9 로 멈출 것을 기동 전에, 무료로 알려 준다
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorRemote:
+
+    def test_원격이_없으면_WARN_이고_막지는_않는다(self, repo):
+        """원격 없이 로컬까지만 가는 것도 정당한 선택이고, 그 선택은 사람의 것이다."""
+        config = harness._read_json(repo / harness.CONFIG_REL)
+        got = cli._check_remote(repo, config)
+        assert got["status"] == "WARN"
+        assert "3지선다" in got["message"]
+
+    def test_원격과_base_가_있으면_PASS(self, repo, tmp_path):
+        _branch(repo, "feat-x")
+        _remote(repo, tmp_path)
+        config = harness._read_json(repo / harness.CONFIG_REL)
+        got = cli._check_remote(repo, config)
+        assert got["status"] == "PASS"
+
+    def test_실물_리포에서_원격_검사가_통과한다(self):
+        config = harness._read_json(ROOT / harness.CONFIG_REL)
+        got = cli._check_remote(ROOT, config)
+        assert got["status"] == "PASS", got["message"]
+
+
+class TestDoctorExternalBot:
+
+    def test_꺼져_있으면_PASS_이고_그_이유를_적는다(self, repo):
+        config = harness._read_json(repo / harness.CONFIG_REL)
+        got = cli._check_external_bot(config)
+        assert got["status"] == "PASS"
+        assert "내장 리뷰가 항상" in got["message"]
+
+    def test_켜_놓고_대상이_없으면_FAIL(self, repo):
+        _enable_bot(repo, bot_logins=[])
+        config = harness._read_json(repo / harness.CONFIG_REL)
+        got = cli._check_external_bot(config)
+        assert got["status"] == "FAIL"
+        assert "기다린다" in got["message"]
+
+    def test_상속값임을_메시지가_밝힌다(self, repo):
+        _enable_bot(repo)
+        config = harness._read_json(repo / harness.CONFIG_REL)
+        got = cli._check_external_bot(config)
+        assert got["status"] == "PASS"
+        assert "미검증 상속값" in got["message"]
+
+
+class TestChangelogHeader:
+
+    def test_표_헤더가_산문이_나열한_열_개와_맞는다(self):
+        """산문은 열 개를 나열하는데 표 헤더는 아홉이었다 — 철회 사유가 없었다."""
+        import ledger as L
+        head = [l for l in L.CHANGELOG_HEADER.splitlines()
+                if l.startswith("| 날짜")]
+        assert head, L.CHANGELOG_HEADER
+        cols = [c for c in head[0].split("|") if c.strip()]
+        assert len(cols) == 10, cols
+        assert "철회 사유" in head[0]
+
+    def test_실물_changelog_도_같은_헤더다(self):
+        p = (ROOT / "docs" / "harness" / "pipeline" / "ledger"
+             / "rules_changelog.md")
+        assert "철회 사유" in p.read_text(encoding="utf-8")
+
+
+class TestHorizonRender:
+
+    def test_다음이_없으면_런_완료라고_말한다(self):
+        got = cli._horizon_render(None)
+        assert "런 완료" in got
+
+    def test_범위를_문자열로_박지_않고_페이즈에서_유도한다(self):
+        loaded, _broken = cli.load_phases(ROOT)
+        got = cli._horizon_render("09-nope", loaded)
+        assert "01-plan" in got and "08-report" in got
+        assert "01~04" not in got

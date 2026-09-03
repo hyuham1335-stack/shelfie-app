@@ -1,10 +1,12 @@
 ---
-description: 요청 하나를 계획 → 교차검증 → 구현 → 게이트 → 코드리뷰(01~05)까지 끌고 간다. PR 은 만들지 않는다.
+description: 요청 하나를 계획 → 교차검증 → 구현 → 게이트 → 코드리뷰 → PR → PR리뷰 → 보고서(01~08)까지 끌고 간다. 머지는 하지 않는다.
 ---
 
-> **이 커맨드는 페이즈 01~05(계획 · 교차검증 · 구현 · 게이트 · 코드리뷰)까지만 돈다.**
-> 06~08(PR · PR리뷰 · 보고서)은 아직 구현되지 않았다.
-> **PR 을 만들지 않고 push 하지 않는다.** 끝나면 무엇이 남았는지 보고한다.
+> **이 커맨드는 여덟 페이즈를 전부 돈다** — 계획 · 교차검증 · 구현 · 게이트 ·
+> 코드리뷰 · PR · PR리뷰 · 보고서.
+> **06 부터는 되돌리기 어려운 외부 행동이 들어간다.** push 는 실행기가 하고,
+> PR 생성·갱신과 코멘트 게시는 **네가 forge 도구로** 한다.
+> **머지는 하지 않는다.** 이 파이프라인의 범위는 PR 까지다.
 
 요청: $ARGUMENTS
 
@@ -58,7 +60,9 @@ python scripts/pipeline/cli.py next
 | 4 | 기계 판정 실패, 예산 남음 | 수리한다. **`data.repair_dispatch` 의 배정을 그대로 쓴다** |
 | 8 | 제출물이 스키마·정합성을 어겼다 | 고쳐서 다시 낸다 |
 | 5 · 7 · 10 | 예산 소진 · 반복 한계 · 에스컬레이션 | **멈춘다.** `ESCALATION.md` 의 선택지를 그대로 사용자에게 제시한다 |
-| 11 | 이 실행기의 범위 끝 | 종료 보고로 간다 |
+| 6 | 전이 거부 — 산출물 없음 · 지문 stale · 승격 미종결 | `render` 가 말한 것을 채운다. 승인이 무효면 재승인이다 |
+| 9 | **사람의 판단 대기.** 상태를 잠그지 않는다 | 사용자에게 선택지를 그대로 제시하고 답을 받는다. **네가 고르지 마라** |
+| 11 | 런 완료 | 종료 보고로 간다 |
 
 ### 03-implement 에서
 
@@ -113,6 +117,73 @@ python scripts/pipeline/cli.py record --phase 05 --file <리뷰 json> \
 exit 4 면 Critical/Major 수리다. **Minor 는 고치지 않는다** — 원장에 쌓이고
 보고서로 간다.
 
+### 06-pr 에서
+
+**여기부터 밖으로 나간다.** 앞의 셋이 무료다.
+
+```bash
+python scripts/pipeline/cli.py precheck --scope pr --phase 06 --run-id <id>
+python scripts/pipeline/cli.py pr --run-id <id>
+```
+
+`pr` 이 **exit 9** 를 내면 사람의 판단이다 — 승인 요청이거나 원격 3지선다다.
+**선택지를 그대로 사용자에게 제시하고 네가 고르지 마라.** 승인이 오면:
+
+```bash
+python scripts/pipeline/cli.py approve --phase 06 --run-id <id>
+python scripts/pipeline/cli.py pr --run-id <id>      # 이번엔 push 까지 간다
+```
+
+- **exit 3** — 브랜치가 규약과 안 맞거나 보호 브랜치 위다. **브랜치를 만들지 마라**
+- **exit 6** — 승인 뒤 코드가 바뀌었다. 재승인이다
+- **exit 10** — non-fast-forward 다. **force-push 는 금지**이고 에스컬레이션이다
+
+`pr` 이 exit 0 이면 push 가 끝났고 `06_pr_req.json` 이 있다. **PR 은 네가 만든다:**
+
+- 본문은 `06_pr_body.md` 를 **그대로** 쓴다. **다시 조립하지 마라** — 이미
+  마스킹을 거쳤고, 새로 쓰면 그 마스킹을 우회한다
+- `action` 이 `update` 면 **생성하지 말고 갱신한다.** 새로 만들면 PR 이 갈라진다
+- **머지하지 마라**
+
+```bash
+python scripts/pipeline/cli.py record --phase 06 --file <06_pr_result.json> --run-id <id>
+```
+
+### 07-pr-review 에서
+
+**PR 상태를 먼저 본다.** 닫혔거나 머지됐으면 수리도 코멘트도 하지 않는다.
+
+외부 리뷰를 모아 `07_external.json` 으로 내고:
+
+```bash
+python scripts/pipeline/cli.py review07 --external <07_external.json> --run-id <id>
+```
+
+봉투가 `--effort` 를 준다. **그 값 그대로** `/code-review` 를 부른다 —
+**effort 를 네가 고르지 마라.** 결정론이어야 `escaped_05` 가 근거가 된다.
+
+```bash
+python scripts/pipeline/cli.py record --phase 07 --file <07_pr_review.json> --run-id <id>
+python scripts/pipeline/cli.py promote --scan --run-id <id>
+```
+
+`promote --scan` 이 후보 0 이면 **모델을 부르지 않고 끝난다** — 초기 런의 최빈
+경로다. 후보가 있으면 판정을 내고 `--apply` 한다. **`duplicate` 에서 `create` 는
+금지고, `contradicts` 는 에스컬레이션이다.**
+
+승격은 **별도 브랜치**로 간다. 기능 PR 에 규칙 변경을 섞지 마라.
+
+### 08-report 에서
+
+```bash
+python scripts/pipeline/cli.py promote --flush --run-id <id>
+python scripts/pipeline/cli.py report --run-id <id>
+```
+
+`08_report_data.json` 하나만 쓴다 (20KB 이하). **08 은 diff 도 코드도 읽지
+않는다.** 표는 실행기가 조립하니 너는 서술만 쓴다 — **재지 않은 것을 숫자로
+적지 마라.**
+
 ## 3. 종료 보고
 
 `status` 로 확인하고 아래를 사람이 읽을 수 있게 적는다.
@@ -125,9 +196,14 @@ exit 4 면 Critical/Major 수리다. **Minor 는 고치지 않는다** — 원�
 - `dropped_by_enforcement` 와 `truncated` 가 0이 아니면 그 수
 - 카운터 사용량과 모델 호출 근사치(근사임을 명시)
 - 런 디렉터리 경로
+- **PR 번호와 상태**, 그리고 승인이 `user` 였는지 `auto` 였는지
+- **`review07`** — 외부 리뷰 상태와 `escaped_05`. 봇이 `disabled` 였으면 그렇게
+  적는다. **"리뷰가 없었다"를 "지적이 없었다"로 적지 마라**
+- 승격 결과 — `applied` / `rejected` / `skipped` 를 사유와 함께
+- 보고서 경로
 - 그리고 이 문장:
-  > 06~08 은 아직 구현되지 않았다. 이 런은 **PR 을 만들지 않았고 push 하지 않았다.**
-  > 코드는 워킹트리에 있다.
+  > 이 런은 PR 까지 갔고 **머지하지 않았다.** 머지는 이 파이프라인의 범위가
+  > 아니다.
 
 ## 다른 진입
 
@@ -139,8 +215,13 @@ python scripts/pipeline/cli.py resume --ack --answer-file <경로>   # 잠금 �
 
 ## 금지
 
-- **`git push` · PR 생성 · 브랜치 생성을 직접 하지 마라.** 이유: 이 실행기의
-  범위가 아니고, 06 이 생기기 전까지 그 판단은 사람의 것이다
+- **`git push` 를 직접 하지 마라.** 이유: push 는 `pr` 이 한다 — 승인 지문을
+  확인하고 계약을 지운 **뒤**에 해야 하고, 순서가 어긋나면 재개가 깨진다
+- **브랜치를 만들지 마라.** 이유: 어디에 커밋할지는 사람이 정한다 (exit 3)
+- **force-push 하지 마라.** 이유: 외부 리뷰 스레드와 승인이 깨진다
+- **머지하지 마라.** 이유: 명세가 머지 자동화를 범위 밖으로 둔다
+- **승인을 대신하지 마라.** 이유: `--auto` 는 사람이 미리 켜는 것이다
+- **PR 본문을 다시 조립하지 마라.** 이유: `06_pr_body.md` 는 마스킹을 거쳤다
 - **봉투 없이 스테이지 명령을 직접 돌리지 마라.** 이유: 결과가 영수증에 남지 않아
   지문 대조가 성립하지 않는다
 - **실패 귀속을 다시 하지 마라.** 이유: 배정은 게이트가 한다

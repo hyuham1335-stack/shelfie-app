@@ -41,7 +41,7 @@ RUNS_REL = "_workspace/runs"
 #               그것이 정확한 서술이다.
 PHASE_STATUS = ("running", "passed", "failed", "escalated", "skipped")
 
-COUNTERS = ("round", "repair", "xverify_return", "review_repair")
+COUNTERS = ("round", "repair", "xverify_return", "review_repair", "pr_repair")
 
 # 닫힌 어휘다. budget.model_calls 가 next/record 이벤트 수에서 유도되는
 # 근사치이므로, 어휘가 열려 있으면 그 근사치의 정의가 조용히 흔들린다.
@@ -51,6 +51,9 @@ EVENT_KINDS = (
     "stage_start", "stage_done", "stage_skipped",
     "attribution", "dispatch", "counter_inc",
     "escalated", "resumed", "horizon",
+    # 06~08. 승인·PR·승격은 "일어났다"가 사후에 확인 가능해야 하는 사건이고,
+    # 그 셋 다 외부 상태를 건드린다 — 이벤트가 없으면 되돌아볼 기록이 없다.
+    "approved", "approval_revoked", "pr_pushed", "pr_opened", "promoted",
 )
 
 GRADES = ("PASS", "PASS_WITH_GAPS", "INCOMPLETE")
@@ -322,6 +325,30 @@ def counter_inc(s, name, max_):
     return node["used"], max_, node["used"] >= max_ if max_ is not None else False
 
 
+def demote(s, grade, gap=None):
+    """등급을 **강등만** 한다. 반환: 최종 등급.
+
+    이 함수가 있기 전에는 세 곳이 `s["grade"] = ...` 를 직접 대입했고
+    (게이트 · 02 스킵 · 05 판정), **나중에 쓰는 쪽이 이겼다.** 게이트가
+    나중에 돌면 05 가 남긴 `PASS_WITH_GAPS` 가 `PASS` 로 되돌아간다 —
+    한 번 드러난 결손이 조용히 사라지는 경로다.
+
+    등급은 `GRADES` 의 인덱스가 클수록 나쁘고, 더 나쁜 쪽으로만 움직인다.
+    `gap` 을 주면 `gaps` 에 중복 없이 더한다 — 등급만 떨어지고 사유가 없으면
+    보고서가 "무엇을 건너뛰었는가"를 적을 수 없다 (§E12 가 나열을 요구한다).
+    """
+    if grade is not None and grade not in GRADES:
+        raise ValueError("알 수 없는 등급: %r (%s)" % (grade, ", ".join(GRADES)))
+    if gap and gap not in s.setdefault("gaps", []):
+        s["gaps"].append(gap)
+    cur = s.get("grade")
+    if grade is None:
+        return cur
+    if cur is None or GRADES.index(grade) > GRADES.index(cur):
+        s["grade"] = grade
+    return s.get("grade")
+
+
 def bump_model_calls(s, phase, n=1):
     """(total, max, exhausted). 예산이 없으면(max=None) 소진되지 않는다.
 
@@ -482,6 +509,11 @@ def envelope(cmd, ok, exit_, state, data, render, next_command):
             "escalated": bool(s.get("escalated")),
             "grade": s.get("grade"),
             "gaps": s.get("gaps") or [],
+            # 06~08. 승인과 PR 은 모델이 다음 행동을 고르는 데 필요한 사실이고,
+            # 봉투에 없으면 모델이 state.json 을 직접 열어 읽게 된다 — 그것이
+            # "봉투에서 읽는 것은 render 와 next_command 둘뿐" 이라는 계약을 깬다.
+            "approval": s.get("approval") or {},
+            "pr": s.get("pr") or {},
         },
         "data": data or {},
         "render": render or "",

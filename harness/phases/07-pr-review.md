@@ -1,0 +1,179 @@
+---
+{
+  "id": "07-pr-review",
+  "index": 7,
+  "owner": "main",
+  "approval": "inherited:06",
+  "requires": [
+    {"kind": "state", "pointer": "phases.06-pr.status", "equals": "passed"},
+    {"kind": "state", "pointer": "pr.pushed", "equals": true}
+  ],
+  "produces": [
+    {"key": "pr_review", "path": "${run.dir}/07_pr_review.json", "kind": "json",
+     "schema": "pr_review"},
+    {"key": "promo_applied", "path": "${run.dir}/07_promo_applied.json",
+     "kind": "json", "schema": "promotions"}
+  ],
+  "gate": {"runner": "none"},
+  "submit_checks": [
+    {"id": "external_status_vocabulary", "on_fail": 8},
+    {"id": "source_quote_substring", "on_fail": 8},
+    {"id": "change_request_open", "on_fail": 10}
+  ],
+  "loop": {"counter": "pr_repair", "max": 2, "stuck_after_identical": 2,
+           "on_exceed": "escalate"},
+  "allow": {"agents": []},
+  "on_success": "08-report"
+}
+---
+
+## 목적
+
+**05 는 우리가 우리 코드를 봤다. 07 은 밖이 그것을 어떻게 보는가를 받는다.**
+
+이 페이즈가 막는 실패는 하나다 — **"봇이 없으니 리뷰가 없었다"가 "통과"가
+되는 것.** 그래서 내장 리뷰의 생략 조건은 `external.status == "reviewed"` 를
+요구하고, 봇이 꺼져 있으면 그 값이 `disabled` 가 되어 **생략이 성립하지
+않는다.** 리뷰가 빠지면 등급이 그것을 말한다.
+
+승격도 여기서 한 번 일어난다. 05 는 후보(`staged`)만 만들었고, **실제 쓰기는
+07 이 런당 한 번** 한다 — dedup 이 로직이 아니라 시점으로 성립하고, 기능 PR
+diff 에 규칙 문서 변경이 섞이지 않는다.
+
+## 진입 조건
+
+- 06 이 `passed` 이고 `state.pr.pushed` 가 참이다
+- 승인은 **06 에서 상속한다** (`inherited:06`) — 07 이 따로 받지 않는다.
+  다만 **코멘트 게시는 등급을 재확인한 뒤**다 (§3.6 의 `--auto` 축소)
+- **PR 상태를 먼저 본다.** 닫혔거나 머지됐으면 수리도 코멘트도 하지 않고
+  정상 종료한다 (§E8)
+
+## 절차
+
+```
+1. PR 상태 확인          너 · forge 도구    닫힘·머지면 여기서 정상 종료
+2. 외부 리뷰 수집        너 · forge 도구    폴링 → 07_external.json
+3. review07              정적 · 무료        생략 조건 판정 · effort 결정
+4. /code-review          모델               3번이 부르라고 하면 그 effort 로
+5. record --phase 07     제출               정규화 · dedup · escaped_05
+6. promote --scan        정적 · 무료        후보 0 이면 모델 없이 종결
+7. promote --apply       git                별도 브랜치 · 자체 게이트
+8. 코멘트 게시           너 · forge 도구    단일 코멘트 하나 · mask 를 거친다
+```
+
+### 1·2번 — 외부 상태는 내가 안 보는 사이에 바뀐다
+
+PR 상태를 forge 도구로 먼저 읽는다. **닫혔거나 머지됐으면 아무것도 하지
+않고** 보고서에 그 사실을 적는다. 머지된 PR 에 코멘트를 달거나 이미 머지된
+코드를 수리하지 않는다.
+
+외부 리뷰는 **최소 출력 프로브로 존재만** 확인하고, 붙었으면 **1회만 전문**을
+가져온다. 매번 전문을 끌면 폴링 비용이 그대로 접두부가 된다.
+
+`external.status = "reviewed"` 의 판정은 **구조로 한다** — 봇 계정의 리뷰나
+코멘트가 있고 그 안에 findings 구조(리뷰 상태 · 코멘트 개수 · 심각도 라벨)가
+있어야 한다. **헤딩 텍스트로 판정하지 마라** — 봇의 출력 언어에 의존하게 된다.
+구조 판정에 실패하면 `not_a_review` 다. **심각도를 못 가르면 Major 로
+낙하시킨다** — 모르면 생략하지 않는 방향이다.
+
+### 3·4번 — 누구를 부를지 정하는 것은 너가 아니다
+
+```bash
+python scripts/pipeline/cli.py review07 --external {07_external.json} --run-id {run_id}
+```
+
+봉투가 `--effort` 를 알려 준다. 그 값 그대로 `/code-review` 를 부른다.
+**네가 effort 를 고르면** 같은 상황이 런마다 다른 리뷰를 받고, `escaped_05`
+를 세는 것이 의미를 잃는다.
+
+- `review05.status != ok` → **medium** (리뷰 결손을 비싼 쪽으로 메운다)
+- `external.status != reviewed` → **low** + 등급 `PASS_WITH_GAPS`
+- `audit_run` — 5런마다 1회, 생략 조건을 만족해도 medium 을 강제한다.
+  **생략하면 `escaped_05` 를 셀 수 없기 때문**이고, 5런에 1회의 비용으로
+  정책의 근거를 산다 (§E2)
+
+### 6·7번 — 승격은 런당 한 번이고, 대개 아무 일도 없다
+
+```bash
+python scripts/pipeline/cli.py promote --scan --run-id {run_id}
+```
+
+**후보가 0 이면 모델을 부르지 않고 종결한다.** 초기 런에서는 이것이 최빈
+경로다 — 원장이 비어 있고 임계값(critical 2회 · major 3회 · minor 5회, 전부
+`distinct_runs` 조건과 함께)에 닿을 표본이 아직 없다.
+
+후보가 있으면 판정(`create` / `amend` / `skip`)을 **기록으로 남긴다.**
+`duplicate` 면 `create` 가 금지되고, `contradicts` 면 자동 쓰기가 차단되며
+에스컬레이션이다. **"일단 붙이기"가 선택지에 없다.**
+
+`--apply` 는 **규칙 전용 브랜치**에서 돈다. 자체 게이트(`lint` + `check`)가
+실패하면 브랜치를 폐기하고 `rejected` + 사유를 남긴다 — **기능 PR 은 영향받지
+않는다.**
+
+### 8번 — 단일 코멘트 하나다
+
+인라인 pending 흐름을 쓰지 않는다. 왕복이 늘고 스레드 정리 부담만 커진다.
+본문은 **`mask` 를 거친다.** 게시 실패는 infra 이고 2회 재시도 후 비차단
+스킵이다 — findings 는 원장에 남으므로 유실이 아니다.
+
+## 제출 형식
+
+`{run_dir}/07_pr_review.json` 하나를 내고 `record --phase 07` 을 부른다.
+finding 은 **05 와 같은 스키마**를 쓴다.
+
+```json
+{"external": {"status": "reviewed|disabled|not_a_review|timeout", "major": 0},
+ "code_review": "skipped|low|medium",
+ "findings": [
+   {"id": "G-1", "category": "AUTHZ_MISSING_RULE", "severity": "major",
+    "target_role": "impl", "title": "…", "path": "…", "line": 34,
+    "quote": "원문의 부분문자열", "source": "external|code-review|human",
+    "evidence": "…", "suggestion": "…"}],
+ "change_requested": false,
+ "human_comments": []}
+```
+
+- `source` 는 닫힌 어휘다 — `code-review` · `external` · `human`
+- **`human` 은 수리 대상이 아니라 보고 대상이다.** 파이프라인이 사람과
+  논쟁하지 않는다
+- `quote` 는 외부 리뷰 **원문의 부분문자열**이어야 한다. 05 와 같은 검사다
+- `change_requested: true` 인데 findings 가 비면 exit 8 — 무엇을 고치라는
+  것인지 없이 차단만 하는 제출이다
+
+## 금지
+
+- **effort 를 네가 고르지 마라.** 이유: 생략 조건은 결정론이고, 모델이 정하면
+  `escaped_05` 가 정책의 근거가 되지 못한다
+- **사람 코멘트를 수리하지 마라.** 이유: 파이프라인이 사람과 논쟁하는 자리가
+  된다. 보고서에 남기고 사람에게 넘긴다
+- **닫히거나 머지된 PR 을 손대지 마라.** 이유: 이미 끝난 것을 수리하는 것이고,
+  머지된 코드에 코멘트를 다는 것은 소음이다 (§E8)
+- **변경 요청을 미해결로 두고 넘어가지 마라.** 이유: PR 체크가 빨간불인데
+  파이프라인이 초록불인 척하게 된다 → exit 10
+- **승격을 "일단 붙이기" 로 하지 마라.** 이유: `duplicate` 에서 `create` 하면
+  같은 규칙이 두 벌 생기고, `contradicts` 를 무시하면 규칙끼리 싸운다
+- **규칙 변경을 기능 PR 에 섞지 마라.** 이유: 리뷰어가 두 가지를 한 diff 에서
+  봐야 하고, 승격이 반려되면 기능까지 막힌다
+- **머지하지 마라.** 이유: 명세가 머지 자동화를 범위 밖으로 둔다
+
+## 실패 시
+
+| 무엇 | 분류 | 어떻게 |
+|---|---|---|
+| PR 이 닫힘 · 머지됨 | — | 수리·코멘트 없이 **정상 종료** + 보고서 명시 (§E8) |
+| `external_pr_review.enabled == false` | — | `disabled` → **생략 불성립** → 내장 리뷰가 항상 돈다 |
+| 외부 봇 무응답 | 비차단 | 내장 리뷰 `--effort low` 1회 · `PASS_WITH_GAPS` · 사전 승인 게시 보류 |
+| 외부 봇 출력 파싱 실패 | 판단 | `not_a_review` → 생략 불성립. **심각도 불명은 Major 로 보수 판정** (§E1) |
+| 변경 요청 미해결 | 차단 | 수리 루프(`pr_repair`). 초과 시 에스컬레이션 |
+| 타임아웃 후 외부 리뷰 도착 | — | 08 직전 재확인에서 **등급 강등.** 수리 루프로 되돌아가지 않는다 (무한 대기) |
+| 코멘트 게시 실패 | infra | 2회 재시도 → **비차단 스킵**. findings 는 원장에 남는다 |
+| 승격 자체 게이트 실패 · 베이스라인 미스테이징 · push 실패 | 판단 | 브랜치 폐기 + `rejected` + 사유. **기능 PR 무영향** |
+| `lint` 승격인데 베이스라인 diff 가 0 | 판단 | "아무것도 안 막는 규칙" → `rejected` + 사유 |
+| 사람 코멘트와 계약이 충돌 | 판단 | **파이프라인이 판단하지 않는다** → 보고서에 남기고 사람에게 |
+| forge 도구 불통 | infra | 카운터 미소모 · 에스컬레이션 |
+
+**명세 미규정 셋 — 지어내지 않고 적어 둔다.** ① 명세에 07 의 절차표가 없다
+(06·04 와 다르다). 위 절차는 §3.7 산문과 §8.2 실패 매트릭스에서 **재구성한
+것**이다. ② `poll_sec` · `timeout_sec` 의 기본값이 없다 — `config` 의 30 · 300
+은 **미검증 상속값**이고 캘리브레이션 대상도 아니다. ③ `promote --apply` 의
+단독 종료 코드가 없다 — 네 플래그가 `0/4/6/8` 한 행을 공유한다.

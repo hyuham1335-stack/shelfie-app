@@ -95,6 +95,13 @@
     "baseline_runs": 3
   },
 
+  "_external_pr_review_note": "poll_sec 와 timeout_sec 는 미검증 상속값이다 — 명세가 키 이름만 정하고 기본값을 주지 않으며 캘리브레이션 대상도 아니다. enabled:false 가 기본인 것은 의도다: 봇이 없으면 external.status 가 disabled 가 되고, 07 의 생략 조건은 reviewed 를 요구하므로 생략이 성립하지 않아 내장 리뷰가 항상 돈다. '봇이 없으니 리뷰가 없었다' 가 '통과' 가 되지 않는다.",
+  "external_pr_review": {
+    "enabled": false,
+    "bot_logins": [],
+    "poll_sec": 30,
+    "timeout_sec": 300
+  },
   "budget": {"files_max": 10, "lines_max": 400, "model_calls_max": 24},
   "profile": {"small_max_units": 3, "inv_skip_below_chars": 400},
   "background_threshold_sec": 180,

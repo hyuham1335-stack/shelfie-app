@@ -21,9 +21,11 @@ import harness  # noqa: E402
 import adapters  # noqa: E402
 import attribution as attr  # noqa: E402
 import contract as contract_mod  # noqa: E402
+import state as st  # noqa: E402
 
-GRADE_PASS = "PASS"
-GRADE_GAPS = "PASS_WITH_GAPS"
+# 등급 어휘의 단일 출처는 `state.GRADES` 다. 여기서 문자열을 다시 적으면
+# 두 곳이 갈라지고, 갈라진 것을 알아차리는 것은 갈라진 뒤다.
+GRADE_PASS, GRADE_GAPS, GRADE_INCOMPLETE = st.GRADES
 
 
 def replay_runner(fixture_dir):

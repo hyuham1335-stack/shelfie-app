@@ -958,6 +958,31 @@ class TestReviewConvergence:
         env = _submit_review(repo, paths, _review("plan", round_=2), round_=2)
         assert env["exit"] == 8, "이전 open 지적이 findings 에도 resolved 에도 없다"
 
+    def test_raw_without_severity_headings_is_rejected(self, run01):
+        """M20 — 이 규칙이 코드에만 있고 문서에 없어서 P1 의 제출 6건 전부에
+        메인이 사후에 헤딩을 붙였다. 원문 대조라는 검사의 취지와 어긋난다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        payload = _review("plan", findings=[
+            {"id": "F-1", "severity": "major", "title": "범위", "quote": "범위가 넓다"}])
+        j = paths.run_dir / "01_review_r1.json"
+        j.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "01_review_r1.raw.md").write_text(
+            "# 리뷰\n\n범위가 넓다\n", encoding="utf-8")
+        env = cli.run_record(repo, phase="01", file=str(j),
+                             reviewer="plan", round_=1)
+        assert env["exit"] == 8
+        assert "헤딩" in env["render"]
+
+    def test_the_phase_file_documents_the_raw_format(self, repo):
+        """검사가 요구하는 것을 페이즈 파일이 적지 않으면 리뷰어가 알 길이 없다."""
+        for name in ("01-plan.md", "02-cross-verify.md"):
+            body = (ROOT / "harness" / "phases" / name).read_text(encoding="utf-8")
+            submit = body.split("## 제출 형식", 1)[1].split("\n## ", 1)[0]
+            assert ".raw.md" in submit, name
+            for sev in ("critical", "major", "minor"):
+                assert sev in submit, "%s 가 %s 를 적지 않는다" % (name, sev)
+
     def test_resolved_from_previous_closes_it(self, run01):
         repo, paths, s = run01
         _submit_plan(repo, paths, _plan())

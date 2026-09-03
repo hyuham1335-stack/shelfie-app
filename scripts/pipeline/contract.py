@@ -50,8 +50,10 @@ def parse(text, config):
     심볼명만 보면 흔한 이름이 다른 파일에서 거짓 통과한다.
     """
     sections = (config.get("contract") or {}).get("sections") or {}
+    units, dropped = _units(section(text, sections.get("units")))
     return {
-        "units": _units(section(text, sections.get("units"))),
+        "units": units,
+        "dropped": dropped,
         "entrypoints": _entrypoints(section(text, sections.get("entrypoints"))),
         "errors": _errors(section(text, sections.get("errors"))),
     }
@@ -69,16 +71,30 @@ def symbols(parsed):
 
 
 def _units(block):
-    out = []
+    """(유닛, 버려진 것). **들여쓴 불릿은 유닛이 아니다.**
+
+    유닛은 최상위 불릿 하나에 하나다. 들여쓴 줄은 그 유닛의 정상·예외 서술이고,
+    거기 백틱이 있다고 유닛으로 세면 설명이 많은 계약일수록 유닛이 부풀어
+    프로파일 판정과 스코프 선택이 함께 오염된다.
+
+    컨테이너와 심볼이 **둘 다** 없는 것도 유닛이 아니다 — 이 파서의 전제가
+    컨테이너명+심볼명 쌍이기 때문이다. 다만 **조용히 버리지 않는다.** 무엇이 왜
+    빠졌는지 둘째 반환값에 남는다.
+    """
+    out, dropped = [], []
     for line in block.splitlines():
-        if not line.strip().startswith("-"):
+        if not line.startswith("-"):
             continue
         spans = _BACKTICK.findall(line)
         if not spans:
             continue
         container, symbol = _split(spans[0])
-        out.append({"container": container, "symbol": symbol, "raw": spans[0]})
-    return out
+        item = {"container": container, "symbol": symbol, "raw": spans[0]}
+        if container and symbol:
+            out.append(item)
+        else:
+            dropped.append(dict(item, reason="컨테이너명과 심볼명 쌍이 아니다"))
+    return out, dropped
 
 
 def _split(span):

@@ -585,6 +585,72 @@ class TestLintPhases:
 # D. 페이즈 파서 · requires
 # ---------------------------------------------------------------------------
 
+UNITS_DOC = """## 유닛
+
+- `lib/match.ts · matchTitle(a: string, b: string): number`
+  - 정상: 0~1 유사도 반환 / 부수효과: 없음
+  - 예외: 빈 문자열 → `0`
+"""
+
+
+class TestContractUnits:
+    """M23 — 계약 파서가 중첩 불릿을 유닛으로 세고, 템플릿 자신이 그 형태다.
+
+    P1 에서 이것이 유닛 19개·unmatched 15건을 만들었고 화면 층 테스트가 스코프
+    선택에서 빠졌다. 프로파일 판정(`small_max_units`)까지 함께 오염된다.
+    """
+
+    def _parse(self, repo, text):
+        cfg = json.loads((repo / "harness" / "config.json").read_text(encoding="utf-8"))
+        return contract_mod.parse(text, cfg)
+
+    def test_top_level_bullet_is_a_unit(self, repo):
+        p = self._parse(repo, UNITS_DOC)
+        assert [u["symbol"] for u in p["units"]] == ["matchTitle"]
+        assert p["units"][0]["container"] == "lib/match.ts"
+
+    def test_nested_bullet_is_not_a_unit(self, repo):
+        """들여쓴 줄은 그 유닛의 설명이지 또 하나의 유닛이 아니다."""
+        p = self._parse(repo, UNITS_DOC)
+        assert len(p["units"]) == 1, p["units"]
+
+    def test_a_description_line_is_neither_a_unit_nor_a_drop(self, repo):
+        """들여쓴 서술은 버려진 것이 아니다 — 애초에 유닛 자리가 아니다."""
+        p = self._parse(repo, UNITS_DOC)
+        assert p["dropped"] == [], p["dropped"]
+
+    def test_a_symbolless_top_level_bullet_is_dropped_not_silently_lost(self, repo):
+        """컨테이너도 심볼도 없으면 유닛이 아니다 — 그러나 조용히 버리지 않는다."""
+        p = self._parse(repo, "## 유닛\n\n- `0`\n")
+        assert p["units"] == []
+        assert p["dropped"] and p["dropped"][0]["reason"]
+
+    def test_a_unit_needs_both_a_container_and_a_symbol(self, repo):
+        """심볼명만 보면 흔한 이름이 다른 파일에서 거짓 통과한다."""
+        p = self._parse(repo, "## 유닛\n\n- `matchTitle`\n")
+        assert p["units"] == []
+        assert len(p["dropped"]) == 1
+
+    def test_shipped_template_parses_without_drops(self, repo):
+        """**템플릿이 시범 보이는 형태가 자기 파서를 속이면 안 된다.**"""
+        text = (ROOT / "harness" / "templates" / "contract.md").read_text(
+            encoding="utf-8")
+        p = self._parse(repo, text)
+        assert p["dropped"] == [], p["dropped"]
+        assert [u["symbol"] for u in p["units"]] == ["matchTitle"]
+
+    def test_doctor_rejects_a_template_that_fools_its_own_parser(self, repo, phases):
+        """지금은 절 제목 일치만 본다 — 본문이 파서를 통과하는지는 아무도 안 봤다."""
+        tpl = repo / "harness" / "templates" / "contract.md"
+        text = tpl.read_text(encoding="utf-8")
+        tpl.write_text(
+            text.replace("## 진입점", "- 예외: 빈 문자열 → `0`\n\n## 진입점", 1),
+            encoding="utf-8")
+        bad = [c for c in cli._pipeline_checks(repo) if c["status"] == "FAIL"]
+        assert bad, "템플릿이 자기 파서를 속이는데 doctor 가 통과시켰다"
+        assert any("템플릿" in c["name"] for c in bad), [c["name"] for c in bad]
+
+
 class TestPhaseParser:
 
     def test_splits_frontmatter_body_and_sections(self, repo, phases):

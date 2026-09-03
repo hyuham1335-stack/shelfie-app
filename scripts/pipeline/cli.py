@@ -406,7 +406,39 @@ def _pipeline_checks(root):
                     "status": "FAIL" if bad else "PASS",
                     "message": "; ".join("%s: %s" % (f["file"], f["message"])
                                          for f in bad[:3])})
+
+    # ④ 계약 템플릿이 **자기 파서를 통과하는가.** 계약 계층의 "계약 절 ↔ 템플릿"
+    #    은 절 제목 일치만 본다 — 템플릿이 시범 보이는 **형태**가 파서를 속이면
+    #    첫 계약이 그 형태를 베끼고, 유닛이 부풀어 스코프 선택이 조용히 빗나간다.
+    out.append(_check_template_parses(root, config))
     return out
+
+
+def _check_template_parses(root, config):
+    import contract as contract_mod
+    name = "계약 템플릿 파싱"
+    path = Path(root) / harness.CONTRACT_TEMPLATE_REL
+    if not path.is_file() or not config:
+        return {"name": name, "status": "SKIP",
+                "message": "템플릿이나 config 를 읽지 못했다"}
+    try:
+        parsed = contract_mod.parse(path.read_text(encoding="utf-8"), config)
+    except (OSError, ValueError) as exc:
+        return {"name": name, "status": "FAIL", "message": "파싱 실패: %s" % exc}
+    dropped = parsed.get("dropped") or []
+    if dropped:
+        return {"name": name, "status": "FAIL",
+                "message": "템플릿이 자기 파서에 유닛 아닌 것 %d개를 낸다: %s — "
+                           "첫 계약이 이 형태를 베끼면 유닛 수가 부풀어 프로파일 "
+                           "판정과 스코프 선택이 함께 빗나간다."
+                           % (len(dropped),
+                              ", ".join(repr(d["raw"]) for d in dropped[:3]))}
+    if not parsed.get("units"):
+        return {"name": name, "status": "FAIL",
+                "message": "템플릿의 유닛 절이 파서에 아무것도 내지 않는다 — "
+                           "시범이 시범 노릇을 못 한다."}
+    return {"name": name, "status": "PASS",
+            "message": "유닛 %d개 · 버려진 것 0개" % len(parsed["units"])}
 
 
 def _doctor_render(harness_data, pipeline, exit_):

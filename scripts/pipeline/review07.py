@@ -105,7 +105,12 @@ def normalize_external(payload):
 def decide(state, external, config, audit=False):
     """생략 조건과 effort. **명세 §3.7 의 코드블록을 그대로 옮긴 것이다.**
 
-    반환: {"skip", "effort", "audit_run", "reasons", "gap"}
+    반환: {"skip", "effort", "audit_run", "reasons", "gaps"}
+
+    **gap 기록은 effort 분기와 독립이다.** 둘을 한 if/elif 사슬에 엮으면
+    먼저 걸린 분기가 뒤 분기의 gap 을 삼킨다 — 05 가 degraded 이고 외부가
+    disabled 인 런에서 결손 둘 중 하나만 보고서에 남았다 (G-5). 분기 순서를
+    바꾸는 것은 고치는 것이 아니라 **구멍을 옮기는 것**이다.
     """
     r05 = state.get("review05") or {}
     profile = ((state.get("profile") or {}).get("id")
@@ -121,7 +126,14 @@ def decide(state, external, config, audit=False):
                 and (r05.get("major") or 0) == 0
                 and (external.get("major") or 0) == 0))
 
-    reasons, gap = [], None
+    # 결손은 **각각** 센다. 무엇이 빠졌는지가 등급과 보고서의 재료다.
+    gaps = []
+    if r05.get("status") != "ok":
+        gaps.append("review05:%s" % r05.get("status"))
+    if not reviewed:
+        gaps.append("external:%s" % external.get("status"))
+
+    reasons = []
     if r05.get("status") != "ok":
         effort = "medium"
         skip = False
@@ -130,7 +142,6 @@ def decide(state, external, config, audit=False):
     elif not reviewed:
         effort = "low"
         skip = False
-        gap = "external:%s" % external.get("status")
         reasons.append("외부 리뷰가 `%s` 다 — 생략 조건이 `reviewed` 를 "
                        "요구하므로 성립하지 않는다." % external.get("status"))
     elif skip:
@@ -149,7 +160,7 @@ def decide(state, external, config, audit=False):
                        "생략 정책의 근거가 사라진다 (§E2).")
 
     return {"skip": skip, "effort": effort, "audit_run": bool(audit),
-            "reasons": reasons, "gap": gap}
+            "reasons": reasons, "gaps": gaps}
 
 
 def escaped(root, findings, run_id):

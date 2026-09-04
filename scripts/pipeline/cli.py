@@ -1998,11 +1998,28 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
         st.save(paths, s)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 
+    # **외부 계수의 권위는 `review07` 의 재계수에 있다** — 봇이 요약하지 않은
+    # 원본을 본 것은 그쪽뿐이다. 여기서 제출의 값을 쓰면 `normalize_external`
+    # 이 불변식 8 을 지키려고 다시 센 것을 자진 신고가 이긴다 (G-6).
+    decided = (s.get("review07") or {}).get("external")
+    if not decided:
+        return st.envelope(
+            "record", False, 3, s, {},
+            "`review07` 을 먼저 돌린다. 외부 리뷰의 상태와 Major 수는 **거기서 "
+            "기계가 세고**, 여기서는 그 값을 쓴다 — 제출자가 신고한 숫자를 "
+            "저장하면 확인 가능한 것을 확인하지 않은 것이 된다.",
+            "python scripts/pipeline/cli.py review07 --run-id %s" % s["run_id"])
+
     errors = []
     ext = payload.get("external") or {}
-    if ext.get("status") not in rv7.EXTERNAL_STATUS:
-        errors.append("`external.status` 는 %s 중 하나다 (받은 값: %r)"
-                      % (" · ".join(rv7.EXTERNAL_STATUS), ext.get("status")))
+    if ext:
+        # 실으면 대조한다. 안 실으면 그냥 결정된 값을 쓴다.
+        for key in ("status", "major"):
+            if key in ext and ext[key] != decided.get(key):
+                errors.append(
+                    "`external.%s` 가 기계 계수와 다르다 — 제출 %r vs "
+                    "`review07` %r. 이 값은 신고하는 것이 아니라 대조되는 것이다."
+                    % (key, ext[key], decided.get(key)))
     if payload.get("code_review") not in rv7.EFFORTS:
         errors.append("`code_review` 는 %s 중 하나다 (받은 값: %r)"
                       % (" · ".join(rv7.EFFORTS), payload.get("code_review")))
@@ -2037,8 +2054,7 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
                   [dict(f, resolution="deferred") for f in got["findings"]])
 
     s.setdefault("review07", {}).update(
-        {"external": {"status": ext.get("status"),
-                      "major": ext.get("major") or 0},
+        {"external": dict(decided),
          "code_review": payload.get("code_review"),
          "escaped_05": got["escaped_05"],
          "deduped": got["deduped"],
@@ -2702,8 +2718,8 @@ def run_review07(root, external=None, run_id=None):
     s.setdefault("review07", {}).update(
         {"external": {"status": norm["status"], "major": norm["major"]},
          "code_review": got["effort"], "escaped_05": None})
-    if got["gap"]:
-        st.demote(s, st.GRADES[1], got["gap"])
+    for gap in got["gaps"]:
+        st.demote(s, st.GRADES[1], gap)
     st.save(paths, s)
 
     data = dict(got, external=norm)

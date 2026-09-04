@@ -118,6 +118,13 @@ python scripts/pipeline/cli.py promote --scan --run-id {run_id}
 
 ## 제출 형식
 
+**`external` 을 신고하지 마라.** 외부 리뷰의 상태와 Major 수는 `review07` 이
+봇 원문에서 **다시 세고**, `record` 는 그 값을 쓴다. 실으면 버리지 않고
+**대조한다** — 다르면 exit 8 이고 두 값을 나란히 보여 준다. 자진 신고 중 기계로
+확인 가능한 것은 기계로 확인한다(불변식 8). `review07` 을 안 돌리고 `record`
+부터 치면 exit 3 이다.
+
+
 `{run_dir}/07_pr_review.json` 하나를 내고 `record --phase 07` 을 부른다.
 finding 은 **05 와 같은 스키마**를 쓴다.
 

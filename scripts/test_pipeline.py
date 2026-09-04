@@ -4112,7 +4112,8 @@ class TestPromoteFlush:
 import review07 as rv7  # noqa: E402
 
 
-def _enter_07(repo, request_file, phases, review05_status="ok", major=0):
+def _enter_07(repo, request_file, phases, review05_status="ok", major=0,
+              decide=False):
     run_id, paths = _enter_06(repo, request_file, phases)
     _p, s = st.load(repo, run_id)
     st.set_phase_status(s, "06-pr", "passed")
@@ -4120,6 +4121,10 @@ def _enter_07(repo, request_file, phases, review05_status="ok", major=0):
     s["pr"] = {"number": 231, "state": "open", "pushed": True, "head": "feat-x"}
     s["review05"] = dict(s["review05"], status=review05_status, major=major)
     st.save(_p, s)
+    if decide:
+        # 07 의 절차는 `review07` → 내장 리뷰 → `record` 다. 그 첫 단계를
+        # 건너뛰면 외부 계수의 권위가 제출자에게 넘어간다 (G-6).
+        cli.run_review07(repo, run_id=run_id)
     return run_id, paths
 
 
@@ -4204,6 +4209,74 @@ class TestReview07Skip:
         assert env["exit"] == 8
 
 
+class TestReview07Gaps:
+    """gap 기록은 effort 분기와 **독립이다** (G-5).
+
+    `decide()` 가 하나의 if/elif 사슬에 두 결정을 엮어 두어, 05 가 `ok` 가
+    아니면 `external:*` gap 이 영영 안 생겼다. 결손 둘 중 하나만 보고서에
+    남는다.
+    """
+
+    def test_05_결손과_외부_결손이_둘_다_남는다(self, repo, request_file, phases):
+        run_id, paths = _enter_07(repo, request_file, phases,
+                                  review05_status="degraded")
+        env = cli.run_review07(repo, run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        gaps = s.get("gaps") or []
+        assert any(g.startswith("external:") for g in gaps), gaps
+        assert env["data"]["effort"] == "medium", "결손은 비싼 쪽으로 메운다"
+
+    def test_gap_은_네_조합에서_일관된다(self, repo):
+        """r05.status × reviewed 의 네 조합. 순서를 바꿔 구멍을 옮기지 않았다."""
+        cfg = _config(repo)
+        cases = [
+            ("ok", "reviewed", []),
+            ("ok", "disabled", ["external:disabled"]),
+            ("degraded", "reviewed", ["review05:degraded"]),
+            ("degraded", "disabled", ["review05:degraded", "external:disabled"]),
+        ]
+        for r05, ext, want in cases:
+            got = rv7.decide({"review05": {"status": r05, "major": 0}},
+                             {"status": ext, "major": 0}, cfg)
+            assert sorted(got["gaps"]) == sorted(want), (r05, ext, got["gaps"])
+
+
+class TestRecord07ExternalAuthority:
+    """외부 Major 의 권위는 `review07` 의 재계수에 있다 (G-6 · 불변식 8)."""
+
+    def test_review07_없이_record_하면_거부된다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        env = cli.run_record(repo, "07", str(_r07(paths)), run_id=run_id)
+        assert env["exit"] == 3
+        assert "review07" in env["render"]
+
+    def test_자진_신고된_major_를_저장하지_않는다(self, repo, request_file,
+                                                 phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        cli.run_record(repo, "07", str(_r07(paths)), run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        # 봇이 꺼져 있으므로 review07 이 센 값은 disabled · 0 이다.
+        assert s["review07"]["external"]["status"] == "disabled"
+        assert s["review07"]["external"]["major"] == 0
+
+    def test_신고와_기계_계수가_다르면_exit_8(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        f = _r07(paths, external={"status": "reviewed", "major": 3})
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] == 8
+        assert "기계" in env["render"] or "대조" in env["render"]
+
+    def test_신고가_기계_계수와_같으면_통과한다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        f = _r07(paths, external={"status": "disabled", "major": 0})
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] in (0, 11), env["render"]
+
+
 class TestReview07Severity:
 
     def test_심각도를_못_가르면_Major_로_낙하한다(self):
@@ -4257,8 +4330,7 @@ class TestReview07Audit:
 
 
 def _r07(paths, **kw):
-    d = {"external": {"status": "reviewed", "major": 0},
-         "code_review": "low", "findings": [], "change_requested": False,
+    d = {"code_review": "low", "findings": [], "change_requested": False,
          "human_comments": []}
     d.update(kw)
     p = paths.run_dir / "07_pr_review.json"
@@ -4270,7 +4342,7 @@ class TestRecord07:
 
     def test_깨끗하면_08_로_간다(self, repo, request_file, phases):
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         env = cli.run_record(repo, "07", str(_r07(paths)), run_id=run_id)
         assert env["exit"] in (0, 11), env["render"]
         _p, s = st.load(repo, run_id)
@@ -4280,7 +4352,7 @@ class TestRecord07:
     def test_05_가_못_잡은_것이_escaped_05_로_센다(self, repo, request_file,
                                                   phases):
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         f = _r07(paths, findings=[
             {"id": "G-1", "category": "TX_BOUNDARY", "severity": "major",
              "target_role": "impl", "title": "트랜잭션 경계가 없다",
@@ -4291,7 +4363,7 @@ class TestRecord07:
 
     def test_05_가_이미_낸_것은_dedup_된다(self, repo, request_file, phases):
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         same = {"category": "TX_BOUNDARY", "severity": "major",
                 "target_role": "impl", "title": "트랜잭션 경계가 없다"}
         ldg.append(repo, run_id, "05", [dict(same, resolution="repaired",
@@ -4306,7 +4378,7 @@ class TestRecord07:
     def test_변경_요청_미해결은_exit_10(self, repo, request_file, phases):
         """PR 체크가 빨간불인데 파이프라인이 초록불인 척하지 않는다."""
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         f = _r07(paths, change_requested=True, findings=[
             {"id": "G-1", "category": "TX_BOUNDARY", "severity": "major",
              "target_role": "impl", "title": "고쳐라", "source": "external",
@@ -4317,14 +4389,14 @@ class TestRecord07:
     def test_변경_요청인데_findings_가_비면_exit_8(self, repo, request_file,
                                                   phases):
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         f = _r07(paths, change_requested=True, findings=[])
         env = cli.run_record(repo, "07", str(f), run_id=run_id)
         assert env["exit"] == 8
 
     def test_어휘_밖_source_는_exit_8(self, repo, request_file, phases):
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         f = _r07(paths, findings=[
             {"id": "G-1", "category": "TX_BOUNDARY", "severity": "major",
              "target_role": "impl", "title": "x", "source": "내가지어낸출처",
@@ -4335,7 +4407,7 @@ class TestRecord07:
     def test_PR_이_머지됐으면_아무것도_안_하고_끝낸다(self, repo, request_file,
                                                      phases):
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         _p, s = st.load(repo, run_id)
         s["pr"]["state"] = "merged"
         st.save(_p, s)
@@ -4346,7 +4418,7 @@ class TestRecord07:
 
     def test_사람_코멘트는_수리_대상이_아니다(self, repo, request_file, phases):
         ldg.seed(repo)
-        run_id, paths = _enter_07(repo, request_file, phases)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
         f = _r07(paths, human_comments=[{"body": "이건 어때요"}])
         env = cli.run_record(repo, "07", str(f), run_id=run_id)
         assert env["exit"] in (0, 11)
@@ -4361,7 +4433,7 @@ import report as rep_mod  # noqa: E402
 
 def _enter_08(repo, request_file, phases, grade="PASS"):
     ldg.seed(repo)
-    run_id, paths = _enter_07(repo, request_file, phases)
+    run_id, paths = _enter_07(repo, request_file, phases, decide=True)
     _p, s = st.load(repo, run_id)
     st.set_phase_status(s, "07-pr-review", "passed")
     s["phase"] = "08-report"

@@ -662,7 +662,21 @@ PR 상태를 먼저 본다. **닫혔거나 머지됐으면 수리·코멘트를 
 review05.status != ok        → --effort medium   (리뷰 결손을 비싼 쪽으로 메운다)
 external.status != reviewed  → --effort low + PASS_WITH_GAPS
 audit_run (5런마다 1회)       → 생략 조건을 만족해도 medium 강제 (§E2)
+
+gap 은 effort 와 **따로 센다**:
+  review05.status != ok        → gap "review05:{status}"
+  external.status != reviewed  → gap "external:{status}"
 ```
+
+**effort 선택과 gap 기록은 독립된 두 결정이다.** 한 if/elif 사슬에 엮으면 먼저
+걸린 분기가 뒤 분기의 gap 을 삼킨다 — 05 가 degraded 이고 외부가 disabled 인
+런에서 **결손 둘 중 하나만 보고서에 남는다.** 분기 순서를 바꾸는 것은 고치는
+것이 아니라 구멍을 옮기는 것이다.
+
+**`external` 의 상태와 Major 는 `review07` 이 봇 원문에서 세고, `record` 는 그
+값을 쓴다.** 제출이 그 값을 실으면 버리지 않고 **대조하고**, 다르면 exit 8 이다.
+`review07` 없이 `record` 부터 치면 exit 3 — 그러지 않으면 외부 계수의 권위가
+요약본을 낸 제출자에게 넘어간다 (불변식 8).
 
 **`config.external_pr_review.enabled: false`면 봇 소스 자체가 없다.** `external.status = "disabled"`가 되고, 생략 조건은 `reviewed`를 요구하므로 **생략이 성립하지 않는다 — 내장 리뷰가 항상 돈다.** "봇이 없으니 리뷰가 없었다"가 "통과"가 되지 않는다.
 

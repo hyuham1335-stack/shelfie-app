@@ -44,7 +44,15 @@ PHASE_STATUS = ("running", "passed", "failed", "escalated", "skipped")
 # 런 상태 어휘. 셋 다 예전에는 리터럴로 세 곳에 흩어져 있었고, `done` 은
 # **거르는 쪽(`latest_run_id`)만 있고 쓰는 쪽이 없었다** — 그래서 어떤 런도
 # 닫히지 않았다 (M24).
-RUN_STATUS = ("active", "escalated", "done")
+# `abandoned` 는 "이어질 일이 없다" 다. `done`(완주)과 갈라 두는 이유는
+# 보고서와 원장이 둘을 같은 것으로 읽으면 안 되기 때문이고, `active` 로
+# 남겨 두지 않는 이유는 **이어지지 않을 런이 이어질 것처럼 보이는 것 자체가
+# 거짓**이기 때문이다.
+RUN_STATUS = ("active", "escalated", "done", "abandoned")
+
+# `latest_run_id` 가 기본값으로 집지 않는 상태. `escalated` 는 빠져 있다 —
+# 재개 가능한 런이고, 안 집으면 사람의 판단을 기다리는 런이 화면에서 사라진다.
+TERMINAL_STATUS = ("done", "abandoned")
 
 # `on_success` 의 종단 센티널. team-spec §1 의 페이즈 표가 08 의 성공 시
 # 다음을 `done` 이라 적는다 — 페이즈 id 가 아니라 "여기서 끝" 이라는 표식이다.
@@ -271,7 +279,7 @@ def latest_run_id(root, include_done=False):
             s = json.loads((d / "state.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if include_done or s.get("run_status") != "done":
+        if include_done or s.get("run_status") not in TERMINAL_STATUS:
             return s.get("run_id") or d.name
         best = best or (s.get("run_id") or d.name)
     return best
@@ -482,15 +490,25 @@ def fingerprint_matches(saved, fresh):
 
 # ------------------------------------------------------------------ 런 종료
 
-def close_run(s, now=None):
-    """런을 닫는다. **`run_status` 를 `done` 으로 옮기는 유일한 자리다.**
+def close_run(s, now=None, status=DONE, reason=None):
+    """런을 닫는다. **`run_status` 를 종단으로 옮기는 유일한 자리다.**
 
     `demote` 가 등급의 단일 출처인 것과 같은 규율이다 — 대입이 여러 곳으로
     흩어지면 되돌리는 경로가 조용히 생긴다. `escalate` 의 대칭 짝이고, 둘 다
     런의 수명을 끝내는 쪽으로만 움직인다.
+
+    `status` 를 파라미터로 둔 것은 종단이 둘이기 때문이다 — 08 이 닫는
+    `done` 과 사람이 버리는 `abandoned`. **함수를 새로 만들면 대입이 둘로
+    갈라져 위의 규율이 실제로 깨진다** (ADR-H016 이 지키려던 것은 "대입
+    자리가 하나" 이지 "호출자가 하나" 가 아니다).
     """
-    s["run_status"] = DONE
+    if status not in TERMINAL_STATUS:
+        raise ValueError("종단 상태가 아니다: %r (%s)"
+                         % (status, ", ".join(TERMINAL_STATUS)))
+    s["run_status"] = status
     s["closed_at"] = stamp(now)
+    if reason:
+        s["closed_reason"] = reason
     return s
 
 

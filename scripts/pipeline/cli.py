@@ -1262,12 +1262,52 @@ def _normalize_phase(phase, loaded):
     return None
 
 
-def _close_run(root, paths, s, phase_item, ctx, cmd):
-    """마지막 페이즈 통과 → 런 종료. **상태 변이는 여기 하나뿐이다.**
+def cmd_abandon(root, args):
+    return st.emit(run_abandon(root, run_id=args.run_id, reason=args.reason))
 
-    `st.close_run` 이 `run_status` 의 단일 출처이고, 이 함수가 그것을 부르는
-    유일한 자리다 — 등급이 세 곳에서 대입되던 것을 `st.demote` 로 모은 것과
-    같은 규율이다 (ADR-H015).
+
+def run_abandon(root, run_id=None, reason=None):
+    """이어질 일이 없는 런을 **명시적으로** 닫는다. 종료 코드 0 / 2 / 3.
+
+    버려진 런이 `active` 로 남아 있으면 `latest_run_id` 가 그것을 집고,
+    `status` 화면이 이어질 것처럼 말한다 — **이어지지 않을 런이 이어질 것처럼
+    보이는 것 자체가 거짓이다.** 지우지 않고 사실로 남긴다.
+
+    `--reason` 을 강제하는 이유는 원장에서 "설계가 바뀌어 버렸다" 와 "인프라가
+    깨져 못 이었다" 가 갈려야 하기 때문이다.
+    """
+    root = Path(root)
+    paths, s = st.load(root, run_id)
+    if s is None:
+        return st.envelope("abandon", False, 3, None, {}, "런이 없다.", None)
+    if not (reason or "").strip():
+        return st.envelope("abandon", False, 2, s, {},
+                           "`--reason` 이 필요하다. 사유 없이 닫으면 원장에서 "
+                           "포기와 장애가 같아 보인다.", None)
+    if s.get("run_status") in st.TERMINAL_STATUS:
+        return st.envelope("abandon", False, 3, s,
+                           {"run_status": s.get("run_status")},
+                           "이미 닫힌 런이다 (`%s`). 종단은 되돌리지 않는다."
+                           % s.get("run_status"), None)
+
+    st.close_run(s, status="abandoned", reason=reason.strip())
+    st.append_event(paths, "run_closed", cmd="abandon", phase=s.get("phase"),
+                    grade=s.get("grade"), gaps=s.get("gaps") or [])
+    st.save(paths, s)
+    return st.envelope("abandon", True, 0, s,
+                       {"run_status": "abandoned", "reason": reason.strip()},
+                       "런 `%s` 을 **버린 것으로** 닫았다 — %s\n\n"
+                       "산출물은 그대로 남는다. `--run-id` 없이 부르는 커맨드가 "
+                       "이제 이 런을 집지 않는다." % (s["run_id"], reason.strip()),
+                       None)
+
+
+def _close_run(root, paths, s, phase_item, ctx, cmd):
+    """마지막 페이즈 통과 → 런 종료. **`done` 으로 옮기는 자리는 여기 하나다.**
+
+    `st.close_run` 이 `run_status` 의 단일 출처이고, 종단 상태를 인자로 받는다 —
+    등급이 세 곳에서 대입되던 것을 `st.demote` 로 모은 것과 같은 규율이다
+    (ADR-H015). `abandon` 도 그 함수를 부르지 자기 대입을 만들지 않는다.
     """
     pid = phase_item["front"]["id"]
     st.set_phase_status(s, pid, "passed")
@@ -3010,12 +3050,12 @@ def run_pr(root, run_id=None):
     body_path.write_text(body, encoding="utf-8")
     data["body_file"] = paths.rel(body_path)
 
-    # 6. 계약 삭제 → push → 요청서.
-    # **삭제가 push 직전인 것이 요점이다** — 04 귀속과 05 대조가 계약을 계속
-    # 읽으므로 그 전에 지우면 재개가 깨진다 (§E13).
-    removed = _drop_contract(root, paths, s, build_context(root, paths, s))
-    data["contract_removed"] = removed
-
+    # 6. push → 계약 삭제 → 요청서.
+    # **삭제는 push 가 성공한 뒤다** (G-7). 04 귀속과 05 대조가 계약을 계속
+    # 읽으므로 최대한 늦추는 것이 §E13 의 근거인데, push 앞은 충분히 늦지
+    # 않다 — push 는 실패할 수 있고, 실패하면 05 의 `requires` 가 안 채워져
+    # **재개가 불가능해진다.** 계약은 `_workspace/` 아래 untracked 라 삭제
+    # 시점이 커밋 diff 에 영향을 주지 않는다.
     pushed = pr_mod.push(root, config, branch)
     data["push"] = pushed
     if not pushed["ok"]:
@@ -3023,6 +3063,9 @@ def run_pr(root, run_id=None):
                     options=[pushed.get("detail") or "상세 없음"], phase="06-pr")
         st.save(paths, s)
         return _escalation_envelope("pr", paths, s)
+
+    removed = _drop_contract(root, paths, s, build_context(root, paths, s))
+    data["contract_removed"] = removed
 
     s.setdefault("pr", {}).update({
         "head": branch, "pushed": True, "pushed_at": st.stamp(),
@@ -3058,8 +3101,12 @@ def _drop_contract(root, paths, s, ctx):
     p = Path(root) / rel
     if not p.exists():
         return {"removed": False, "reason": "이미 없다", "path": rel}
+    # **지우기 전에 런 디렉터리로 옮겨 둔다.** §E13 의 sha256 재대조가 06
+    # 이후 재개에서도 돌 수 있어야 하고, 계약이 무엇이었는지는 런의 기록이다.
+    snap = paths.run_dir / "06_contract_snapshot.md"
+    snap.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
     p.unlink()
-    return {"removed": True, "path": rel}
+    return {"removed": True, "path": rel, "snapshot": paths.rel(snap)}
 
 
 def _no_remote_render(rs):
@@ -3451,6 +3498,10 @@ def build_parser():
 
     sub.add_parser("doctor", add_help=False)
 
+    sp = sub.add_parser("abandon", add_help=False)
+    sp.add_argument("--reason", dest="reason", default=None)
+    sp.add_argument("--run-id", dest="run_id", default=None)
+
     sp = sub.add_parser("status", add_help=False)
     sp.add_argument("--run-id", dest="run_id", default=None)
 
@@ -3557,6 +3608,7 @@ HANDLERS = {
     "escalate": cmd_escalate,
     "resume": cmd_resume,
     "status": cmd_status,
+    "abandon": cmd_abandon,
     "lint-phases": cmd_lint_phases,
     "contract-trace": cmd_contract_trace,
     "precheck": cmd_precheck,

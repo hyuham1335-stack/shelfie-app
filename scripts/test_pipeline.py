@@ -3731,9 +3731,24 @@ class TestGradeSingleSource:
             assert kind in st.EVENT_KINDS
 
     def test_run_status_어휘가_닫혀_있다(self):
-        """세 값이 리터럴로 흩어져 있던 것을 한 자리로 모은다 (M24)."""
-        assert st.RUN_STATUS == ("active", "escalated", "done")
+        """리터럴로 흩어져 있던 것을 한 자리로 모은다 (M24).
+
+        `abandoned` 는 넷째다 — "완주했다"(`done`)와 "이어질 일이 없다"를
+        원장·보고서가 같은 것으로 읽으면 안 된다.
+        """
+        assert st.RUN_STATUS == ("active", "escalated", "done", "abandoned")
         assert st.DONE in st.RUN_STATUS
+
+    def test_종단은_둘이고_escalated_는_빠진다(self):
+        """`escalated` 는 재개 가능한 런이다 — 안 집으면 화면에서 사라진다."""
+        assert st.TERMINAL_STATUS == ("done", "abandoned")
+        assert "escalated" not in st.TERMINAL_STATUS
+
+    def test_종단이_아닌_상태로는_close_run_이_거부한다(self):
+        """`run_status` 를 옮기는 자리가 하나라는 규율을 함수가 지킨다."""
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            st.close_run({}, status="active")
 
     def test_run_closed_는_horizon_과_다른_사실이다(self):
         """`horizon` 은 "다음 페이즈가 아직 없다", `run_closed` 는 "런이
@@ -4093,7 +4108,7 @@ class TestPr06Push:
         _remote(repo, tmp_path)
         env = cli.run_pr(repo, run_id=run_id)
         assert env["exit"] == 0, env["render"]
-        assert not contract.exists(), "계약 파일은 push 직전에 지운다"
+        assert not contract.exists(), "계약 파일은 push 성공 뒤에 지운다"
         assert (paths.run_dir / "06_pr_body.md").exists()
         req = json.loads((paths.run_dir / "06_pr_req.json")
                          .read_text(encoding="utf-8"))
@@ -4140,6 +4155,85 @@ class TestPr06Push:
     def test_force_push_를_쓰지_않는다(self):
         src = (ROOT / "scripts" / "pipeline" / "pr.py").read_text(encoding="utf-8")
         assert "--force" not in src and "-f\"" not in src
+
+
+class TestPr06ContractLifetime:
+    """계약 삭제는 push **이후**다 (G-7).
+
+    실패할 수 있는 `push` 보다 먼저 지우면, push 가 실패했을 때 05 의
+    `requires`(계약 파일 실재 + `must_contain`)가 안 채워져 **재개가
+    불가능해진다.** 계약은 `_workspace/` 아래 untracked 파일이라 삭제 시점이
+    커밋 diff 에 영향을 주지 않는다 — 늦출 이유만 있고 당길 이유가 없다.
+    """
+
+    def test_push_가_실패하면_계약이_남아_있다(self, repo, request_file, phases,
+                                              tmp_path):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        # 원격 디렉터리를 없애 push 를 실패시킨다.
+        import shutil
+        shutil.rmtree(str(tmp_path / "origin.git"), ignore_errors=True)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] != 0, env["render"]
+        c = repo / "_workspace" / "contract_x.md"
+        assert c.exists(), "push 실패 뒤에 05 로 재개할 길이 남아야 한다"
+
+    def test_삭제_전에_스냅샷을_남긴다(self, repo, request_file, phases, tmp_path):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 0, env["render"]
+        assert (paths.run_dir / "06_contract_snapshot.md").exists()
+
+
+class TestRunAbandon:
+    """이어질 일이 없는 런이 `active` 로 남아 있는 것 자체가 거짓이다."""
+
+    def test_abandon_이_런을_닫는다(self, repo, request_file, phases):
+        init = cli.run_init(repo, "x", str(request_file))
+        run_id = init["run_id"]
+        env = cli.run_abandon(repo, run_id=run_id, reason="설계가 바뀌었다")
+        assert env["exit"] == 0
+        _p, s = st.load(repo, run_id)
+        assert s["run_status"] == "abandoned"
+        assert s["closed_reason"] == "설계가 바뀌었다"
+
+    def test_사유_없이는_닫지_않는다(self, repo, request_file, phases):
+        init = cli.run_init(repo, "x", str(request_file))
+        env = cli.run_abandon(repo, run_id=init["run_id"], reason="")
+        assert env["exit"] == 2
+
+    def test_버려진_런은_기본값으로_집히지_않는다(self, repo, request_file, phases):
+        """살아 있는 런이 따로 있으면 버려진 쪽을 집지 않는다."""
+        # run_id 는 요청 바이트에서 유도되므로 두 런의 요청이 달라야 한다.
+        other = request_file.with_name("req2.md")
+        other.write_text("# 다른 요청\n\n다른 내용이다.\n", encoding="utf-8")
+        a = cli.run_init(repo, "a", str(request_file))["run_id"]
+        b = cli.run_init(repo, "b", str(other))["run_id"]
+        assert a != b
+        # 지금 집히는 쪽을 버린다 — 그래야 정렬 운에 기대지 않는다.
+        dead = st.latest_run_id(repo)
+        alive = b if dead == a else a
+        cli.run_abandon(repo, run_id=dead, reason="버린다")
+        assert st.latest_run_id(repo) == alive
+
+    def test_에스컬레이션된_런은_계속_집힌다(self, repo, request_file, phases):
+        """재개 가능한 런이다 — 안 집으면 화면에서 사라진다."""
+        rid = cli.run_init(repo, "a", str(request_file))["run_id"]
+        paths, s = st.load(repo, rid)
+        st.escalate(paths, s, "사람이 정한다", ["가", "나"], phase="01-plan")
+        st.save(paths, s)
+        assert st.latest_run_id(repo) == rid
+
+    def test_닫힌_런은_다시_버려지지_않는다(self, repo, request_file, phases):
+        rid = cli.run_init(repo, "a", str(request_file))["run_id"]
+        cli.run_abandon(repo, run_id=rid, reason="한 번")
+        env = cli.run_abandon(repo, run_id=rid, reason="두 번")
+        assert env["exit"] == 3
 
 
 class TestRecord06:

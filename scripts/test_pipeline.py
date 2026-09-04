@@ -2229,6 +2229,80 @@ class TestLedgerFindings:
             ldg.append(repo, "r1", "05", [_finding(resolution="고쳤음")])
 
 
+class TestLedgerIdentity:
+    """원장 행의 신원은 `(run_id, phase, finding_key)` 이고 갱신은 **승계**다.
+
+    파일은 append-only 그대로다 — 그 성질이 tracked 파일의 머지를 자명한
+    union 으로 만든다. 가변성은 쓰기가 아니라 **읽기**로 옮긴다.
+    """
+
+    def _row(self, **kw):
+        d = {"category": "NAMING", "severity": "major", "target_role": "impl",
+             "title": "이름이 규약을 벗어난다", "resolution": "deferred",
+             "source": "reviewer"}
+        d.update(kw)
+        return d
+
+    def test_같은_런_같은_페이즈의_같은_키는_한_번만_세어진다(self, repo):
+        """M30 — 라운드마다 한 줄씩 쌓이면 `count` 축이 무력해진다."""
+        ldg.seed(repo)
+        for _ in range(3):
+            ldg.append(repo, "R1", "05", [self._row()])
+        obs = ldg.observations(repo)
+        assert len(obs) == 1
+        assert obs[0]["run_id"] == "R1"
+
+    def test_05_와_07_은_같은_런에서도_따로_센다(self, repo):
+        """신원에 phase 를 넣지 않으면 `count` 가 `distinct_runs` 를 흡수한다."""
+        ldg.seed(repo)
+        ldg.append(repo, "R1", "05", [self._row()])
+        ldg.append(repo, "R1", "07", [self._row()])
+        assert len(ldg.observations(repo)) == 2
+
+    def test_마지막_행이_이긴다(self, repo):
+        """M29 — 승계. 뒤에 온 `repaired` 가 앞의 `deferred` 를 대신한다."""
+        ldg.seed(repo)
+        ldg.append(repo, "R1", "05", [self._row()])
+        ldg.append(repo, "R1", "05", [self._row(resolution="repaired",
+                                                repaired_by="main")])
+        obs = ldg.observations(repo)
+        assert len(obs) == 1
+        assert obs[0]["resolution"] == "repaired"
+        assert obs[0]["repaired_by"] == "main"
+
+    def test_severity_는_최대로_접힌다(self, repo):
+        ldg.seed(repo)
+        ldg.append(repo, "R1", "05", [self._row(severity="critical")])
+        ldg.append(repo, "R1", "05", [self._row(severity="minor")])
+        assert ldg.observations(repo)[0]["severity"] == "critical"
+
+    def test_원장_파일은_다시_쓰이지_않는다(self, repo):
+        """append-only 잠금 — 이전 바이트가 접두사로 남아야 한다."""
+        ldg.seed(repo)
+        p = repo / ldg.FINDINGS_REL
+        ldg.append(repo, "R1", "05", [self._row()])
+        before = p.read_bytes()
+        ldg.append(repo, "R1", "05", [self._row(resolution="repaired")])
+        assert p.read_bytes().startswith(before)
+
+    def test_read_all_은_승계_행을_전부_보존한다(self, repo):
+        """감사 이력이 사라지지 않는다 — 접기는 읽기에서만 일어난다."""
+        ldg.seed(repo)
+        ldg.append(repo, "R1", "05", [self._row()])
+        ldg.append(repo, "R1", "05", [self._row(resolution="repaired")])
+        assert len(ldg.read_all(repo)) == 2
+
+    def test_승격_집계가_라운드_반복에_속지_않는다(self, repo):
+        """major 임계는 3회/2런이다. 한 런의 3라운드로 채워지면 안 된다."""
+        ldg.seed(repo)
+        for _ in range(3):
+            ldg.append(repo, "R1", "05", [self._row()])
+        got = ldg.stage_promotions(repo)
+        assert got["candidates"] == []
+        keys = [b["count"] for b in got["held"]] or [0]
+        assert max(keys) <= 1, "한 런은 한 번이다"
+
+
 class TestLedgerBaseline:
     """untested_contract_item 의 baseline 기간 판정 (§E6)."""
 
@@ -2272,19 +2346,44 @@ class TestLedgerPromotion:
         ldg.append(repo, "r2", "05", [_finding(severity="critical")])
         assert len(ldg.stage_promotions(repo)["candidates"]) == 1
 
-    def test_one_run_never_promotes_however_many_files(self, repo):
-        """한 런에서 같은 지적이 다섯 번 나오는 건 그 런의 특성이지 학습 대상이 아니다."""
+    def test_one_run_never_promotes_however_many_times(self, repo):
+        """한 런에서 같은 지적이 다섯 번 와도 관측은 하나다.
+
+        **신원이 `(run_id, phase, finding_key)` 이므로 라운드 반복이 임계를
+        혼자 채우지 못한다** (M30). 예전에는 다섯 줄이 `count=5` 가 되어
+        `distinct_runs` 하나에만 기대고 있었다.
+        """
         ldg.seed(repo)
-        ldg.append(repo, "r1", "05", [_finding(severity="critical") for _ in range(5)])
+        ldg.append(repo, "r1", "05",
+                   [_finding(severity="critical") for _ in range(5)])
         got = ldg.stage_promotions(repo)
         assert got["candidates"] == []
-        assert got["held"], "임계는 넘었지만 distinct_runs 로 막혔음이 드러나야 한다"
+        assert got["held"] == [], "누적 자체가 임계에 못 닿는다"
+
+    def test_held_is_still_reachable(self, repo):
+        """`held` 가 도달 불가능해지면 두 침묵이 다시 하나가 된다.
+
+        누적은 넘었는데 `distinct_runs` 에서 막힌 상태가 여전히 표현돼야
+        "임계가 높다" 와 "런이 모자라다" 가 갈린다. minor 는 (5회, 3런) 이므로
+        두 런 × 세 페이즈면 누적 6 · 런 2 로 그 자리에 선다.
+        """
+        ldg.seed(repo)
+        for rid in ("r1", "r2"):
+            for phase in ("05", "07", "05-trace"):
+                ldg.append(repo, rid, phase, [_finding(severity="minor")])
+        got = ldg.stage_promotions(repo)
+        assert got["candidates"] == []
+        assert len(got["held"]) == 1
+        assert got["held"][0]["count"] >= 5
+        assert got["held"][0]["distinct_runs"] == 2
 
     def test_minor_needs_five_over_three_runs(self, repo):
+        """페이즈 축이 살아 있어 누적과 런 수가 여전히 다른 것을 센다."""
         ldg.seed(repo)
-        for rid in ("r1", "r1", "r2", "r2"):
-            ldg.append(repo, rid, "05", [_finding(severity="minor")])
-        assert ldg.stage_promotions(repo)["candidates"] == []
+        for rid in ("r1", "r2"):
+            for phase in ("05", "07"):
+                ldg.append(repo, rid, phase, [_finding(severity="minor")])
+        assert ldg.stage_promotions(repo)["candidates"] == [], "누적 4 · 런 2"
         ldg.append(repo, "r3", "05", [_finding(severity="minor")])
         assert len(ldg.stage_promotions(repo)["candidates"]) == 1
 
@@ -3383,6 +3482,79 @@ class TestPhase05Ledgering:
 # ---------------------------------------------------------------------------
 
 
+class TestPhase05Repaired:
+    """수리된 지적은 원장에서 `repaired` 다 (M29).
+
+    "닫혔다" 를 모델이 신고하지 않는다 — `review.check` 의 단조성 검사가 이미
+    검증한 `closed` 에서만 유도한다 (불변식 8).
+    """
+
+    def _ready(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        cli.run_contract_trace(repo, run_id=run_id)
+        paths, s = st.load(repo, run_id)
+        node = s["phases"]["05-code-review"]
+        node["planned"] = ["arch"]
+        node["routing"] = {"reviewers": [{"code": "arch"}], "dropped": [],
+                           "capped": False}
+        node["mode"] = "fanout"
+        st.save(paths, s)
+        return run_id, paths
+
+    def _finding(self, **kw):
+        d = {"id": "F-1", "category": "TX_BOUNDARY", "severity": "major",
+             "target_role": "impl", "title": "트랜잭션 경계가 없다",
+             "quote": "규약을 벗어난 이름"}
+        d.update(kw)
+        return d
+
+    def test_다음_라운드에_닫히면_repaired_로_승계된다(self, repo, request_file,
+                                                      phases):
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = self._finding()
+        j = _reviewer_files(paths, "arch", [f], raw="## major\n\n규약을 벗어난 이름\n")
+        cli.run_record(repo, "05", str(j), reviewer="arch", round_=1,
+                       run_id=run_id)
+        rows = [r for r in ldg.read_all(repo) if r.get("category") == "TX_BOUNDARY"]
+        assert rows, "1라운드가 원장에 쌓았어야 한다"
+        key = rows[0]["finding_key"]
+
+        # 2라운드: 그 지적을 해소로 신고한다. 단조성 검사가 이것을 검증한다.
+        j2 = paths.run_dir / "05_review_arch_r2.json"
+        j2.write_text(json.dumps({
+            "reviewer": "arch", "round": 2, "status": "ok",
+            "by_checklist": {"전부": []},
+            "resolved_from_previous": [{"id": "F-1", "resolved_by": "이름을 고쳤다"}],
+            "need_more_context": []}, ensure_ascii=False), encoding="utf-8")
+        j2.with_name("05_review_arch_r2.raw.md").write_text(
+            "# 리뷰\n\n해소했다\n", encoding="utf-8")
+        cli.run_record(repo, "05", str(j2), reviewer="arch", round_=2,
+                       run_id=run_id)
+
+        obs = [o for o in ldg.observations(repo) if o["finding_key"] == key]
+        assert len(obs) == 1, "라운드마다 한 줄씩 쌓이면 안 된다 (M30)"
+        assert obs[0]["resolution"] == "repaired", "닫힌 지적이 deferred 로 남는다 (M29)"
+
+    def test_안_닫힌_것은_deferred_로_남는다(self, repo, request_file, phases):
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = self._finding(severity="minor")
+        j = _reviewer_files(paths, "arch", [f], raw="## minor\n\n규약을 벗어난 이름\n")
+        cli.run_record(repo, "05", str(j), reviewer="arch", round_=1,
+                       run_id=run_id)
+        obs = [o for o in ldg.observations(repo) if o["category"] == "TX_BOUNDARY"]
+        assert obs and obs[0]["resolution"] == "deferred"
+
+    def test_repaired_by_를_못_가르면_null_이다(self, repo):
+        """지어내지 않는다 — `state.repair` 가 아직 실행기에 없다."""
+        ldg.seed(repo)
+        ldg.append(repo, "R1", "05", [
+            {"category": "TX_BOUNDARY", "severity": "major", "target_role": "impl",
+             "title": "x", "resolution": "repaired", "source": "reviewer"}])
+        assert ldg.observations(repo)[0]["repaired_by"] is None
+
+
 class TestGradeSingleSource:
     """등급은 강등만 한다. 그 전에는 나중에 쓰는 쪽이 이겼다."""
 
@@ -3961,13 +4133,17 @@ class TestPromoteScan:
         assert env["data"]["needs_model"] is True
 
     def test_한_런에_몰린_것은_후보가_아니다(self, repo, request_file, phases):
-        """distinct_runs >= 2 — 그 런의 특성이지 학습 대상이 아니다."""
+        """distinct_runs >= 2 — 그 런의 특성이지 학습 대상이 아니다.
+
+        같은 런의 같은 페이즈에서 두 번 온 것은 이제 **관측 하나**다 (M30).
+        그래서 여기서 막는 것은 `distinct_runs` 이전에 누적 자체다.
+        """
         _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
                      ["r1", "r1"])
         run_id, _p = _enter_06(repo, request_file, phases)
         env = cli.run_promote(repo, scan=True, run_id=run_id)
         assert env["data"]["candidates"] == []
-        assert len(env["data"]["held"]) == 1
+        assert env["data"]["held"] == []
 
 
 def _staged_authz(repo, request_file, phases):

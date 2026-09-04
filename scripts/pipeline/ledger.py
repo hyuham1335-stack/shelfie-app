@@ -267,6 +267,44 @@ def append(root, run_id, phase, findings):
     return len(rows)
 
 
+def supersede(root, run_id, phase, keys, **updates):
+    """이미 쌓인 관측의 상태를 **덧붙여** 갱신한다. 반환: 쓴 줄 수.
+
+    줄을 고쳐 쓰지 않는다 — 같은 신원의 새 줄을 append 하고 `observations`
+    가 마지막을 채택한다. 그래서 append-only 의 union-머지 성질이 유지된다.
+
+    `keys` 중 이 (run_id, phase) 에 **실재하지 않는** 것은 조용히 만들지
+    않는다. 없는 것을 갱신하는 것은 갱신이 아니라 날조다.
+    """
+    prior = {}
+    for r in read_all(root):
+        if r.get("_corrupt"):
+            continue
+        if r.get("run_id") == run_id and r.get("phase") == phase:
+            prior[r.get("finding_key")] = r
+    rows = []
+    for key in keys or []:
+        base = prior.get(key)
+        if base is None:
+            continue
+        row = dict(base)
+        row.update(updates)
+        row["ts"] = st.stamp()
+        rows.append(row)
+    if not rows:
+        return 0
+    for row in rows:
+        if row.get("resolution") not in RESOLUTIONS:
+            raise ValueError("resolution 이 어휘 밖이다: %r (%s)"
+                             % (row.get("resolution"), ", ".join(RESOLUTIONS)))
+    path = Path(root) / FINDINGS_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(rows)
+
+
 def read_all(root):
     """원장 전부. 손상된 줄은 **건너뛰지 않고 드러낸다** — 조용히 줄면 집계가 틀린다."""
     path = Path(root) / FINDINGS_REL
@@ -281,6 +319,51 @@ def read_all(root):
         except ValueError:
             out.append({"_corrupt": True, "_line": i})
     return out
+
+
+def observations(root):
+    """원장을 **관측 단위**로 접은 것. 집계는 전부 이것을 쓴다.
+
+    행의 신원은 `(run_id, phase, finding_key)` 이고, 같은 신원의 뒷줄은 새
+    발생이 아니라 **승계**다 — 가변 필드(`resolution`·`repaired_by`)는 마지막
+    줄이 이기고 `severity` 는 최대다.
+
+    **왜 접기를 읽기에 두는가.** 원장 파일은 append-only 다(`open("a")`). 그
+    성질이 값을 하는 이유가 있다 — tracked 파일이라 브랜치 머지가 자명하게
+    union 이고, 줄을 제자리 수정하면 동시 런의 lost-update 가 생긴다. 그래서
+    가변성을 쓰기가 아니라 읽기로 옮긴다. `read_all` 은 원문 감사용으로
+    그대로 남고 **한 줄도 사라지지 않는다.**
+
+    `phase` 를 신원에 넣는 것이 선택이다. `(run_id, finding_key)` 로만 접으면
+    05 와 07 의 관측이 합쳐져 `count` 가 `distinct_runs` 를 완전히 흡수하고,
+    임계 여섯 숫자 중 셋이 죽은 값이 된다. M30 이 지적한 것은 라운드 중복이지
+    페이즈 간 합산이 아니다.
+
+    **머지 시 순서 비결정성**: 두 브랜치가 같은 신원에 다른 resolution 을
+    덧붙이면 접기 결과가 인터리브 순서에 달린다. `ts` 로 정렬해 결정론으로
+    만들되, "뒤 `ts` 가 이긴다" 는 임의 선택임을 적어 둔다.
+    """
+    folded = {}
+    order = []
+    rows = [r for r in read_all(root) if not r.get("_corrupt")]
+    rows.sort(key=lambda r: r.get("ts") or "")
+    for row in rows:
+        ident = (row.get("run_id"), row.get("phase"), row.get("finding_key"))
+        prev = folded.get(ident)
+        if prev is None:
+            folded[ident] = dict(row, first_seen=row.get("ts"),
+                                 last_seen=row.get("ts"), superseded=0)
+            order.append(ident)
+            continue
+        rank = _SEVERITY_RANK.get(row.get("severity"), -1)
+        keep_sev = prev.get("severity")
+        if rank > _SEVERITY_RANK.get(keep_sev, -1):
+            keep_sev = row.get("severity")
+        first = prev.get("first_seen")
+        n = prev.get("superseded", 0) + 1
+        folded[ident] = dict(row, severity=keep_sev, first_seen=first,
+                             last_seen=row.get("ts"), superseded=n)
+    return [folded[i] for i in order]
 
 
 def distinct_runs(root):
@@ -313,9 +396,7 @@ def stage_promotions(root):
     """
     cats = categories(root)
     buckets = {}
-    for row in read_all(root):
-        if row.get("_corrupt"):
-            continue
+    for row in observations(root):
         if row.get("resolution") in EXCLUDED_FROM_COUNT:
             continue
         code = row.get("category")
@@ -345,8 +426,8 @@ def stage_promotions(root):
         if b["count"] < need_count:
             continue
         if runs < need_runs:
-            # 한 런에서 같은 지적이 여러 파일에 나오는 건 그 런의 특성이지
-            # 학습 대상이 아니다. 막았다는 사실을 드러낸다.
+            # 여러 페이즈·소스가 같은 것을 본 것은 그 런의 특성이지 학습
+            # 대상이 아니다. 막았다는 사실을 드러낸다.
             item["held_because"] = ("누적 %d 로 임계를 넘었지만 distinct_runs 가 "
                                     "%d 라 %d 에 못 미친다"
                                     % (b["count"], runs, need_runs))

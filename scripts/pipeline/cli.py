@@ -1866,14 +1866,28 @@ def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
 
     # 원장에 쌓는다. **계약 대조의 결과도 함께 쌓는다** — 기계가 찾은 것과
     # 리뷰어가 찾은 것이 같은 눈금 위에 있어야 승격 집계가 성립한다.
-    rows = [dict(f, resolution=f.get("resolution") or "deferred",
-                 source=f.get("source") or "reviewer")
-            for f in merged]
+    #
+    # **한 런 안에서 같은 키는 한 번만 새 발생이다** (M30). 라운드마다 쌓으면
+    # "몇 런이 이것을 봤나" 여야 할 `count` 가 "고치는 데 몇 라운드 걸렸나"로
+    # 조용히 바뀌고, 한 런의 3라운드가 major 임계를 혼자 채운다.
+    seen = node.setdefault("ledgered_keys", [])
+    rows = []
+    for f in merged:
+        key = ledger.finding_key(f)
+        if key in seen:
+            continue
+        seen.append(key)
+        rows.append(dict(f, resolution=f.get("resolution") or "deferred",
+                         source=f.get("source") or "reviewer"))
     trace_path = paths.run_dir / "05_trace.json"
     if trace_path.exists() and not node.get("trace_ledgered"):
         trace = json.loads(trace_path.read_text(encoding="utf-8"))
-        rows += [dict(f, resolution=f.get("resolution") or "deferred")
-                 for f in trace.get("findings") or []]
+        for f in trace.get("findings") or []:
+            key = ledger.finding_key(f)
+            if key in seen:
+                continue
+            seen.append(key)
+            rows.append(dict(f, resolution=f.get("resolution") or "deferred"))
         node["trace_ledgered"] = True
     try:
         ledger.append(root, s["run_id"], "05", rows)
@@ -1881,6 +1895,20 @@ def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
         # 어휘 밖의 category 는 조용히 버리지 않는다. 제출을 되돌린다.
         return st.envelope("record", False, 8, s, {"error": str(exc)},
                            "## 원장 어휘 밖\n\n%s" % exc, _same_command(s, "05"))
+
+    # **닫힌 지적은 `repaired` 로 승계한다** (M29). 근거는 모델의 "고쳤다" 가
+    # 아니라 `review.check` 의 단조성 검사가 이미 검증한 `closed` 다 — 이전
+    # 라운드에 열려 있던 키가 이번에 `resolved_from_previous` 로 닫힌 것만
+    # 여기 들어온다. 자진 신고를 받지 않고 기계가 확인한 것에서 유도한다.
+    #
+    # `repaired_by` 는 `state.repair`(§2.4 의 `by_main`/`by_agent`)에서 와야
+    # 하는데 **실행기가 아직 그것을 쓰지 않는다.** 그래서 지금은 `null` 이다 —
+    # 지어내지 않는다.
+    closed = sorted({k for v in slot.values() for k in (v.get("closed") or [])})
+    if closed:
+        ledger.supersede(root, s["run_id"], "05", closed,
+                         resolution="repaired",
+                         repaired_by=(s.get("repair") or {}).get("by"))
 
     staged = ledger.stage_promotions(root)
     (paths.run_dir / "05_promo_staged.json").write_text(

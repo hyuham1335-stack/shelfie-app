@@ -847,7 +847,7 @@ prose  → config.project.rules_dir  →  agent-memory/{role}  →  config.proje
 ```
 
 - **기계로 막을 수 있는 규칙을 산문으로 승격하면 exit 8.** 이것이 `config.project.instruction_slot_budget`과 맞물려서, 그 예산이 **진짜 기계가 못 잡는 규칙**에만 쓰이게 만든다.
-- **`lint` 승격 시 베이스라인 diff를 승격 이력에 남긴다.** 없으면 "규칙은 추가했는데 아무것도 안 막는다"가 조용히 통과한다.
+- **`lint` 승격의 베이스라인은 실행기가 직접 잰다** — `--apply`가 어댑터의 `baseline_cmd`를 돌리고 `baseline_file`의 VCS 변화를 본다. 안 바뀌었으면 `rejected`이고, `rules_changelog.md`에 들어가는 값도 **기계가 잰 것**이다. 모델의 자진 신고는 받되 대조하고 다르면 exit 8 — 07의 `external`과 같은 규율이다. **종료 코드를 성패로 읽지 않는다**(린터가 위반을 찾으면 0이 아니고 그것이 정상이다). 실행 자체가 불가능하면(127·124) `infra`이고 exit 10이라 아무것도 쓰지 않는다. 어댑터에 `baseline_cmd`가 없는 스택은 막지 않되 갭 `promotion_baseline_unverified` + `PASS_WITH_GAPS`다 — **스킵은 통과가 아니다.** 결정은 [ADR-H021](../DECISIONS.md).
 - **중복·충돌**: `promote --scan`이 같은 category의 active 규칙 / anchors 교집합 2개 이상 / 목적지 파일 검색 결과를 **원문과 함께** 제시한다. 판정은 모델이 하되 `verdict` 강제 기록 — `duplicate`면 `action`은 `skip`/`amend`만(**`create` 금지**), `contradicts`면 자동 쓰기 차단 + 에스컬레이션. **"일단 붙이기"를 선택지에서 없앤다.** 런당 `create` 최대 3건 — **미검증 상속값이다 (§11.1).**
 - **철회**: 오탐 3회 이상 · 사용자 반려 · 상위 규칙 흡수. `status = retired`로 바꾸고 린트 규칙은 **삭제가 아니라 무시 표시 + 사유**. 삭제가 아니라 이동이라 감사 이력이 보존된다.
 - `rules_changelog.md`: 날짜 / `run_id` / `rule_id` / category / `enforceable` / 근거 런·횟수 / 중복·충돌 판정 / 실제 조치 / 베이스라인 diff / 철회 사유.
@@ -965,7 +965,8 @@ prose  → config.project.rules_dir  →  agent-memory/{role}  →  config.proje
 |---|---|
 | 승격 브랜치가 이미 존재(재개·이전 잔여) | 체크아웃해 이어서 쓴다. PR이 이미 있으면 갱신 |
 | base가 stale | `promote --apply` 전에 **base fetch 필수** |
-| 린트 규칙은 추가됐는데 **베이스라인 파일이 스테이징되지 않음** | 승격 게이트가 VCS 상태로 확인. 누락이면 실패 처리 — 다음 런 전체가 깨지는 것을 막는다 |
+| 린트 규칙은 추가됐는데 **베이스라인이 안 바뀜** | `--apply`가 `baseline_cmd`를 직접 돌려 VCS 상태로 확인한다. 안 바뀌었으면 `rejected` — 다음 런 전체가 깨지는 것을 막는다. **미추적 새 파일도 변화로 센다**(첫 승격에서 베이스라인 파일은 아직 추적되지 않고 `git diff`는 그것을 한 줄도 안 보여 준다) |
+| **승격 자체 게이트(`lint`+`check` 재실행)** | **아직 실행기가 강제하지 않는다.** 절차로만 지시되고 메인이 승격 브랜치에서 돌린다 — 베이스라인 측정과 달리 미구현이고, 재지 못한 것을 잰 것처럼 적지 않으려고 여기 남긴다 |
 | 자체 게이트 통과 후 push 실패 | `rejected` + 사유. 로컬 커밋은 폐기. 임계값이 다시 충족되면 다음 런에서 재승격 |
 | 승격이 기존 코드를 대량 위반시킴 | 자체 게이트가 잡는다 → 브랜치 폐기 → `rejected`. **기능 PR은 영향받지 않는다**(별도 브랜치이므로) |
 | `taxonomy.json` 손상 | `lint-phases`가 검증: 코드 유니크 / `enforceable`·`status` 어휘 / `rule` 참조가 실재 |

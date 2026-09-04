@@ -70,6 +70,28 @@ def stage(candidates):
             for c in candidates]
 
 
+def merge_staged(promos, fresh):
+    """새 후보 목록을 기존 `promotions` 에 **병합**한다. 제자리 갱신.
+
+    종단 상태(`applied`·`rejected`·`skipped`)는 손대지 않는다 — 이미 일어난
+    일이고 되돌릴 수 있으면 그것이 조용한 통과의 자리가 된다. 기존 `staged`
+    는 근거 수치만 갱신하고, 새 후보만 덧붙인다.
+    """
+    by_key = {p.get("finding_key"): p for p in promos}
+    for f in fresh:
+        cur = by_key.get(f["finding_key"])
+        if cur is None:
+            promos.append(f)
+            by_key[f["finding_key"]] = f
+            continue
+        if cur.get("status") != "staged":
+            continue
+        for k in ("severity", "count", "distinct_runs", "enforceable",
+                  "category"):
+            cur[k] = f[k]
+    return promos
+
+
 def check_verdicts(root, verdicts, promotions=None):
     """판정을 검사한다. 반환: (errors, blocked).
 
@@ -82,11 +104,24 @@ def check_verdicts(root, verdicts, promotions=None):
     """
     errors, blocked = [], False
     creates = 0
+    taken = set()
     for v in verdicts or []:
+        rid0 = v.get("rule_id") or "(이름 없음)"
         if not _resolve_category(root, v, promotions):
             errors.append("%s: 어느 후보를 승격하는지 가리키지 않았다 — "
-                          "`category` 또는 `finding_key` 가 필요하다."
-                          % (v.get("rule_id") or "(이름 없음)"))
+                          "`category` 또는 `finding_key` 가 필요하다." % rid0)
+        elif promotions is not None:
+            # **`apply` 와 같은 함수로 본다.** 두 함수가 각자 매칭하면 검사가
+            # 통과한 판정이 다른 후보를 승격시킬 수 있다.
+            hit = resolve_target(root, v, promotions, taken)
+            if hit is None:
+                errors.append(
+                    "%s: 가리킨 후보를 찾지 못했다 (finding_key=%r) — "
+                    "`finding_key` 는 원장의 신원이라 category 로 낙하시키지 "
+                    "않는다. 이름을 부른 것과 다른 지적이 승격되느니 거부한다."
+                    % (rid0, v.get("finding_key")))
+            else:
+                taken.add(id(hit))
         j, a = v.get("judgement"), v.get("action")
         rid = v.get("rule_id") or "(이름 없음)"
         if j not in JUDGEMENTS:
@@ -143,6 +178,38 @@ def _resolve_category(root, v, promotions=None):
     return None
 
 
+def resolve_target(root, v, promotions, taken=None):
+    """판정이 가리키는 후보 행. 없으면 None.
+
+    **두 패스로 나눈다.** 한 루프 안에서 `finding_key` 정확 일치와
+    `category` 약한 일치를 섞으면 배열 앞쪽의 약한 일치가 뒤쪽의 정확한
+    일치를 이긴다 — 엉뚱한 규칙이 changelog 에 쓰이고 근거 열도 다른
+    버킷에서 온다 (G-1).
+
+    `taken` 은 이미 다른 판정에 바인딩된 행이다. 표시하지 않으면 두 판정이
+    같은 행을 잡아 **뒤 판정이 앞 판정의 status 를 조용히 덮는다.**
+
+    `finding_key` 를 줬는데 후보에 없으면 **category 로 낙하하지 않는다** —
+    이름을 부른 것과 다른 지적이 승격되느니 못 찾는 편이 낫다. 원장의
+    신원을 가리켰는데 다른 것이 올라가면 그 사실이 어디에도 안 드러난다.
+    """
+    taken = taken if taken is not None else set()
+    fk = v.get("finding_key")
+    if fk:
+        for p in promotions:
+            if p.get("finding_key") == fk and id(p) not in taken:
+                return p
+        return None
+    code = _resolve_category(root, v, promotions)
+    if not code:
+        return None
+    for p in promotions:
+        if (p.get("category") == code and p.get("status") == "staged"
+                and id(p) not in taken):
+            return p
+    return None
+
+
 def apply(root, run_id, promotions, verdicts):
     """판정대로 승격 상태를 정한다. 반환: (promotions, rows).
 
@@ -150,23 +217,20 @@ def apply(root, run_id, promotions, verdicts):
     diff 가 없으면 여기서 `rejected` 이고, 규칙 파일은 손대지 않는다.
     """
     rows = []
+    taken = set()
     for v in verdicts or []:
         rid = v.get("rule_id")
         code = _resolve_category(root, v, promotions)
-        target = None
-        for p in promotions:
-            if p.get("finding_key") and p["finding_key"] == v.get("finding_key"):
-                target = p
-                break
-            if code and p.get("category") == code and p["status"] == "staged":
-                target = p
-                break
+        target = resolve_target(root, v, promotions, taken)
         if target is not None:
+            taken.add(id(target))
             # 목적지 이름은 판정이 짓는다 — 후보의 기본 이름을 덮어쓴다.
             target["rule_id"] = rid or target["rule_id"]
         if target is None:
             # 후보에 없는 규칙을 승격하려 한다 — 조용히 버리지 않고 skipped 로
             # 남긴다. 어디서 왔는지 모르는 규칙이 규칙 문서에 들어가지 않게.
+            # (`check_verdicts` 가 앞에서 거부하므로 여기까지 오는 것은
+            #  검사를 건너뛴 경로뿐이다.)
             target = {"rule_id": rid, "finding_key": v.get("finding_key"),
                       "category": code,
                       "enforceable": v.get("enforceable"),

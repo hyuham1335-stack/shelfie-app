@@ -4267,6 +4267,145 @@ class TestPromoteApply:
         assert "promoted" in kinds
 
 
+class TestPromoteTargetMatching:
+    """판정이 어느 후보를 가리키는가 (G-1).
+
+    `apply()` 가 한 루프 안에서 `finding_key` 정확 일치와 `category` 약한
+    일치를 **섞어** 검사하고 먼저 걸리는 쪽에서 멈췄다. 배열 앞쪽의 약한
+    일치가 뒤쪽의 정확한 일치를 이긴다 — 엉뚱한 규칙이 changelog 에 쓰이고
+    근거 열도 다른 버킷에서 온다.
+    """
+
+    def _promos(self):
+        return [
+            {"rule_id": "a", "finding_key": "KEY-A", "category": "TX_BOUNDARY",
+             "enforceable": "prose", "severity": "major", "count": 3,
+             "distinct_runs": 2, "status": "staged", "reason": None},
+            {"rule_id": "b", "finding_key": "KEY-B", "category": "TX_BOUNDARY",
+             "enforceable": "prose", "severity": "critical", "count": 9,
+             "distinct_runs": 4, "status": "staged", "reason": None},
+        ]
+
+    def test_finding_key_일치가_category_일치를_이긴다(self, repo):
+        ldg.seed(repo)
+        promos = self._promos()
+        promo_mod.apply(repo, "r9", promos, [
+            {"rule_id": "tx-b", "finding_key": "KEY-B", "category": "TX_BOUNDARY",
+             "enforceable": "prose", "judgement": "new", "action": "create",
+             "rationale": "필요하다"}])
+        by_key = {p["finding_key"]: p for p in promos}
+        assert by_key["KEY-B"]["status"] == "applied"
+        assert by_key["KEY-A"]["status"] == "staged", \
+            "앞쪽의 category 일치가 정확한 키 일치를 이기면 안 된다"
+
+    def test_한_판정이_두_후보를_동시에_바꾸지_않는다(self, repo):
+        ldg.seed(repo)
+        promos = self._promos()
+        _p, rows = promo_mod.apply(repo, "r9", promos, [
+            {"rule_id": "x", "category": "TX_BOUNDARY", "enforceable": "prose",
+             "judgement": "new", "action": "create", "rationale": "하나"},
+            {"rule_id": "y", "category": "TX_BOUNDARY", "enforceable": "prose",
+             "judgement": "new", "action": "create", "rationale": "둘"}])
+        touched = [p for p in promos if p["status"] != "staged"]
+        assert len(touched) == 2, "두 판정이 같은 행을 잡아 앞을 덮으면 안 된다"
+        assert len(rows) == 2
+
+    def test_없는_finding_key_는_category_로_낙하하지_않는다(self, repo):
+        """이름을 부른 것과 다른 지적이 승격되느니 거부가 맞다."""
+        ldg.seed(repo)
+        promos = self._promos()
+        errors, _blocked = promo_mod.check_verdicts(repo, [
+            {"rule_id": "z", "finding_key": "KEY-없음", "category": "TX_BOUNDARY",
+             "enforceable": "prose", "judgement": "new", "action": "create"}],
+            promos)
+        assert errors, "후보에 없는 finding_key 는 거부돼야 한다"
+
+    def test_check_verdicts_와_apply_가_같은_후보를_가리킨다(self, repo):
+        ldg.seed(repo)
+        promos = self._promos()
+        v = {"rule_id": "tx", "finding_key": "KEY-B", "category": "TX_BOUNDARY",
+             "enforceable": "prose", "judgement": "new", "action": "create",
+             "rationale": "r"}
+        errors, _b = promo_mod.check_verdicts(repo, [v], promos)
+        assert errors == []
+        promo_mod.apply(repo, "r9", promos, [v])
+        assert [p for p in promos if p["status"] == "applied"][0][
+            "finding_key"] == "KEY-B"
+
+
+class TestPromoteStatePreservation:
+    """`--scan` 은 읽기다 (G-3).
+
+    읽기가 상태를 바꾸는 것이 이 결함의 뿌리다. `--scan`/`--stage` 가
+    `s["promotions"]` 를 무조건 새 staged 목록으로 덮어써, `--apply` 뒤에
+    다시 `--scan` 이 돌면 `applied` 가 사라진다 — `report` 가 exit 6 을 내고
+    두 번째 `--apply` 에서 changelog 가 중복된다.
+    """
+
+    def test_scan_은_applied_를_되돌리지_않는다(self, repo, request_file, phases):
+        _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
+                     ["r1", "r2"])
+        run_id, _p = _enter_06(repo, request_file, phases)
+        paths, s = st.load(repo, run_id)
+        s["promotions"] = [{"rule_id": "keep", "finding_key": "K",
+                            "category": "AUTHZ_MISSING_RULE",
+                            "enforceable": "prose", "severity": "critical",
+                            "count": 2, "distinct_runs": 2,
+                            "status": "applied", "reason": "이미 썼다"}]
+        st.save(paths, s)
+        cli.run_promote(repo, scan=True, run_id=run_id)
+        _pp, s2 = st.load(repo, run_id)
+        assert s2["promotions"][0]["status"] == "applied"
+
+    def test_stage_는_applied_를_지우지_않는다(self, repo, request_file, phases):
+        _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
+                     ["r1", "r2"])
+        run_id, _p = _enter_06(repo, request_file, phases)
+        cli.run_promote(repo, stage=True, run_id=run_id)
+        paths, s = st.load(repo, run_id)
+        assert s["promotions"], "후보가 올라와야 한다"
+        s["promotions"][0]["status"] = "applied"
+        s["promotions"][0]["reason"] = "이미 썼다"
+        st.save(paths, s)
+        cli.run_promote(repo, stage=True, run_id=run_id)
+        _pp, s2 = st.load(repo, run_id)
+        assert s2["promotions"][0]["status"] == "applied"
+        assert s2["promotions"][0]["reason"] == "이미 썼다"
+
+    def test_stage_는_새_후보를_더한다(self, repo, request_file, phases):
+        _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
+                     ["r1", "r2"])
+        run_id, _p = _enter_06(repo, request_file, phases)
+        cli.run_promote(repo, stage=True, run_id=run_id)
+        _fill_ledger(repo, "트랜잭션 경계가 없다", "TX_BOUNDARY", "critical",
+                     ["r3", "r4"])
+        cli.run_promote(repo, stage=True, run_id=run_id)
+        _pp, s = st.load(repo, run_id)
+        cats = {p["category"] for p in s["promotions"]}
+        assert cats == {"AUTHZ_MISSING_RULE", "TX_BOUNDARY"}
+
+    def test_promotions_가_빈_리스트면_전량_재stage_하지_않는다(
+            self, repo, request_file, phases):
+        """`or` 가 적법하게 빈 `[]` 를 거짓으로 읽는 자리 — G-4:1655 와 같은 모양."""
+        _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
+                     ["r1", "r2"])
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        s["promotions"] = []
+        st.save(_p, s)
+        vf = paths.run_dir / "07_promo_verdict.json"
+        vf.write_text(json.dumps({"verdicts": [
+            {"rule_id": "authz", "category": "AUTHZ_MISSING_RULE",
+             "enforceable": "prose", "judgement": "new", "action": "create",
+             "rationale": "r"}]}, ensure_ascii=False), encoding="utf-8")
+        cli.run_promote(repo, apply=True, verdict_file=str(vf), run_id=run_id)
+        _pp, s2 = st.load(repo, run_id)
+        # 아무것도 staged 되지 않은 런에서 판정만으로 후보가 되살아나면
+        # `--stage` 를 건너뛴 승격이 성립한다.
+        assert all(p["status"] != "staged" for p in s2["promotions"]), \
+            [p["status"] for p in s2["promotions"]]
+
+
 class TestPromoteFlush:
 
     def test_flush_가_staged_잔여를_종결한다(self, repo, request_file, phases):

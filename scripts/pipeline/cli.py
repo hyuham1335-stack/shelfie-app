@@ -2815,8 +2815,13 @@ def run_promote(root, scan=False, stage=False, apply=False, flush=False,
                            "충족되면 다음 런에서 재승격 후보가 된다." % n, None)
 
     if scan or stage:
-        promos = pm.stage(scanned["candidates"])
-        s["promotions"] = promos
+        # **덮어쓰지 않고 병합한다** (G-3). 07 의 절차는 `--scan` → 판정 →
+        # `--apply` 이고 `--scan` 이 적재를 겸한다. 그런데 대입이면 `--apply`
+        # 뒤에 다시 훑는 것만으로 `applied` 가 `staged` 로 되돌아간다 —
+        # `report` 가 exit 6 을 내고 두 번째 `--apply` 에서 changelog 가
+        # 중복된다. **한 번 일어난 일이 재집계로 없던 일이 되면 안 된다.**
+        promos = s.setdefault("promotions", [])
+        pm.merge_staged(promos, pm.stage(scanned["candidates"]))
         st.save(paths, s)
         data = dict(scanned, promotions=promos)
         return st.envelope("promote", True, 0, s, data,
@@ -2842,7 +2847,12 @@ def run_promote(root, scan=False, stage=False, apply=False, flush=False,
                            "JSON 을 읽지 못했다: %s" % exc, None)
     verdicts = payload.get("verdicts") or []
 
-    staged_now = s.get("promotions") or pm.stage(scanned["candidates"])
+    # `or` 가 적법하게 빈 `[]` 를 거짓으로 읽으면, 아무것도 staged 되지 않은
+    # 런에서 판정만으로 후보가 되살아나 `--stage` 를 건너뛴 승격이 성립한다.
+    # G-4 의 `planned or [reviewer]` 와 같은 모양의 결함이다.
+    staged_now = s.get("promotions")
+    if staged_now is None:
+        staged_now = pm.stage(scanned["candidates"])
     errors, blocked = pm.check_verdicts(root, verdicts, staged_now)
     if blocked:
         st.escalate(paths, s,

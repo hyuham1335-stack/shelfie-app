@@ -700,6 +700,7 @@ gap 은 effort 와 **따로 센다**:
 
 ```
 1. promote --scan     후보 0 → 모델 호출 없이 스킵, promotions: [] 종결   ← 초기 런의 최빈 경로
+                      재집계는 **병합이다** — 종단 상태(applied/rejected/skipped)를 덮지 않는다
 2. verdict            create | amend | skip  (duplicate 면 create 금지, contradicts 면 차단 → 에스컬레이션)
 3. base fetch → 규칙 전용 브랜치 분기 (있으면 체크아웃해 이어서, §E11)
 4. promote --apply    파일 쓰기 + 베이스라인 파일 스테이징 확인

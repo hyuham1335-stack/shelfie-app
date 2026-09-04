@@ -57,6 +57,10 @@ COUNTERS = ("round", "repair", "xverify_return", "review_repair", "pr_repair")
 EVENT_KINDS = (
     "run_created", "phase_enter", "phase_pass", "phase_fail", "phase_skip",
     "submit_received", "check_fail",
+    # `check_fail` 은 "제출이 규약을 어겼다", `reviewer_failed` 는 "그 리뷰어가
+    # 아예 안 돌았다" 다. 뭉치면 원장에서 **형식 문제와 미수행이 같아 보이고**,
+    # 05 의 라우팅 결함 진단이 불가능해진다.
+    "reviewer_failed",
     "stage_start", "stage_done", "stage_skipped",
     "attribution", "dispatch", "counter_inc",
     "escalated", "resumed", "horizon",

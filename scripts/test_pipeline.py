@@ -3098,6 +3098,203 @@ class TestPhase05Wiring:
         assert "원문" in env["render"]
 
 
+class TestReview05Denominator:
+    """`review05.status` 의 분모는 **라우팅**이지 제출자가 아니다 (G-4).
+
+    지금까지 `planned or [reviewer]` / `or sorted(slot)` 가 분모를 분자에서
+    유도해 비율이 구조적으로 항상 1 이었다. `degraded` 도 `failed` 도 도달
+    불가능한 값이었고, 페이즈 파일 232·233행과 `_review_render` 는 그 값이
+    난다고 **선언만** 하고 있었다.
+    """
+
+    def _planned(self, repo, run_id, codes):
+        """라우팅 결과를 강제한다 — glob 우연에 기대지 않는다."""
+        paths, s = st.load(repo, run_id)
+        node = s.setdefault("phases", {}).setdefault("05-code-review", {})
+        node["planned"] = list(codes)
+        node.setdefault("routing", {"reviewers": [{"code": c} for c in codes],
+                                    "dropped": [], "capped": False})
+        node.setdefault("mode", "fanout")
+        st.save(paths, s)
+        return paths
+
+    def test_zero_routing_is_written_to_state_not_only_rendered(
+            self, repo, request_file, phases):
+        """산문이 기계 사실을 참칭하지 않는다."""
+        run_id, _paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        _p, s = st.load(repo, run_id)
+        if s["phases"]["05-code-review"]["planned"]:
+            pytest.skip("이 리포 상태에서는 라우팅이 비지 않았다")
+        assert s["review05"]["status"] == "failed"
+        assert s["review05"]["reviewers_planned"] == 0
+        assert "review05:failed" in (s.get("gaps") or [])
+        assert s["grade"] != "PASS"
+
+    def test_empty_planned_is_not_replaced_by_the_submitter(
+            self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        cli.run_contract_trace(repo, run_id=run_id)
+        self._planned(repo, run_id, [])
+        f = _reviewer_files(paths, "arch", [])
+        env = cli.run_record(repo, "05", str(f), reviewer="arch", round_=1,
+                             run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        assert (s.get("review05") or {}).get("status") != "ok", env["render"]
+
+    def test_unplanned_reviewer_submission_is_refused(self, repo, request_file,
+                                                      phases):
+        """라우팅이 부르지 않은 리뷰어의 제출은 받지 않는다 (페이즈 파일 164행)."""
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        cli.run_contract_trace(repo, run_id=run_id)
+        self._planned(repo, run_id, ["arch"])
+        f = _reviewer_files(paths, "sec", [])
+        env = cli.run_record(repo, "05", str(f), reviewer="sec", round_=1,
+                             run_id=run_id)
+        assert env["exit"] == 8
+        assert "라우팅" in env["render"] or "계획" in env["render"]
+
+    def test_record_before_next_is_refused(self, repo, request_file, phases):
+        """`planned` 의 부재(05 진입 안 함)와 빈 리스트(0명 라우팅)는 다르다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_contract_trace(repo, run_id=run_id)
+        f = _reviewer_files(paths, "arch", [])
+        env = cli.run_record(repo, "05", str(f), reviewer="arch", round_=1,
+                             run_id=run_id)
+        assert env["exit"] == 3
+        assert "next" in env["render"]
+
+
+class TestReview05Failure:
+    """리뷰어 실패는 오류가 아니라 **데이터**다 — 등급으로 드러나야 한다."""
+
+    def _ready(self, repo, request_file, phases, codes):
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        cli.run_contract_trace(repo, run_id=run_id)
+        paths, s = st.load(repo, run_id)
+        node = s["phases"]["05-code-review"]
+        node["planned"] = list(codes)
+        node["routing"] = {"reviewers": [{"code": c} for c in codes],
+                           "dropped": [], "capped": False}
+        node["mode"] = "fanout"
+        st.save(paths, s)
+        return run_id, paths
+
+    def test_second_rejection_records_the_reviewer_as_failed(
+            self, repo, request_file, phases):
+        """재제출 1회 → 2회 실패 시 스킵 + degrade (페이즈 파일 234행)."""
+        run_id, paths = self._ready(repo, request_file, phases, ["arch", "test"])
+        bad = paths.run_dir / "05_review_arch.json"
+        bad.write_text(json.dumps({"reviewer": "arch", "by_checklist": {"a": [
+            {"id": "F-1", "severity": "major", "title": "x",
+             "category": "NAMING", "target_role": "impl",
+             "quote": "원문에없는문장이다"}]}},
+            ensure_ascii=False), encoding="utf-8")
+        bad.with_name("05_review_arch.raw.md").write_text(
+            "# 리뷰\n\n아무 말\n", encoding="utf-8")
+        first = cli.run_record(repo, "05", str(bad), reviewer="arch", round_=1,
+                               run_id=run_id)
+        assert first["exit"] == 8, "1회차는 재제출을 요구한다"
+        second = cli.run_record(repo, "05", str(bad), reviewer="arch", round_=1,
+                                run_id=run_id)
+        assert second["exit"] != 8, "2회차는 실패로 확정하고 흐름을 잇는다"
+        _p, s = st.load(repo, run_id)
+        slot = s["phases"]["05-code-review"]["rounds"]["1"]
+        assert slot["arch"]["keys"] is None
+        assert slot["arch"].get("reason")
+
+    def test_one_failed_reviewer_is_degraded(self, repo, request_file, phases):
+        run_id, paths = self._ready(repo, request_file, phases, ["arch", "test"])
+        env = cli.run_record(repo, "05", None, reviewer="arch", round_=1,
+                             run_id=run_id, failed=True, reason="호출이 타임아웃")
+        assert env["exit"] == 0, env["render"]
+        ok = _reviewer_files(paths, "test", [])
+        cli.run_record(repo, "05", str(ok), reviewer="test", round_=1,
+                       run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        assert s["review05"]["status"] == "degraded"
+        assert s["review05"]["reviewers_planned"] == 2
+        assert s["review05"]["reviewers_ok"] == 1
+        assert s["grade"] != "PASS"
+
+    def test_all_failed_is_failed(self, repo, request_file, phases):
+        run_id, _paths = self._ready(repo, request_file, phases, ["arch"])
+        cli.run_record(repo, "05", None, reviewer="arch", round_=1,
+                       run_id=run_id, failed=True, reason="호출 실패")
+        _p, s = st.load(repo, run_id)
+        assert s["review05"]["status"] == "failed"
+        assert "review05:failed" in (s.get("gaps") or [])
+
+    def test_failure_report_is_refused_when_a_valid_submission_exists(
+            self, repo, request_file, phases):
+        """이 verb 자체가 자진 신고다 — 확인 가능한 만큼만 받는다 (불변식 8)."""
+        run_id, paths = self._ready(repo, request_file, phases, ["arch"])
+        _reviewer_files(paths, "arch", [])
+        env = cli.run_record(repo, "05", None, reviewer="arch", round_=1,
+                             run_id=run_id, failed=True, reason="안 돌았다")
+        assert env["exit"] == 8
+        assert "제출" in env["render"]
+
+
+class TestReview05DeltaRound:
+    """델타 재리뷰는 1명이고(M27), 그 1명이 G-4 를 되돌리지 않는다."""
+
+    def _ready(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        cli.run_contract_trace(repo, run_id=run_id)
+        paths, s = st.load(repo, run_id)
+        node = s["phases"]["05-code-review"]
+        node["planned"] = ["arch", "test"]
+        node["routing"] = {"reviewers": [{"code": "arch"}, {"code": "test"}],
+                           "dropped": [], "capped": False}
+        node["mode"] = "fanout"
+        return run_id, paths, s, node
+
+    def test_worst_status_is_a_pure_function(self, repo):
+        assert rv.worst_status(["ok", "degraded"]) == "degraded"
+        assert rv.worst_status(["degraded", "ok"]) == "degraded"
+        assert rv.worst_status(["failed", "ok", "degraded"]) == "failed"
+        assert rv.worst_status(["ok", "ok"]) == "ok"
+        assert rv.worst_status([]) == "failed", "라운드가 없는 것은 미수행이다"
+
+    def test_delta_round_waits_for_one_reviewer(self, repo, request_file, phases):
+        run_id, paths, s, node = self._ready(repo, request_file, phases)
+        node["rounds_planned"] = {"2": ["arch"]}
+        st.save(paths, s)
+        f = _reviewer_files(paths, "arch", [])
+        env = cli.run_record(repo, "05", str(f), reviewer="arch", round_=2,
+                             run_id=run_id)
+        waiting = (env.get("data") or {}).get("waiting_for") or []
+        assert "test" not in waiting, "델타 라운드는 전원을 기다리지 않는다"
+
+    def test_a_clean_delta_round_does_not_heal_the_status(
+            self, repo, request_file, phases):
+        """G-4 재개봉 방지 — status 는 런 안에서 단조 비개선이다."""
+        run_id, paths, s, node = self._ready(repo, request_file, phases)
+        node["round_status"] = {"1": "degraded"}
+        node["rounds_planned"] = {"2": ["arch"]}
+        s["review05"] = {"status": "degraded", "reviewers_planned": 2,
+                         "reviewers_ok": 1, "mode": "fanout", "major": 0,
+                         "need_more_context": [], "dropped_by_enforcement": 0,
+                         "truncated": False}
+        st.save(paths, s)
+        f = _reviewer_files(paths, "arch", [])
+        cli.run_record(repo, "05", str(f), reviewer="arch", round_=2,
+                       run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        assert s["review05"]["status"] == "degraded", \
+            "깨끗한 델타 라운드가 앞선 결손을 지우면 E1 가드가 옆문으로 다시 열린다"
+
+
 class TestPhase05Ledgering:
 
     def _prepare(self, repo, request_file, phases):

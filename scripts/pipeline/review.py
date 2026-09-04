@@ -169,6 +169,30 @@ def status(planned, ok):
     return "ok"
 
 
+# 나쁜 쪽으로 갈수록 크다. `state.GRADES` 의 단조 강등과 같은 규율이다.
+STATUS_RANK = {"ok": 0, "degraded": 1, "failed": 2}
+
+
+def worst_status(statuses):
+    """라운드별 status 들의 **최악**. 런의 `review05.status` 는 이 값이다.
+
+    델타 재리뷰가 1명이면 그 라운드의 분모가 1 이라 깨끗한 재리뷰가
+    `ok` 를 만든다. 그것을 런의 값으로 쓰면 **1라운드의 `degraded` 가
+    조용히 지워진다** — G-4 가 막으려던 구멍이 옆문으로 다시 열린다.
+    그래서 status 는 런 안에서 좋아지지 않는다.
+
+    빈 목록은 `failed` 다. 라운드가 하나도 없는 것은 미수행이지 통과가 아니다.
+    """
+    ranked = [STATUS_RANK.get(x, 2) for x in statuses or []]
+    if not ranked:
+        return "failed"
+    worst = max(ranked)
+    for name, rank in STATUS_RANK.items():
+        if rank == worst:
+            return name
+    return "failed"
+
+
 # ------------------------------------------------------------------ 제출 판정
 
 def flatten(payload):

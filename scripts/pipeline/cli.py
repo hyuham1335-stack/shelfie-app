@@ -895,7 +895,49 @@ def _plan_05_review(root, paths, s, ctx):
     node["routing"] = routed
     node["mode"] = review_mod.mode(ctx["config"],
                                    pc._changed_lines(root, changed))
+    if not node["planned"]:
+        # **여기서 확정하지 않으면 아무도 확정하지 않는다.** 리뷰어가 0명이면
+        # 제출도 0건이고 `_judge_05` 가 아예 안 불린다 — 05 가 조용히 지나간다.
+        # 봉투는 이 사실을 이미 산문으로 말하고 있었고, 그것을 쓰는 코드가
+        # 없다는 것이 G-4 의 절반이었다.
+        _write_review05(s, node, planned=[], ok=0, merged=[], slot={})
     return node
+
+
+def _write_review05(s, node, planned, ok, merged, slot, round_=None):
+    """`review05` 의 단일 출처. **status 는 런 안에서 좋아지지 않는다.**
+
+    `st.demote` 가 등급의 단일 출처인 것과 같은 규율이다 — 대입이 흩어지면
+    되돌리는 경로가 조용히 생긴다 (ADR-H015).
+    """
+    import review as review_mod
+
+    round_status = node.setdefault("round_status", {})
+    this = review_mod.status(len(planned), ok)
+    if round_ is not None:
+        round_status[str(round_)] = this
+    status = review_mod.worst_status(list(round_status.values()) or [this])
+
+    prev = s.get("review05") or {}
+    s["review05"] = {
+        "status": status,
+        "round_status": dict(round_status),
+        "reviewers_planned": len(planned),
+        "reviewers_ok": ok,
+        "reviewers_failed": sorted(c for c in planned
+                                   if (slot.get(c) or {}).get("keys") is None
+                                   and c in slot),
+        "mode": node.get("mode") or "fanout",
+        "major": sum(1 for f in merged if f.get("severity") in verdict.BLOCKING),
+        "need_more_context": [n for v in slot.values()
+                              for n in (v.get("need_more_context") or [])],
+        "dropped_by_enforcement": sum(v.get("dropped_by_enforcement") or 0
+                                      for v in slot.values()),
+        "truncated": any(v.get("truncated") for v in slot.values()),
+    }
+    if status != "ok":
+        st.demote(s, st.GRADES[1], "review05:%s" % status)
+    return prev
 
 
 def _excluded_render(root):
@@ -1103,10 +1145,12 @@ def _escalation_envelope(cmd, paths, s):
 
 def cmd_record(root, args):
     return st.emit(run_record(root, args.phase, args.file, args.reviewer,
-                              args.round, args.run_id))
+                              args.round, args.run_id, failed=args.failed,
+                              reason=args.reason))
 
 
-def run_record(root, phase, file, reviewer=None, round_=None, run_id=None):
+def run_record(root, phase, file, reviewer=None, round_=None, run_id=None,
+               failed=False, reason=None):
     root = Path(root)
     paths, s = st.load(root, run_id)
     if s is None:
@@ -1130,11 +1174,22 @@ def run_record(root, phase, file, reviewer=None, round_=None, run_id=None):
     phase_item = loaded[pid]
     ctx = build_context(root, paths, s)
     checks = check_requires(root, phase_item["front"].get("requires"), ctx, s)
-    failed = [c for c in checks if not c["ok"]]
-    if failed:
+    # 이름이 `failed` 이면 `--failed` 파라미터를 덮는다. 하나는 "선행 조건이
+    # 안 맞았다", 하나는 "리뷰어 호출이 실패했다" 이고 뜻이 전혀 다르다.
+    unmet = [c for c in checks if not c["ok"]]
+    if unmet:
         return st.envelope("record", False, 3, s, {"requires_report": checks},
                            "## 선행 조건 미충족\n\n" +
-                           "\n".join("- %s" % c["message"] for c in failed), None)
+                           "\n".join("- %s" % c["message"] for c in unmet), None)
+
+    if failed and pid != "05-code-review":
+        return st.envelope(
+            "record", False, 2, s, {"phase": pid},
+            "`--failed` 는 05 의 리뷰어 실패 신고 전용이다. 다른 페이즈의 실패는 "
+            "제출을 내지 않는 것으로 드러나고 선행 조건이 그것을 막는다.", None)
+    if not failed and not file:
+        return st.envelope("record", False, 2, s, {"phase": pid},
+                           "`--file` 이 필요하다.", None)
 
     if pid in _CLOSED_BY:
         return st.envelope(
@@ -1142,6 +1197,12 @@ def run_record(root, phase, file, reviewer=None, round_=None, run_id=None):
             "`%s` 는 제출로 닫지 않는다 — `%s` 가 닫는다.\n\n"
             "페이즈는 자기 동사로 닫힌다: 04 는 `gate`, 08 은 `report` 다."
             % (pid, _CLOSED_BY[pid]), None)
+
+    if failed:
+        st.append_event(paths, "reviewer_failed", cmd="record", phase=pid,
+                        reviewer=reviewer, reason=reason)
+        return _record_05_failed(root, paths, s, phase_item, ctx, reviewer,
+                                 round_, reason)
 
     st.append_event(paths, "submit_received", cmd="record", phase=pid,
                     file=paths.rel(file), reviewer=reviewer)
@@ -1629,6 +1690,11 @@ def _record_05(root, paths, s, phase_item, ctx, file, reviewer, round_):
             "python scripts/pipeline/cli.py contract-trace --run-id %s" % s["run_id"])
 
     round_ = round_ or 1
+    guard = _planned_guard(s, node, reviewer, round_)
+    if guard is not None:
+        return guard
+    planned = _planned_for_round(node, round_)
+
     rounds = node.setdefault("rounds", {})
     prev_open = _previous_open(rounds, round_, reviewer)
     excluded = ledger.excluded_categories(root)
@@ -1637,11 +1703,24 @@ def _record_05(root, paths, s, phase_item, ctx, file, reviewer, round_):
     if not got["ok"]:
         st.append_event(paths, "check_fail", cmd="record", phase="05-code-review",
                         reviewer=reviewer, errors=len(got["errors"]))
+        tries = node.setdefault("attempts", {}).setdefault(str(round_), {})
+        tries[reviewer] = (tries.get(reviewer) or 0) + 1
         st.save(paths, s)
-        return st.envelope("record", False, 8, s, {"errors": got["errors"]},
-                           "## 리뷰 제출 거부\n\n" +
-                           "\n".join("- %s" % e for e in got["errors"]),
-                           _same_command(s, "05"))
+        if tries[reviewer] < REVIEW_SUBMIT_TRIES:
+            return st.envelope("record", False, 8, s,
+                               {"errors": got["errors"], "attempt": tries[reviewer]},
+                               "## 리뷰 제출 거부 (%d/%d)\n\n"
+                               % (tries[reviewer], REVIEW_SUBMIT_TRIES) +
+                               "\n".join("- %s" % e for e in got["errors"]),
+                               _same_command(s, "05"))
+        # **2회 실패는 오류가 아니라 데이터다** (페이즈 파일 "재제출 1회 →
+        # 2회 실패 시 스킵 + degrade"). exit 8 로 계속 튕기면 그 리뷰어가
+        # 영원히 슬롯에 못 들어가고, 결손이 등급에 드러날 자리가 없어진다.
+        return _record_05_failure_slot(
+            root, paths, s, phase_item, ctx, node, reviewer, round_,
+            "제출이 %d회 규약을 어겼다: %s"
+            % (tries[reviewer], "; ".join(got["errors"][:3])),
+            errors=got["errors"])
 
     slot = rounds.setdefault(str(round_), {})
     slot[reviewer] = {"mode": payload.get("mode") or "primary",
@@ -1652,7 +1731,6 @@ def _record_05(root, paths, s, phase_item, ctx, file, reviewer, round_):
                       "need_more_context": payload.get("need_more_context") or []}
     st.save(paths, s)
 
-    planned = node.get("planned") or [reviewer]
     missing = [c for c in planned if c not in slot]
     if missing:
         return st.envelope("record", True, 0, s,
@@ -1666,32 +1744,125 @@ def _record_05(root, paths, s, phase_item, ctx, file, reviewer, round_):
     return _judge_05(root, paths, s, phase_item, ctx, round_, slot, node)
 
 
+# 규약 위반 제출을 몇 번까지 되돌려 보내는가. 페이즈 파일의 "재제출 1회 →
+# 2회 실패 시 스킵 + degrade" 를 숫자로 옮긴 것이다.
+REVIEW_SUBMIT_TRIES = 2
+
+
+def _planned_for_round(node, round_):
+    """이 라운드가 기다리는 리뷰어. 1라운드는 전원, 델타는 지목된 1명이다.
+
+    **`or` 로 낙하하지 않는다** — 빈 리스트는 "모른다" 가 아니라 "라우팅이
+    아무도 안 골랐다" 는 관측된 사실이고, 그것이 기본값에 삼켜지는 것이 G-4 다.
+    """
+    by_round = node.get("rounds_planned") or {}
+    if str(round_) in by_round:
+        return list(by_round[str(round_)])
+    return list(node.get("planned") or [])
+
+
+def _planned_guard(s, node, reviewer, round_):
+    """제출자가 라우팅에 있는가. 없으면 봉투, 있으면 None."""
+    if "planned" not in node:
+        return st.envelope(
+            "record", False, 3, s, {},
+            "05 에 진입하지 않았다. `next` 가 리뷰어 라우팅을 확정한 뒤에만 "
+            "제출을 받는다 — 그러지 않으면 **분모가 제출자에서 유도되어** "
+            "누가 리뷰했는지가 리뷰한 사람의 주장이 된다.",
+            "python scripts/pipeline/cli.py next --run-id %s" % s["run_id"])
+    planned = _planned_for_round(node, round_)
+    if reviewer not in planned:
+        return st.envelope(
+            "record", False, 8, s,
+            {"planned": planned, "reviewer": reviewer, "round": round_},
+            "## 라우팅이 부르지 않은 리뷰어다\n\n"
+            "`%s` 는 이 라운드의 계획(%s)에 없다. 라우팅은 결정론이고 "
+            "모델이 정하지 않는다 — 부르지 않은 리뷰어의 제출을 받으면 "
+            "`escaped_05` 를 세는 것이 의미를 잃는다."
+            % (reviewer, ", ".join("`%s`" % c for c in planned) or "없음"),
+            None)
+    return None
+
+
+def _record_05_failed(root, paths, s, phase_item, ctx, reviewer, round_, reason):
+    """`record --phase 05 --reviewer <code> --failed` — 호출 자체가 실패했다.
+
+    **이 verb 는 자진 신고다.** 그래서 기계로 확인 가능한 만큼만 받는다 —
+    그 라운드의 유효한 제출 파일이 실재하면 신고를 거부한다. verb 가 아예
+    없으면 모델이 쓸 수 있는 유일한 표현이 "빈 유효 JSON" 이고, 그것은
+    깨끗한 리뷰와 기계적으로 구분되지 않는다.
+    """
+    if not reviewer:
+        return st.envelope("record", False, 2, s, {},
+                           "`--failed` 는 어느 리뷰어인지 필요하다: `--reviewer`",
+                           None)
+    if not (reason or "").strip():
+        return st.envelope("record", False, 2, s, {},
+                           "`--reason` 이 필요하다. 사유 없는 실패는 원장에서 "
+                           "인프라 실패와 미수행을 구분하지 못한다.", None)
+    node = s.setdefault("phases", {}).setdefault("05-code-review", {})
+    round_ = round_ or 1
+    guard = _planned_guard(s, node, reviewer, round_)
+    if guard is not None:
+        return guard
+
+    f = paths.run_dir / ("05_review_%s.json" % reviewer)
+    if round_ > 1:
+        f = paths.run_dir / ("05_review_%s_r%d.json" % (reviewer, round_))
+    if f.exists():
+        return st.envelope(
+            "record", False, 8, s, {"submission": paths.rel(f)},
+            "## 실패 신고를 받지 않는다\n\n"
+            "`%s` 의 제출 파일이 실재한다(`%s`). 신고 대신 그 파일을 "
+            "`record` 로 낸다 — **자진 신고 중 기계로 확인 가능한 것은 기계로 "
+            "확인한다.**" % (reviewer, paths.rel(f)), None)
+
+    return _record_05_failure_slot(root, paths, s, phase_item, ctx, node,
+                                   reviewer, round_, reason)
+
+
+def _record_05_failure_slot(root, paths, s, phase_item, ctx, node, reviewer,
+                            round_, reason, errors=None):
+    """실패를 슬롯에 **데이터로** 남기고 대기·판정 흐름을 잇는다."""
+    rounds = node.setdefault("rounds", {})
+    slot = rounds.setdefault(str(round_), {})
+    slot[reviewer] = {"mode": "primary", "keys": None, "blocking": 0,
+                      "closed": [], "findings": [], "status": "failed",
+                      "reason": reason, "errors": list(errors or []),
+                      "dropped_by_enforcement": 0, "truncated": False,
+                      "need_more_context": []}
+    st.save(paths, s)
+
+    planned = _planned_for_round(node, round_)
+    missing = [c for c in planned if c not in slot]
+    if missing:
+        return st.envelope(
+            "record", True, 0, s,
+            {"round": round_, "waiting_for": missing, "failed": reviewer},
+            "`%s` 를 **실패**로 기록했다 (%s). 아직 `%s` 가 남았다.\n\n"
+            "실패는 없던 일이 되지 않는다 — 등급과 보고서에 남는다."
+            % (reviewer, reason, "`, `".join(missing)),
+            "python scripts/pipeline/cli.py record --phase 05 "
+            "--file <리뷰 json> --reviewer %s --round %d --run-id %s"
+            % (missing[0], round_, s["run_id"]))
+    return _judge_05(root, paths, s, phase_item, ctx, round_, slot, node)
+
+
 def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
     """전원이 모였다. 병합 → 원장 → 수리 판정."""
     import ledger
     import review as review_mod
 
-    subs = [dict(v, reviewer=code) for code, v in slot.items()]
+    subs = [dict(v, reviewer=code) for code, v in slot.items()
+            if v.get("keys") is not None]
     merged = review_mod.merge(subs)
 
-    planned = node.get("planned") or sorted(slot)
-    ok_count = sum(1 for v in slot.values() if v.get("keys") is not None)
-    status = review_mod.status(len(planned), ok_count)
-
-    s["review05"] = {
-        "status": status,
-        "reviewers_planned": len(planned),
-        "reviewers_ok": ok_count,
-        "mode": node.get("mode") or "fanout",
-        "major": sum(1 for f in merged if f.get("severity") in verdict.BLOCKING),
-        "need_more_context": [n for v in slot.values()
-                              for n in (v.get("need_more_context") or [])],
-        "dropped_by_enforcement": sum(v.get("dropped_by_enforcement") or 0
-                                      for v in slot.values()),
-        "truncated": any(v.get("truncated") for v in slot.values()),
-    }
-    if status != "ok":
-        st.demote(s, st.GRADES[1], "review05:%s" % status)
+    # **분모는 라우팅이고 분자는 그 분모를 순회해 센다.** `slot` 을 순회하면
+    # 계획됐지만 아무 흔적도 남기지 않은 리뷰어가 분자에서 빠지지 않는다.
+    planned = _planned_for_round(node, round_)
+    ok_count = sum(1 for c in planned
+                   if (slot.get(c) or {}).get("keys") is not None)
+    _write_review05(s, node, planned, ok_count, merged, slot, round_=round_)
 
     # 원장에 쌓는다. **계약 대조의 결과도 함께 쌓는다** — 기계가 찾은 것과
     # 리뷰어가 찾은 것이 같은 눈금 위에 있어야 승격 집계가 성립한다.
@@ -1734,22 +1905,49 @@ def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
                          "이대로 진행한다(미해결 지적을 안고 간다)", "중단한다"],
                         phase="05-code-review")
             return _escalation_envelope("record", paths, s)
+        delta = _delta_reviewer(blocking, planned, slot)
+        node.setdefault("rounds_planned", {})[str(round_ + 1)] = [delta]
         st.save(paths, s)
         return st.envelope(
             "record", False, 4, s,
             {"blocking": len(blocking), "findings": blocking,
-             "review05": s["review05"]},
-            _review_repair_render(blocking, used + 1),
+             "review05": s["review05"], "delta_reviewer": delta},
+            _review_repair_render(blocking, used + 1, delta),
             "python scripts/pipeline/cli.py gate --phase 04 --stage scoped "
             "--run-id %s" % s["run_id"])
 
     return _advance_to_next(root, paths, s, phase_item, ctx)
 
 
-def _review_repair_render(blocking, round_no):
+def _delta_reviewer(blocking, planned, slot):
+    """델타 재리뷰를 맡을 **한 명**. 결정론이다 — 모델이 고르지 않는다.
+
+    막은 지적을 가장 많이 낸 리뷰어이고, 동률이면 `planned` 순서다. 모델이
+    고르면 라우팅 결정론(§3.5)이 델타 라운드에서만 무너지고, 그러면
+    `escaped_05` 가 라운드마다 다른 것을 센다.
+
+    성공한 리뷰어만 후보다 — 실패한 리뷰어를 다시 지목하면 그 라운드가
+    구조적으로 또 실패한다.
+    """
+    alive = [c for c in planned if (slot.get(c) or {}).get("keys") is not None]
+    if not alive:
+        alive = list(planned)
+    scores = {}
+    for f in blocking:
+        for c in f.get("reported_by") or []:
+            if c in alive:
+                scores[c] = scores.get(c, 0) + 1
+    return max(alive, key=lambda c: (scores.get(c, 0), -alive.index(c)))
+
+
+def _review_repair_render(blocking, round_no, delta=None):
     lines = ["## 수리가 필요하다 (%d회차)" % round_no, "",
              "Critical/Major %d건. **Minor 는 고치지 않는다** — 원장에 쌓이고 "
              "보고서로 간다." % len(blocking), ""]
+    if delta:
+        lines += ["수리 뒤 **델타 재리뷰는 `%s` 한 명**이다. 전원을 다시 "
+                  "부르지 않는다 — 그리고 그 한 명이 깨끗해도 앞선 라운드의 "
+                  "`degraded`·`failed` 는 지워지지 않는다." % delta, ""]
     for f in blocking:
         raised = (" *(2인 합치로 %s → %s)*"
                   % (f["severity_raised_from"], f["severity"])
@@ -3282,9 +3480,13 @@ def build_parser():
 
     sp = sub.add_parser("record", add_help=False)
     sp.add_argument("--phase", dest="phase", required=True)
-    sp.add_argument("--file", dest="file", required=True)
+    # `--failed` 는 산출물이 없는 신고라 `--file` 을 요구할 수 없다. 대신
+    # `run_record` 가 "둘 중 하나는 있어야 한다" 를 강제한다.
+    sp.add_argument("--file", dest="file", default=None)
     sp.add_argument("--reviewer", dest="reviewer", default=None)
     sp.add_argument("--round", dest="round", type=int, default=None)
+    sp.add_argument("--failed", dest="failed", action="store_true")
+    sp.add_argument("--reason", dest="reason", default=None)
     sp.add_argument("--run-id", dest="run_id", default=None)
 
     return p

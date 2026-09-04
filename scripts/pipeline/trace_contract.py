@@ -291,24 +291,66 @@ def _untested(root, config, adapter, parsed, files, test_role):
             continue
         if re.search(r"\b%s\b" % re.escape(symbol), blob):
             continue
-        if _entrypoint_referenced(unit, parsed, blob):
+        link = _entrypoint_link(root, adapter, unit, parsed, files, blob)
+        if link["covered"]:
             continue
         out.append(_finding(
             "untested_contract_item", "major", test_role,
             "계약의 유닛 %s 를 참조하는 테스트가 없다" % unit.get("raw"),
             symbol=symbol, container=unit.get("container"),
-            evidence="테스트 파일 %d개 어디에도 %r 도 관련 진입점 경로도 없다"
-                     % (len(tests), symbol)))
+            entrypoint_link=link["state"],
+            evidence="테스트 파일 %d개 어디에도 %r 이 없고, 이 유닛과 연결된 "
+                     "진입점 경로도 없다 (진입점 연결: %s)"
+                     % (len(tests), symbol, link["state"])))
     return out
 
 
-def _entrypoint_referenced(unit, parsed, blob):
-    """유닛이 진입점 뒤에 있으면 그 경로 문자열로도 커버된 것으로 본다."""
+def _entrypoint_link(root, adapter, unit, parsed, files, blob):
+    """이 유닛이 **자기 진입점**의 경로 문자열로 커버되는가.
+
+    반환: {"covered": bool, "state": "linked|unlinked|unresolved"}
+
+    예전에는 `unit` 을 아예 안 읽고 "**아무** 진입점 경로가 blob 에 있는가"를
+    답했다. 그래서 진입점 문자열 하나가 테스트 어딘가에 있으면 **전 유닛의
+    지적이 억제됐다** — 사실상 이 검사가 꺼져 있었다 (G-2).
+
+    연결은 한 홉까지 본다. 진입점이 해석한 파일이 ① 유닛의 컨테이너 파일이거나
+    ② 그 파일 본문이 유닛의 심볼을 참조하면 연결이다. ②가 없으면 §E6 이
+    진입점 폴백을 둔 이유(유닛이 라우트 핸들러가 **호출하는** 헬퍼인 경우)가
+    사라진다.
+
+    **해석에 실패하면 예전처럼 관대하게 낙하하되 그 사실을 남긴다.** 억제가
+    침묵으로 일어나면 이 검사가 왜 조용한지 아무도 모른다.
+    """
+    symbol = unit.get("symbol") or ""
+    container = (unit.get("container") or "").replace("\\", "/").lstrip("./")
+    hit = None
+    unresolved = False
     for ep in parsed.get("entrypoints") or []:
         path = ep.get("path")
-        if path and path in blob:
-            return True
-    return False
+        if not path or path not in blob:
+            continue
+        src = contract_mod._source_for_entrypoint(adapter, ep, files)
+        if src is None:
+            unresolved = True
+            continue
+        if container and (src == container or src.endswith("/" + container)):
+            hit = src
+            break
+        try:
+            text = (Path(root) / src).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            unresolved = True
+            continue
+        if symbol and re.search(r"\b%s\b" % re.escape(symbol), text):
+            hit = src
+            break
+    if hit is not None:
+        return {"covered": True, "state": "linked"}
+    if unresolved:
+        # 해석 실패는 "커버됐다" 가 아니다. 다만 왜 억제되지 않았는지 남긴다.
+        return {"covered": False, "state": "unresolved"}
+    return {"covered": False, "state": "unlinked"}
 
 
 def _concat(root, rels):

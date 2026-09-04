@@ -2528,6 +2528,133 @@ class TestContractTraceErrorsAndEntrypoints:
         assert len(got["checks_run"]) == 4
 
 
+class TestUntestedEntrypointLink:
+    """진입점 폴백은 **그 유닛과 연결된** 진입점만 본다 (G-2).
+
+    `_entrypoint_referenced(unit, ...)` 가 `unit` 을 안 써서, 아무 진입점
+    경로 하나가 테스트 blob 에 있으면 **모든 유닛**의 지적이 억제됐다.
+    사실상 이 검사가 꺼져 있었고, §E6 의 baseline 3런은 그동안 발화할 수
+    없는 검사를 재고 있었다.
+    """
+
+    CONTRACT = """# 계약: x
+
+## 유닛
+- `lib/alpha.ts · doAlpha(x: string): void`
+- `lib/beta.ts · doBeta(x: string): void`
+
+## 진입점
+- `POST /api/alpha` → 201
+"""
+
+    def _repo(self, repo):
+        (repo / "src" / "lib").mkdir(parents=True, exist_ok=True)
+        (repo / "src" / "lib" / "alpha.ts").write_text(
+            "export function doAlpha(x: string) {}\n", encoding="utf-8")
+        (repo / "src" / "lib" / "beta.ts").write_text(
+            "export function doBeta(x: string) {}\n", encoding="utf-8")
+        d = repo / "src" / "app" / "api" / "alpha"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "route.ts").write_text(
+            "import { doAlpha } from '../../../lib/alpha';\n"
+            "export async function POST() { doAlpha('x'); }\n", encoding="utf-8")
+        t = repo / "src" / "lib" / "alpha.test.ts"
+        # 진입점 경로만 언급하고 어느 심볼도 부르지 않는다.
+        t.write_text("it('routes', () => { fetch('/api/alpha'); });\n",
+                     encoding="utf-8")
+
+    def test_한_진입점이_다른_유닛의_지적을_덮지_않는다(self, repo):
+        self._repo(repo)
+        got = _trace(repo, _write_contract(repo, self.CONTRACT), changed=[])
+        untested = [f for f in got["findings"]
+                    if f["code"] == "untested_contract_item"]
+        symbols = {f.get("symbol") for f in untested}
+        assert "doBeta" in symbols, \
+            "진입점 하나가 blob 에 있다고 모든 유닛이 커버로 처리되면 안 된다"
+
+    def test_연결을_못_풀면_evidence_에_적는다(self, repo):
+        self._repo(repo)
+        got = _trace(repo, _write_contract(repo, self.CONTRACT), changed=[])
+        untested = [f for f in got["findings"]
+                    if f["code"] == "untested_contract_item"]
+        assert untested, "억제가 침묵으로 일어나면 안 된다"
+        assert all(f.get("evidence") for f in untested)
+
+
+class TestScopeSelectorWidth:
+    """`scoped` 가 통합 테스트를 고르는가 (M28).
+
+    `_tests_for_source` 가 소스의 stem 과 **같은 stem** 인 테스트만 골라,
+    이름이 다른 통합 테스트는 수리 루프에서 한 번도 안 돌고 `full` 이
+    뒤에서 잡았다.
+    """
+
+    CONTRACT = """# 계약: x
+
+## 유닛
+- `lib/match.ts · matchBooks(x: string): void`
+"""
+
+    LONE = """# 계약: x
+
+## 유닛
+- `lib/lone.ts · doLone(x: string): void`
+"""
+
+    def _select(self, repo, text):
+        # `list_files` 는 추적 파일만 본다 — 새로 쓴 것을 인덱스에 올린다.
+        _git(repo, "add", "-A")
+        config, adapter, _c = _load(repo)
+        return contract_mod.test_selectors(
+            repo, config, adapter, contract_mod.parse(text, config))
+
+    def _repo(self, repo):
+        (repo / "src" / "lib").mkdir(parents=True, exist_ok=True)
+        (repo / "src" / "lib" / "match.ts").write_text(
+            "export function matchBooks(x: string) {}\n", encoding="utf-8")
+        (repo / "src" / "lib" / "match.test.ts").write_text(
+            "import { matchBooks } from './match';\n", encoding="utf-8")
+        (repo / "src" / "lib" / "edge-cases.test.ts").write_text(
+            "import { matchBooks } from './match';\n"
+            "it('edge', () => matchBooks('x'));\n", encoding="utf-8")
+        (repo / "src" / "lib" / "unrelated.test.ts").write_text(
+            "it('nope', () => {});\n", encoding="utf-8")
+
+    def test_통합_테스트가_스코프에_들어온다(self, repo):
+        self._repo(repo)
+        got = self._select(repo, self.CONTRACT)
+        assert any("edge-cases" in p for p in got["paths"]), got["paths"]
+
+    def test_무관한_테스트는_들어오지_않는다(self, repo):
+        self._repo(repo)
+        got = self._select(repo, self.CONTRACT)
+        assert not any("unrelated" in p for p in got["paths"]), got["paths"]
+
+    def test_대응_테스트가_없는_소스는_unmatched_에_남는다(self, repo):
+        """지금까지 이 경우는 **조용히 0경로를 기여했다.**"""
+        (repo / "src" / "lib").mkdir(parents=True, exist_ok=True)
+        (repo / "src" / "lib" / "lone.ts").write_text(
+            "export function doLone(x: string) {}\n", encoding="utf-8")
+        got = self._select(repo, self.LONE)
+        assert not any("lone" in p for p in got["paths"]), got["paths"]
+        kinds = {u["kind"] for u in got["unmatched"]}
+        assert "source" in kinds, got["unmatched"]
+
+    def test_스코프가_전체에_가까우면_퇴화로_드러난다(self, repo):
+        """'scoped 라고 부르면서 full 을 도는 것'이 새 자리의 조용한 통과다."""
+        (repo / "src" / "lib").mkdir(parents=True, exist_ok=True)
+        (repo / "src" / "lib" / "match.ts").write_text(
+            "export function matchBooks(x: string) {}\n", encoding="utf-8")
+        for t in list((repo / "src").rglob("*.test.*")):
+            t.unlink()
+        for i in range(3):
+            (repo / "src" / "lib" / ("t%d.test.ts" % i)).write_text(
+                "import { matchBooks } from './match';\n", encoding="utf-8")
+        got = self._select(repo, self.CONTRACT)
+        assert got["degenerate"] is True, got
+        assert got["selected_ratio"] >= 0.9
+
+
 class TestContractTraceBaseline:
     """오탐이 잦은 둘은 첫 3런 동안 warn_only 다 (§E6)."""
 

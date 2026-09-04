@@ -409,6 +409,9 @@ flowchart LR
 - `loop_stage: true`까지가 재작업 루프의 게이트다. 루프 안에서 전체 회귀를 돌리지 않는 것이 이 설계의 가장 큰 절감이다.
 - `full`의 백그라운드 여부는 **상수가 아니라 캘리브레이션의 함수**다 — `calibration.derived.background_full_regression` (§4). 전체 회귀가 짧은 스택에서 백그라운드 기계는 커맨드·상태 키·실패 모드만 늘린다.
 - **`tests_from: "contract"`** — 계약의 `${config.contract.sections.units}`·`${config.contract.sections.entrypoints}` 심볼에서 선택자를 조립한다. 조립 문법은 `adapter.stages.scoped.select`.
+  - 소스 → 테스트 매칭은 **파일명 stem 일치 ∪ 내용 참조**다. stem 만 보면 이름이 다른 통합 테스트가 빠져 **수리 루프 안에서 한 번도 안 돈다**(M28). 내용 참조는 stem 을 경로 형태(`./stem`·`'stem'`)로 찾는다 — 그냥 포함으로 보면 `match` 가 `mismatch.test.ts` 를 끌고 오고 짧은 stem 은 사실상 전체를 고른다.
+  - **컨테이너는 풀렸는데 대응 테스트가 0개인 소스는 `unmatched` 에 남긴다.** 조용히 0경로를 기여하면 scoped 가 실제보다 좁게 돌고 아무도 모른다.
+  - **선택 경로가 전체 테스트의 90% 를 넘으면 `gap: scoped_degenerate`.** 그것은 scoped 가 아니라 full 이고, "scoped 통과" 라고 적는 것이 새 자리의 조용한 통과다.
 
 > **선택자는 테스트 이름이 아니라 파일 경로여야 한다.** 이름 필터는 러너가 모든 파일을 수집·변환하고 환경을 세운 **뒤에** 거르므로 비용을 줄이지 못한다. 이 리포의 실측에서 이름 필터는 전체 대비 100.2%였고 **경로 필터는 14.6%(6.8배 싸다)** 였다 (M16). `loop_stage`의 성립 여부는 스택별 판정이며, `adapter.select` 어휘가 그 구분을 담는다.
 

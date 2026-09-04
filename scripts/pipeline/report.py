@@ -39,6 +39,8 @@ GAP_REASONS = {
     "pr_closed": "PR 이 닫혔다 — 수리·코멘트를 하지 않았다",
     "pr_merged": "PR 이 이미 머지됐다 — 수리·코멘트를 하지 않았다",
     "local_only": "원격이 없어 로컬 커밋까지만 했다",
+    "promotion_baseline_unverified":
+        "어댑터에 `baseline_cmd` 가 없어 lint 승격이 무엇을 막는지 재지 못했다",
 }
 
 

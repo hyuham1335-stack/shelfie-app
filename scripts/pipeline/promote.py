@@ -27,6 +27,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent))
 
+import adapters  # noqa: E402
+import harness  # noqa: E402
 import ledger  # noqa: E402
 
 # `promotions[].status` 의 닫힌 어휘. 05 는 `staged` 만 쓰고 07 이 나머지를 쓴다.
@@ -210,11 +212,103 @@ def resolve_target(root, v, promotions, taken=None):
     return None
 
 
-def apply(root, run_id, promotions, verdicts):
+# `baseline_cmd` 를 실행조차 못 한 것. 린터가 위반을 찾아 0 이 아닌 것과 **다르다.**
+_INFRA_EXITS = (124, 127)
+
+
+def wants_baseline(verdicts):
+    """`lint` 승격이 실제로 하나라도 있는가. 재는 비용을 거기에만 쓴다."""
+    return any(v.get("enforceable") == "lint" and v.get("action") != "skip"
+               for v in verdicts or [])
+
+
+def measure_baseline(root, adapter, runner=None):
+    """`baseline_cmd` 를 직접 돌리고 **베이스라인이 실제로 바뀌었는지 잰다.**
+
+    반환: {"state", "changed", "diff", "file", "exit", "reason"}
+    `state` 는 `measured` · `unavailable` · `infra` 셋이다.
+
+    **왜 기계가 재는가.** 이 값은 "규칙이 무엇을 막는가" 의 유일한 증거인데,
+    모델의 자진 신고를 그대로 믿으면 아무 문자열이나 통과한다. 07 의 `external`
+    을 `review07` 이 봇 원문에서 다시 세는 것과 같은 규율이다.
+
+    **종료 코드를 성패로 읽지 않는다.** 린터가 위반을 찾으면 0 이 아니고 그것이
+    정상이다. 판정은 오직 diff 가 한다. 실행 자체가 불가능했던 것(127)과
+    타임아웃(124)만 `infra` 이고, 그것은 데이터 문제가 아니라 시스템 문제라
+    `rejected` 로 적지 않는다.
+    """
+    root = Path(root)
+    rel = adapters.baseline_file(adapter)
+    argv = adapters.baseline_argv(root, adapter)
+    if argv is None:
+        return {"state": "unavailable", "changed": False, "diff": "",
+                "file": rel, "exit": None,
+                "reason": "어댑터에 `baseline_cmd`(또는 `baseline_file`)가 없다 "
+                          "— lint 승격이 무엇을 막는지 재지 못했다"}
+
+    timeout, _src = adapters.stage_timeout(adapter, None, "lint")
+    run = runner or adapters._default_runner
+    code, out = run("lint-baseline", argv, str(root), timeout)
+    if code in _INFRA_EXITS:
+        return {"state": "infra", "changed": False, "diff": "", "file": rel,
+                "exit": code,
+                "reason": "`baseline_cmd` 를 실행하지 못했다 (exit %s) — "
+                          "시스템 문제이지 규칙이 아무것도 안 막는다는 뜻이 "
+                          "아니다: %s" % (code, (out or "")[:200])}
+
+    changed, diff = _baseline_delta(root, rel)
+    return {"state": "measured", "changed": changed, "diff": diff,
+            "file": rel, "exit": code,
+            "reason": None if changed else
+            "`%s` 이 그대로다 — 규칙은 추가했는데 아무것도 안 막는다는 뜻이다" % rel}
+
+
+def _baseline_delta(root, rel):
+    """(바뀌었는가, diff 텍스트).
+
+    **`git diff` 만 보면 안 된다** — 첫 승격에서 베이스라인 파일은 아직 추적되지
+    않고, `git diff` 는 미추적 파일을 한 줄도 보여 주지 않는다. 그러면 실제로
+    막는 규칙이 "아무것도 안 막는다" 로 거절된다.
+    """
+    st_r = harness._git(root, "status", "--porcelain", "--", rel)
+    if st_r is None or st_r.returncode != 0:
+        return False, ""
+    if not st_r.stdout.strip():
+        return False, ""
+
+    d = harness._git(root, "diff", "HEAD", "--", rel)
+    text = (d.stdout if d is not None and d.returncode == 0 else "") or ""
+    if text.strip():
+        return True, text
+    # 미추적 새 파일 — diff 로는 안 보인다. 무엇이 생겼는지 그대로 적는다.
+    try:
+        size = (Path(root) / rel).stat().st_size
+    except OSError:
+        size = 0
+    return True, "새 베이스라인 파일 %s (%d bytes · 아직 추적되지 않는다)" % (rel, size)
+
+
+def baseline_mismatch(reported, measured):
+    """모델이 실은 값과 기계값이 다른가. **공백만 정규화해 비교한다.**
+
+    신고하지 않는 것이 정상 경로다. 실렸으면 버리지 않고 대조한다 — 자진 신고
+    중 기계로 확인 가능한 것은 기계로 확인한다(불변식 8).
+    """
+    said = (reported or "").strip()
+    if not said:
+        return False
+    return " ".join(said.split()) != " ".join((measured or "").split())
+
+
+def apply(root, run_id, promotions, verdicts, baseline=None):
     """판정대로 승격 상태를 정한다. 반환: (promotions, rows).
 
-    **파일을 쓰기 전에 거절 사유를 먼저 정한다.** `lint` 승격에 베이스라인
-    diff 가 없으면 여기서 `rejected` 이고, 규칙 파일은 손대지 않는다.
+    **파일을 쓰기 전에 거절 사유를 먼저 정한다.** `lint` 승격인데 **기계가 잰**
+    베이스라인이 그대로면 여기서 `rejected` 이고, 규칙 파일은 손대지 않는다.
+
+    `baseline` 은 `measure_baseline` 의 반환이다. `unavailable` 이면 막지 않고
+    통과시키되 `baseline: "unverified"` 를 남긴다 — 호출자가 그것을 갭으로
+    올린다. **스킵을 통과로 적지 않는다.**
     """
     rows = []
     taken = set()
@@ -238,17 +332,23 @@ def apply(root, run_id, promotions, verdicts):
                       "status": "staged", "reason": None}
             promotions.append(target)
 
+        is_lint = v.get("enforceable") == "lint"
+        # 기계가 잰 값이 유일한 출처다. 모델이 실은 값은 앞에서 이미 대조했다.
+        measured = (baseline or {}).get("diff") or ""
+
         if v.get("action") == "skip":
             target["status"] = "skipped"
             target["reason"] = v.get("rationale") or "판정이 skip 이다"
-        elif (v.get("enforceable") == "lint"
-              and not (v.get("baseline_diff") or "").strip()):
+        elif is_lint and (baseline or {}).get("state") == "measured" \
+                and not baseline.get("changed"):
             target["status"] = "rejected"
-            target["reason"] = ("lint 승격인데 베이스라인 diff 가 비어 있다 — "
+            target["reason"] = ("lint 승격인데 베이스라인이 그대로다 — "
                                 "규칙은 추가했는데 아무것도 안 막는다는 뜻이다")
         else:
             target["status"] = "applied"
             target["reason"] = v.get("rationale")
+            if is_lint and (baseline or {}).get("state") == "unavailable":
+                target["baseline"] = "unverified"
 
         rows.append({
             "run_id": run_id, "rule_id": rid,
@@ -258,7 +358,8 @@ def apply(root, run_id, promotions, verdicts):
                                         target.get("distinct_runs")),
             "judgement": v.get("judgement"),
             "action": target["status"],
-            "baseline_diff": (v.get("baseline_diff") or "").strip() or "없음",
+            "baseline_diff": (measured.strip() if is_lint else "") or
+                             ("미측정" if is_lint else "해당 없음"),
             "retired_reason": v.get("retired_reason") or "",
         })
     return promotions, rows

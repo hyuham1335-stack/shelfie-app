@@ -57,7 +57,7 @@ diff 에 규칙 문서 변경이 섞이지 않는다.
 4. /code-review          모델               3번이 부르라고 하면 그 effort 로
 5. record --phase 07     제출               정규화 · dedup · escaped_05
 6. promote --scan        정적 · 무료        후보 0 이면 모델 없이 종결
-7. promote --apply       git                별도 브랜치 · 자체 게이트
+7. promote --apply       git                별도 브랜치 · 베이스라인을 기계가 잰다
 8. 코멘트 게시           너 · forge 도구    단일 코멘트 하나 · mask 를 거친다
 ```
 
@@ -108,7 +108,20 @@ python scripts/pipeline/cli.py promote --scan --run-id {run_id}
 
 `--apply` 는 **규칙 전용 브랜치**에서 돈다. 자체 게이트(`lint` + `check`)가
 실패하면 브랜치를 폐기하고 `rejected` + 사유를 남긴다 — **기능 PR 은 영향받지
-않는다.**
+않는다.** 자체 게이트는 **네가 그 브랜치에서 돌린다** — 실행기가 강제하지
+않는다.
+
+**`lint` 승격의 베이스라인은 실행기가 직접 잰다.** `--apply` 가 어댑터의
+`baseline_cmd` 를 돌리고 `baseline_file` 의 VCS 변화를 본다. 네가 미리 돌릴
+필요도, 결과를 옮겨 적을 필요도 없다.
+
+- **종료 코드를 성패로 읽지 않는다.** 린터가 위반을 찾으면 0 이 아니고 그것이
+  정상이다. 판정은 오직 **베이스라인이 바뀌었는가**가 한다
+- 실행 자체가 불가능했으면(127 · 124) `infra` 이고 **exit 10** 이다. 아무것도
+  쓰이지 않았으니 다시 치면 된다 — `rejected` 가 아니다
+- 어댑터에 `baseline_cmd` 가 없는 스택이면 막지 않고 통과시키되 갭
+  `promotion_baseline_unverified` 를 남기고 등급이 내려간다. **스킵은 통과가
+  아니다**
 
 ### 8번 — 단일 코멘트 하나다
 
@@ -123,6 +136,10 @@ python scripts/pipeline/cli.py promote --scan --run-id {run_id}
 **대조한다** — 다르면 exit 8 이고 두 값을 나란히 보여 준다. 자진 신고 중 기계로
 확인 가능한 것은 기계로 확인한다(불변식 8). `review07` 을 안 돌리고 `record`
 부터 치면 exit 3 이다.
+
+**`baseline_diff` 도 신고하지 마라.** 같은 이유다 — `--apply` 가 `baseline_cmd`
+를 직접 돌려 재고, `rules_changelog.md` 에는 **기계가 잰 값**이 들어간다. 실으면
+버리지 않고 **대조한다** — 다르면 exit 8 이고 두 값을 나란히 보여 준다.
 
 
 `{run_dir}/07_pr_review.json` 하나를 내고 `record --phase 07` 을 부른다.
@@ -174,8 +191,11 @@ finding 은 **05 와 같은 스키마**를 쓴다.
 | 변경 요청 미해결 | 차단 | 수리 루프(`pr_repair`). 초과 시 에스컬레이션 |
 | 타임아웃 후 외부 리뷰 도착 | — | 08 직전 재확인에서 **등급 강등.** 수리 루프로 되돌아가지 않는다 (무한 대기) |
 | 코멘트 게시 실패 | infra | 2회 재시도 → **비차단 스킵**. findings 는 원장에 남는다 |
-| 승격 자체 게이트 실패 · 베이스라인 미스테이징 · push 실패 | 판단 | 브랜치 폐기 + `rejected` + 사유. **기능 PR 무영향** |
-| `lint` 승격인데 베이스라인 diff 가 0 | 판단 | "아무것도 안 막는 규칙" → `rejected` + 사유 |
+| 승격 자체 게이트 실패 · push 실패 | 판단 | 브랜치 폐기 + `rejected` + 사유. **기능 PR 무영향** |
+| `lint` 승격인데 **기계가 잰** 베이스라인이 그대로 | 판단 | "아무것도 안 막는 규칙" → `rejected` + 사유 |
+| `baseline_cmd` 를 실행하지 못함 (127 · 124) | infra | **exit 10.** 아무것도 쓰지 않는다 — 시스템 문제를 "규칙이 아무것도 안 막는다" 로 적지 않는다 |
+| 어댑터에 `baseline_cmd` 가 없음 | — | 막지 않고 통과시키되 갭 `promotion_baseline_unverified` + `PASS_WITH_GAPS`. **스킵은 통과가 아니다** |
+| 신고한 `baseline_diff` 가 기계값과 다름 | 제출물 | **exit 8.** 두 값을 나란히 보여 준다 |
 | 사람 코멘트와 계약이 충돌 | 판단 | **파이프라인이 판단하지 않는다** → 보고서에 남기고 사람에게 |
 | forge 도구 불통 | infra | 카운터 미소모 · 에스컬레이션 |
 

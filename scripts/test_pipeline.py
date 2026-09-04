@@ -4485,6 +4485,168 @@ class TestPromoteApply:
         assert "promoted" in kinds
 
 
+def _baseline_runner(repo, content='{"rules": 1}', code=0, seen=None):
+    """`baseline_cmd` 를 흉내낸다 — 베이스라인 파일을 **실제로 쓴다.**"""
+    def run(name, argv, cwd, timeout_sec):
+        if seen is not None:
+            seen.append((name, list(argv)))
+        p = Path(repo) / "harness" / "lint-baseline.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        return code, "lint 출력"
+    return run
+
+
+def _silent_runner(code=0, seen=None):
+    """돌긴 했는데 **아무 파일도 안 바뀐** 경우."""
+    def run(name, argv, cwd, timeout_sec):
+        if seen is not None:
+            seen.append((name, list(argv)))
+        return code, ""
+    return run
+
+
+class TestPromoteBaseline:
+    """lint 승격의 베이스라인을 **기계가 잰다.**
+
+    이 클래스가 막는 실패는 하나다 — 모델이 `baseline_diff` 에 아무 문자열이나
+    적어 보내면 "규칙은 추가했는데 아무것도 안 막는다" 가 통과하는 것. 07 의
+    `external` 이 봇 원문에서 다시 세이는 것과 같은 규율이다.
+    """
+
+    def _lint_verdict(self, **kw):
+        d = {"rule_id": "no-restricted-imports",
+             "category": "BOUNDARY_VIOLATION", "enforceable": "lint"}
+        d.update(kw)
+        return _one_verdict(**d)
+
+    def _ready(self, repo, request_file, phases):
+        _fill_ledger(repo, "경계를 넘는 import", "BOUNDARY_VIOLATION",
+                     "critical", ["r1", "r2"])
+        run_id, paths = _enter_06(repo, request_file, phases)
+        cli.run_promote(repo, scan=True, run_id=run_id)
+        return run_id, paths
+
+    def test_어댑터의_baseline_cmd_를_실행기가_직접_돌린다(self, repo,
+                                                          request_file, phases):
+        run_id, paths = self._ready(repo, request_file, phases)
+        seen = []
+        f = _verdict_file(paths, [self._lint_verdict()])
+        cli.run_promote(repo, apply=True, verdict_file=str(f), run_id=run_id,
+                        runner=_baseline_runner(repo, seen=seen))
+        assert seen, "baseline_cmd 가 한 번도 안 돌았다"
+        argv = seen[0][1]
+        assert any("lint-baseline.json" in a for a in argv), argv
+
+    def test_prose_승격은_베이스라인을_재지_않는다(self, repo, request_file,
+                                                  phases):
+        """재는 비용은 lint 승격에만 든다."""
+        run_id, paths = _staged_authz(repo, request_file, phases)
+        seen = []
+        f = _verdict_file(paths, [_one_verdict()])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id, runner=_silent_runner(seen=seen))
+        assert env["exit"] == 0
+        assert seen == []
+
+    def test_베이스라인이_안_바뀌면_rejected(self, repo, request_file, phases):
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = _verdict_file(paths, [self._lint_verdict()])
+        cli.run_promote(repo, apply=True, verdict_file=str(f), run_id=run_id,
+                        runner=_silent_runner())
+        _pp, s = st.load(repo, run_id)
+        assert any(p["status"] == "rejected" for p in s["promotions"])
+        assert "베이스라인" in json.dumps(s["promotions"], ensure_ascii=False)
+
+    def test_베이스라인이_바뀌면_applied_이다(self, repo, request_file, phases):
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = _verdict_file(paths, [self._lint_verdict()])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id, runner=_baseline_runner(repo))
+        assert env["exit"] == 0, env["render"]
+        _pp, s = st.load(repo, run_id)
+        assert any(p["status"] == "applied" for p in s["promotions"])
+
+    def test_changelog_의_베이스라인_칸은_기계가_잰_값이다(self, repo,
+                                                          request_file, phases):
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = _verdict_file(paths, [self._lint_verdict()])
+        cli.run_promote(repo, apply=True, verdict_file=str(f), run_id=run_id,
+                        runner=_baseline_runner(repo))
+        log = (repo / "docs" / "harness" / "pipeline" / "ledger"
+               / "rules_changelog.md").read_text(encoding="utf-8")
+        assert "lint-baseline.json" in log
+
+    def test_신고하지_않는_것이_정상_경로다(self, repo, request_file, phases):
+        """`baseline_diff` 를 안 실어도 통과한다 — 재는 것은 기계의 일이다."""
+        run_id, paths = self._ready(repo, request_file, phases)
+        v = self._lint_verdict()
+        assert "baseline_diff" not in v
+        f = _verdict_file(paths, [v])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id, runner=_baseline_runner(repo))
+        assert env["exit"] == 0, env["render"]
+
+    def test_모델_신고가_기계값과_다르면_exit_8_이고_아무것도_안_쓴다(
+            self, repo, request_file, phases):
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = _verdict_file(paths,
+                          [self._lint_verdict(baseline_diff="내가 지어낸 diff")])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id, runner=_baseline_runner(repo))
+        assert env["exit"] == 8, env["render"]
+        assert "내가 지어낸 diff" in env["render"]
+        _pp, s = st.load(repo, run_id)
+        assert all(p["status"] == "staged" for p in s["promotions"])
+
+    def test_린터의_비영_종료는_실패가_아니다(self, repo, request_file, phases):
+        """린터가 위반을 찾으면 0 이 아니다. 그것이 정상이고 판정은 diff 가 한다."""
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = _verdict_file(paths, [self._lint_verdict()])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id,
+                              runner=_baseline_runner(repo, code=1))
+        assert env["exit"] == 0, env["render"]
+        _pp, s = st.load(repo, run_id)
+        assert any(p["status"] == "applied" for p in s["promotions"])
+
+    def test_실행할_수_없으면_infra_이고_아무것도_안_쓴다(self, repo,
+                                                        request_file, phases):
+        """127 은 데이터 문제가 아니라 시스템 문제다 — rejected 로 적지 않는다."""
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = _verdict_file(paths, [self._lint_verdict()])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id, runner=_silent_runner(code=127))
+        assert env["exit"] == 10, env["render"]
+        _pp, s = st.load(repo, run_id)
+        assert all(p["status"] == "staged" for p in s["promotions"])
+
+    def test_baseline_cmd_가_없으면_갭으로_강등하고_진행한다(self, repo,
+                                                            request_file,
+                                                            phases):
+        """스킵을 통과로 적지 않는다 — entrypoint_resolver 부재와 같은 처리다."""
+        ad_p = repo / "harness" / "adapters" / "nextjs-ts.json"
+        ad = json.loads(ad_p.read_text(encoding="utf-8"))
+        ad["stages"]["lint"].pop("baseline_cmd")
+        ad_p.write_text(json.dumps(ad, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+
+        run_id, paths = self._ready(repo, request_file, phases)
+        f = _verdict_file(paths, [self._lint_verdict()])
+        env = cli.run_promote(repo, apply=True, verdict_file=str(f),
+                              run_id=run_id, runner=_silent_runner())
+        assert env["exit"] == 0, env["render"]
+        _pp, s = st.load(repo, run_id)
+        assert any(p["status"] == "applied" for p in s["promotions"])
+        assert s["grade"] == "PASS_WITH_GAPS"
+        assert "promotion_baseline_unverified" in s["gaps"]
+
+    def test_갭_어휘가_보고서에서_설명된다(self):
+        """어휘에 없으면 보고서가 '설명하지 못한다' 고 적는다 — 그러지 않게 한다."""
+        line = rep_mod.explain_gap("promotion_baseline_unverified")
+        assert "어휘에 없는" not in line
+
+
 class TestPromoteTargetMatching:
     """판정이 어느 후보를 가리키는가 (G-1).
 

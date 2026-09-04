@@ -2844,11 +2844,13 @@ def cmd_promote(root, args):
 
 
 def run_promote(root, scan=False, stage=False, apply=False, flush=False,
-                verdict_file=None, run_id=None):
+                verdict_file=None, run_id=None, runner=None):
     """승격. 종료 코드 **0 / 4 / 6 / 8** (네 플래그가 한 행을 공유한다).
 
     명세는 `--apply` 단독의 종료 코드를 따로 적지 않았다 — **명세 미규정이고,
     여기서는 판정 위반을 8, 자동 쓰기 차단을 10 으로 쓴다.**
+
+    `runner` 는 베이스라인 측정용 주입점이다 (테스트).
     """
     import promote as pm
 
@@ -2930,9 +2932,45 @@ def run_promote(root, scan=False, stage=False, apply=False, flush=False,
                                      + ["- %s" % e for e in errors]),
                            None)
 
+    # 베이스라인은 **기계가 잰다.** lint 승격이 하나도 없으면 재지 않는다.
+    baseline = None
+    if pm.wants_baseline(verdicts):
+        config, adapter, _cal = adapters.load(root)
+        baseline = pm.measure_baseline(root, adapter, runner=runner)
+        if baseline["state"] == "infra":
+            # 시스템 문제다. **아무것도 쓰지 않고** 카운터도 태우지 않는다 —
+            # 이것을 rejected 로 적으면 "규칙이 아무것도 안 막는다" 가 된다.
+            return st.envelope("promote", False, 10, s, {"baseline": baseline},
+                               "\n".join(["## 베이스라인을 재지 못했다", "",
+                                          baseline["reason"], "",
+                                          "**인프라 실패다.** 승격은 하나도 "
+                                          "쓰이지 않았고 다시 치면 된다."]),
+                               None)
+        mismatch = [v for v in verdicts
+                    if v.get("enforceable") == "lint"
+                    and pm.baseline_mismatch(v.get("baseline_diff"),
+                                             baseline["diff"])]
+        if mismatch:
+            return st.envelope(
+                "promote", False, 8, s,
+                {"baseline": baseline,
+                 "reported": [v.get("baseline_diff") for v in mismatch]},
+                "\n".join(
+                    ["## 신고한 베이스라인이 기계가 잰 것과 다르다", "",
+                     "**`baseline_diff` 를 신고하지 마라** — 재는 것은 기계의 "
+                     "일이다. 실었으면 버리지 않고 대조한다.", "",
+                     "**신고:**", "```", "\n".join(
+                         str(v.get("baseline_diff")) for v in mismatch), "```",
+                     "**기계가 잰 값:**", "```", baseline["diff"] or "(없음)",
+                     "```"]),
+                None)
+
     promos = staged_now
-    promos, rows = pm.apply(root, s["run_id"], promos, verdicts)
+    promos, rows = pm.apply(root, s["run_id"], promos, verdicts, baseline)
     s["promotions"] = promos
+    if baseline is not None and baseline["state"] == "unavailable":
+        # 재지 못한 것을 잰 것처럼 적지 않는다 (§E12 가 나열을 요구한다).
+        st.demote(s, "PASS_WITH_GAPS", "promotion_baseline_unverified")
     written = pm.changelog_append(root, rows)
 
     out = paths.run_dir / "07_promo_applied.json"

@@ -66,7 +66,7 @@ import {
 import type { InputMode, SessionState } from "@/lib/session";
 import { renderShareImage } from "@/lib/share-image";
 import type { ShareImageBook } from "@/lib/share-image";
-import type { ErrorCode, Recommendation } from "@/types/api";
+import type { ClientErrorCode, ErrorCode, Recommendation } from "@/types/api";
 import type {
   AladinCandidate,
   AladinFacts,
@@ -97,7 +97,8 @@ interface ResolvePanel {
   candidates: ResolvedCandidate[];
   /** 재검색 시도 횟수. `book_resolved` 이벤트의 속성이다 */
   attempt: number;
-  errorCode: ErrorCode | null;
+  /** `api-client`가 돌려준 실패 사유. 단절(`OFFLINE`)도 그대로 담긴다 */
+  errorCode: ClientErrorCode | null;
 }
 
 export default function Home() {
@@ -118,7 +119,21 @@ export default function Home() {
    * 사라진다 (ARCHITECTURE 상태 관리).
    */
   const [files, setFiles] = useState<File[]>([]);
+  /**
+   * 분석 재시도 **예산** 회차 (FR-010). 상류에 실제로 닿은 횟수만 센다 — 단절로
+   * 실패한 재시도는 상류 비용이 0이라 여기에 들어가지 않는다(`startRetry`).
+   *
+   * **"지금 재시도 중인가"를 이 값으로 묻지 마라.** 그 질문의 답은 `isRetryingAnalyze`다.
+   * 겸해 쓰면 예산을 건너뛴 재시도가 "재시도가 아니다"로 읽혀 진행 화면 대신
+   * 업로드 화면이 선다.
+   */
   const [analyzeAttempts, setAnalyzeAttempts] = useState(0);
+  /**
+   * 지금 그리는 분석이 **재시도인가**. 예산 카운터와 별개다 (PRD 5번 표 — 재시도 중
+   * 진행 표시). `startRetry`가 세우고, 첫 분석(`handleAnalyze`)과 처음으로
+   * 돌아가기(`handleRestart`)가 내린다.
+   */
+  const [isRetryingAnalyze, setIsRetryingAnalyze] = useState(false);
   /** 무관 판정의 **연속** 횟수. 서버는 무상태라 셀 수 없어 화면이 센다 (API_SPEC /api/recommend) */
   const [irrelevantCount, setIrrelevantCount] = useState(0);
   const [panel, setPanel] = useState<ResolvePanel | null>(null);
@@ -261,6 +276,7 @@ export default function Home() {
     const runId = beginRun();
     setFiles(sources);
     setAnalyzeAttempts(0);
+    setIsRetryingAnalyze(false);
     dispatch({ type: "ANALYZE_STARTED", photoCount: sources.length });
     void runAnalyze(runId, dataUris);
   }
@@ -280,7 +296,11 @@ export default function Home() {
     // 그대로 들고 있어야 그 인덱스로 다시 사진을 찾을 수 있다.
     const runId = beginRun();
     setFiles(sources);
-    setAnalyzeAttempts((count) => count + 1);
+    // 단절은 상류에 닿지 않으므로 예산을 쓰지 않는다 (FR-010 의 목적은 상류 보호다).
+    if (state.errorCode !== "OFFLINE") setAnalyzeAttempts((count) => count + 1);
+    // 예산과 무관하게 이번 분석은 재시도다. 위 가드가 예산을 건너뛰어도 화면은
+    // 진행 표시를 그려야 한다 (PRD 5번 표 — 재시도 중 진행 표시).
+    setIsRetryingAnalyze(true);
     setPanel(null);
     dispatch({ type: "ANALYZE_RETRIED", photoCount: sources.length });
     // 리사이즈 결과가 아니라 원본에서 다시 만든다 (ARCHITECTURE 상태 관리).
@@ -613,6 +633,7 @@ export default function Home() {
     resetShareState();
     setFiles([]);
     setAnalyzeAttempts(0);
+    setIsRetryingAnalyze(false);
     setPanel(null);
     dispatch({ type: "RESTARTED" });
   }
@@ -621,9 +642,12 @@ export default function Home() {
    * 렌더
    * ---------------------------------------------------------------- */
 
-  if (state.status === "idle" || (state.status === "analyzing" && analyzeAttempts === 0)) {
+  if (state.status === "idle" || (state.status === "analyzing" && !isRetryingAnalyze)) {
     // 재시도가 아닌 분석 중에는 업로드 화면을 그대로 둔다. 여기서 언마운트하면
     // 사용자가 고른 사진과 썸네일이 화면에서 사라진다.
+    //
+    // 묻는 것은 **재시도인가**이지 예산을 얼마나 썼는가가 아니다. `analyzeAttempts`로
+    // 겸해 물으면 예산을 건너뛰는 단절 재시도가 첫 분석으로 읽힌다 (PRD 5번 표 2행).
     return <UploadScreen onAnalyze={handleAnalyze} isAnalyzing={state.status === "analyzing"} />;
   }
 

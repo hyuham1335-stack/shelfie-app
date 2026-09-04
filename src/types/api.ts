@@ -49,3 +49,16 @@ export type ClientEvent = z.infer<typeof clientEventSchema>;
 /** 에러 규약 */
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
+
+/**
+ * 클라이언트만 쓰는 실패 어휘.
+ *
+ * `OFFLINE`은 **서버가 낼 수 없는 값이라 서버 응답 어휘(`errorCodeSchema`)에 넣지
+ * 않는다.** 단절은 요청이 서버에 닿지 못한 사실이므로 매길 HTTP 상태가 없고,
+ * `lib/api-client`가 돌려주는 `status: 0`이 바로 그 사실이다 — 응답을 하나도
+ * 받지 못했다는 뜻이다. 서버 어휘에 섞으면 `/docs/API_SPEC.md`가 서버가 결코
+ * 보내지 않는 코드를 계약으로 약속하게 된다.
+ *
+ * 화면과 상태 머신은 이쪽을 쓰고, 응답 본문을 파싱하는 자리는 `ErrorCode`를 쓴다.
+ */
+export type ClientErrorCode = ErrorCode | "OFFLINE";

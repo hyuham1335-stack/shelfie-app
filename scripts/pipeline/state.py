@@ -395,63 +395,70 @@ def _in_scope(config, path):
     return any(harness.owns_file(role, path) for role in (config.get("roles") or []))
 
 
-def _porcelain_paths(root):
-    r = harness._git(root, "status", "--porcelain", "-z", "--untracked-files=all")
-    if r is None or r.returncode != 0:
-        return None
-    out, fields = [], [f for f in r.stdout.split("\0") if f]
-    i = 0
-    while i < len(fields):
-        entry = fields[i]
-        if len(entry) < 4:
-            i += 1
-            continue
-        code, path = entry[:2], entry[3:]
-        out.append(path)
-        if code[0] in ("R", "C") and i + 1 < len(fields):
-            out.append(fields[i + 1])
-            i += 1
-        i += 1
-    return out
+def _nul_split(result):
+    return [f for f in result.stdout.split("\0") if f] if result else []
+
+
+def _candidate_files(root):
+    """(경로 목록, algo). 지문에 들어갈 후보를 센다 — 소유 판정은 뒤에서 한다.
+
+    추적 파일에 **미추적·비무시** 파일을 더한다. 03 이 방금 쓴 파일은 아직
+    `git add` 전이고, 그것을 빼면 게이트가 보지 않은 코드가 영수증을 통과한다.
+    `--exclude-standard` 가 없으면 `.gitignore` 가 뺀 `_workspace/` 가 들어와
+    커맨드마다 지문이 바뀐다.
+    """
+    tracked = harness._git(root, "ls-files", "-z")
+    if tracked is None or tracked.returncode != 0:
+        # git 이 없다. 워크 탐색은 `.gitignore` 대신 WALK_SKIP 을 따르므로
+        # **다른 모집단을 센다** — algo 를 갈라 둘이 우연히 같아도 안 맞게 한다.
+        return harness.list_files(root), "walk-sha256"
+    others = harness._git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    paths = set(_nul_split(tracked))
+    if others is not None and others.returncode == 0:
+        paths |= set(_nul_split(others))
+    return sorted(paths), "tree-sha256"
 
 
 def fingerprint(root, config, now=None):
-    """커밋 상태 + 소유 범위 미커밋 변경의 **내용** 해시.
+    """소유 범위 파일 **내용**의 해시. HEAD 는 보지 않는다.
 
-    - HEAD 만 보면 워킹트리 수정을 놓치고, status 만 보면 변경이 커밋으로
-      옮겨간 것을 놓친다. 둘 다 본다.
+    - **커밋이 지문을 바꾸지 않는다.** 예전에는 `HEAD + 미커밋 파일 해시` 라
+      06 이 PR diff 를 위해 요구하는 커밋이 04 영수증을 **반드시** 낡게 만들었다
+      — 바이트가 하나도 안 바뀌었는데도. 영수증이 증언하는 것은 "게이트가
+      무엇을 테스트했는가" 이고 그것은 커밋 여부가 아니라 내용이다 (M25).
     - **mtime 을 쓰지 않는다.** 되돌렸다가 같은 내용으로 다시 쓴 파일은
       지문이 같아야 한다 — 아니면 advance 가 늘 거부한다.
+    - **없는 파일은 넣지 않는다.** `ABSENT` 표식을 쓰면 "삭제 미커밋"(인덱스에
+      남아 표식이 붙는다)과 "삭제 커밋"(목록에서 사라진다)이 다른 값이 되어
+      커밋 중립성에 삭제 모양의 구멍이 남는다. 생략하면 둘이 같고, 삭제 이전
+      지문과는 여전히 다르다 — "삭제도 변경이다" 는 지켜진다.
     - scope_globs_sha1 은 roles[].owns 가 런 도중 바뀐 것을 잡는다 (M19 와 같은 규율).
     """
     root = Path(root)
-    head = harness._git(root, "rev-parse", "HEAD")
-    changed = _porcelain_paths(root)
-    if changed is None:
-        algo, inputs = "fs-sha256", []
-        for rel in harness.list_files(root):
-            if _in_scope(config, rel):
-                inputs.append("F\t%s\t%s" % (rel, _sha256_file(root / rel)))
-    else:
-        algo = "git-sha256"
-        head_val = head.stdout.strip() if head and head.returncode == 0 else "NO-HEAD"
-        inputs = ["HEAD\t%s" % head_val]
-        for rel in changed:
-            if _in_scope(config, rel):
-                inputs.append("W\t%s\t%s" % (rel, _sha256_file(root / rel)))
+    candidates, algo = _candidate_files(root)
+    inputs = []
+    for rel in candidates:
+        if not _in_scope(config, rel):
+            continue
+        digest = _sha256_file(root / rel)
+        if digest is None:                      # 삭제됐다 — 항목을 만들지 않는다
+            continue
+        inputs.append("C\t%s\t%s" % (rel, digest))
 
     value = hashlib.sha256("\n".join(sorted(inputs)).encode("utf-8")).hexdigest()
     return {"algo": algo, "value": value, "at": stamp(now),
             "scope_globs_sha1": _scope_signature(config),
+            # **뜻이 바뀌었다** — 예전에는 HEAD 줄을 포함한 입력 줄 수(=변경
+            # 파일 수 + 1)였고 지금은 해시한 소유 범위 파일 수다.
             "file_count": len(inputs)}
 
 
 def _sha256_file(path):
-    """없는 파일(삭제됨)은 고정 표식 — 삭제도 변경이다."""
+    """없는 파일(삭제됨)은 None — 호출부가 항목을 생략한다."""
     try:
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
     except OSError:
-        return "ABSENT"
+        return None
 
 
 def fingerprint_matches(saved, fresh):

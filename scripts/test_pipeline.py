@@ -298,11 +298,88 @@ class TestFingerprint:
         assert st.fingerprint(repo, config)["value"] == before["value"]
 
     def test_different_algo_never_matches(self):
-        a = {"algo": "git-sha256", "value": "x"}
-        b = {"algo": "fs-sha256", "value": "x"}
+        a = {"algo": "tree-sha256", "value": "x"}
+        b = {"algo": "walk-sha256", "value": "x"}
         assert st.fingerprint_matches(a, dict(a)) is True
         assert st.fingerprint_matches(a, b) is False, \
             "다른 방법으로 잰 값이 우연히 같아 '안 바뀌었다'가 되면 안 된다"
+
+    # ── M25. 지문은 커밋이 아니라 내용에 매달린다.
+
+    def test_커밋해도_지문이_같다(self, repo):
+        """**M25 의 본체다.** 06 은 PR diff 를 위해 커밋을 요구한다. HEAD 를
+        해시에 넣으면 그 커밋이 04 영수증을 반드시 낡게 만든다 — 바이트가
+        하나도 안 바뀌었는데도."""
+        config = harness._read_json(repo / "harness/config.json")
+        (repo / "src" / "lib" / "match.ts").write_text("// 고침\n", encoding="utf-8")
+        before = st.fingerprint(repo, config)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "06 이 요구하는 커밋")
+        after = st.fingerprint(repo, config)
+        assert after["value"] == before["value"]
+        assert st.fingerprint_matches(before, after) is True
+
+    def test_커밋한_뒤_고치면_지문이_달라진다(self, repo):
+        """커밋 중립이 permissive 가 되면 안 된다 — 내용이 바뀌면 여전히 stale."""
+        config = harness._read_json(repo / "harness/config.json")
+        _git(repo, "commit", "-q", "--allow-empty", "-m", "빈 커밋")
+        before = st.fingerprint(repo, config)
+        (repo / "src" / "lib" / "match.ts").write_text("// 한 글자\n", encoding="utf-8")
+        assert st.fingerprint_matches(before, st.fingerprint(repo, config)) is False
+
+    def test_추적되지_않은_소유_파일이_지문에_들어간다(self, repo):
+        """03 이 새로 쓴 파일은 아직 git add 전이다. 놓치면 게이트가 보지
+        않은 코드가 영수증을 통과한다."""
+        config = harness._read_json(repo / "harness/config.json")
+        before = st.fingerprint(repo, config)
+        (repo / "src" / "lib" / "new.ts").write_text("export const x = 1\n",
+                                                     encoding="utf-8")
+        assert st.fingerprint(repo, config)["value"] != before["value"]
+
+    def test_무시된_파일은_지문에_들어가지_않는다(self, repo):
+        """`_workspace/` 는 커맨드마다 커진다 — 들어가면 지문이 매번 바뀐다."""
+        config = harness._read_json(repo / "harness/config.json")
+        before = st.fingerprint(repo, config)
+        d = repo / "_workspace" / "runs" / "x"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "events.jsonl").write_text('{"seq":1}\n', encoding="utf-8")
+        assert st.fingerprint(repo, config)["value"] == before["value"]
+
+    def test_삭제도_지문을_바꾸고_커밋_전후가_같다(self, repo):
+        """삭제는 변경이다. 그리고 그 삭제를 커밋해도 값은 그대로여야 한다 —
+        아니면 M25 가 삭제라는 형태로 되살아난다."""
+        config = harness._read_json(repo / "harness/config.json")
+        before = st.fingerprint(repo, config)
+        (repo / "src" / "lib" / "match.ts").unlink()
+        uncommitted = st.fingerprint(repo, config)
+        assert uncommitted["value"] != before["value"]
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "삭제를 커밋")
+        assert st.fingerprint(repo, config)["value"] == uncommitted["value"]
+
+    def test_소유_범위_밖의_커밋은_지문을_바꾸지_않는다(self, repo):
+        """`test_change_outside_role_scope_is_ignored` 의 커밋 판이다.
+        워크트리 편집은 무시하면서 그 편집을 커밋하면 무효가 되던 것이 M25."""
+        config = harness._read_json(repo / "harness/config.json")
+        before = st.fingerprint(repo, config)
+        (repo / "CLAUDE.md").write_text("# 가드레일\n추가 줄\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "문서만 고침")
+        assert st.fingerprint(repo, config)["value"] == before["value"]
+
+    def test_옛_지문은_보수적으로_stale_이다(self, repo):
+        """`git-sha256` 로 잰 P2 시절 값은 algo 가 달라 영원히 안 맞는다.
+        그래서 P2 는 `advance` 가 아니라 `report` 로만 닫힌다."""
+        config = harness._read_json(repo / "harness/config.json")
+        fresh = st.fingerprint(repo, config)
+        old = dict(fresh, algo="git-sha256")
+        assert st.fingerprint_matches(old, fresh) is False
+
+    def test_file_count_는_해시한_파일_수다(self, repo):
+        """뜻이 바뀌었다 — 예전에는 HEAD 줄을 포함한 입력 줄 수였다."""
+        config = harness._read_json(repo / "harness/config.json")
+        fp = st.fingerprint(repo, config)
+        assert fp["file_count"] == 2, "match.ts 와 match.test.ts 둘"
 
 
 class TestCounters:

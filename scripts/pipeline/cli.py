@@ -867,15 +867,20 @@ def run_next(root, run_id=None):
     st.append_event(paths, "phase_enter", cmd="next", phase=pid)
     if pid == "05-code-review":
         _plan_05_review(root, paths, s, ctx)
+    # **지시를 낸 자리에서 센다** (M26). `next` 는 같은 페이즈에서 여러 번
+    # 불릴 수 있으므로 키로 멱등을 만든다.
+    _t, _m, exhausted = st.count_instructions(
+        s, pid, _instruction_keys(s, pid, ctx))
     st.save(paths, s)
 
     render, next_cmd = render_packet(root, phase, ctx, s, checks)
-    return st.envelope("next", True, 0, s,
-                       {"produces": [resolve(p.get("path"), ctx)
-                                     for p in phase["front"].get("produces") or []],
-                        "requires_report": checks,
-                        "prescan": _prescan(root, loaded, ctx, s) if pid == "01-plan" else []},
-                       render, next_cmd)
+    env = st.envelope("next", True, 0, s,
+                      {"produces": [resolve(p.get("path"), ctx)
+                                    for p in phase["front"].get("produces") or []],
+                       "requires_report": checks,
+                       "prescan": _prescan(root, loaded, ctx, s) if pid == "01-plan" else []},
+                      render, next_cmd)
+    return _budget_stop(paths, env) if exhausted else env
 
 
 def _plan_05_review(root, paths, s, ctx):
@@ -1068,7 +1073,7 @@ def render_header(config, s):
         bits.append("카운터: %s" % used)
     budget = (s.get("budget") or {}).get("model_calls") or {}
     if budget.get("max"):
-        bits.append("모델 호출 %s/%s(제출 기준 근사)"
+        bits.append("모델 호출 %s/%s(지시 기준)"
                     % (budget.get("total"), budget["max"]))
     out = " · ".join(bits)
     while len(out) > 300 and len(bits) > 1:
@@ -1210,29 +1215,38 @@ def run_record(root, phase, file, reviewer=None, round_=None, run_id=None,
     if handler is None:
         return st.envelope("record", False, 2, s, {"phase": pid},
                            "`%s` 의 제출 처리는 아직 구현되지 않았다." % pid, None)
-    exhausted = _count_model_calls(paths, s, phase_item, ctx, reviewer)
+    # **제출을 세지 않는다** (M26). 계수는 `next`·`review07`·`gate` 가 기동을
+    # 지시하는 자리에서 일어난다 — `_instruction_keys` 를 보라.
     env = handler(root, paths, s, phase_item, ctx, Path(file), reviewer, round_)
-    return _budget_stop(paths, env) if exhausted else env
+    return env
 
 
-def _count_model_calls(paths, s, phase_item, ctx, reviewer):
-    """이 제출이 태운 모델 호출을 센다. 반환: 예산이 소진됐는가.
+def _instruction_keys(s, pid, ctx):
+    """이 페이즈 진입이 **기동을 지시하는** 에이전트들. 키는 라운드까지 담는다.
 
-    메인이 쓴 산출물(`reviewer` 가 없는 제출)은 서브에이전트 호출이 아니므로
-    세지 않는다. 역할 병렬 페이즈는 제출 하나가 역할 수만큼의 호출을 뜻한다.
+    실행기가 볼 수 있는 것은 자기가 낸 지시뿐이다. 여기 없는 것(모델이
+    스스로 부르는 호출)은 세지지 않고, 그 사실이 `budget.blind_spots` 에
+    이름으로 남는다.
     """
-    front = phase_item["front"]
-    if reviewer:
-        n = 1
-    elif (front.get("allow") or {}).get("parallel"):
-        n = len(ctx["config"].get("roles") or [])
-    else:
-        n = 0
-    if not n:
-        return False
-    _total, _max, exhausted = st.bump_model_calls(s, front["id"], n)
-    st.save(paths, s)
-    return exhausted
+    counters = s.get("counters") or {}
+
+    def used(name):
+        return (counters.get(name) or {}).get("used", 0)
+
+    if pid == "01-plan":
+        r = used("round")
+        return ["01:r%d:plan" % r, "01:r%d:xv" % r]
+    if pid == "02-cross-verify":
+        return ["02:r%d:xv" % used("xverify_return")]
+    if pid == "03-implement":
+        r = used("repair")
+        return ["03:r%d:%s" % (r, role.get("id"))
+                for role in (ctx["config"].get("roles") or [])]
+    if pid == "05-code-review":
+        node = (s.get("phases") or {}).get("05-code-review") or {}
+        r = used("review_repair") + 1
+        return ["05:r%d:%s" % (r, c) for c in _planned_for_round(node, r)]
+    return []
 
 
 def _budget_stop(paths, env):
@@ -2351,6 +2365,10 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
                            "--answer-file <경로>")
 
     brief = _dispatch_brief(dispatch, paths, round_no)
+    # 수리 배정도 기동 지시다. 제출 기준에서는 03 의 재제출로만 잡혀
+    # **어느 페이즈가 태웠는지가 04 에서 03 으로 옮겨 보였다.**
+    st.count_instructions(s, "04-gate",
+                          ["04:r%d:%s" % (used, dispatch.get("owner"))])
     st.append_event(paths, "dispatch", cmd="gate", phase="04-gate",
                     owner=dispatch.get("owner"))
     return st.envelope("gate", False, 4, s,
@@ -2788,6 +2806,10 @@ def run_review07(root, external=None, run_id=None):
          "code_review": got["effort"], "escaped_05": None})
     for gap in got["gaps"]:
         st.demote(s, st.GRADES[1], gap)
+    if not got["skip"]:
+        # 내장 `/code-review` 는 `record --reviewer` 를 남기지 않아 제출
+        # 기준에서 통째로 빠져 있었다 — ADR-H014 가 지목한 그 1회다.
+        st.count_instructions(s, "07-pr-review", ["07:code-review"])
     st.save(paths, s)
 
     data = dict(got, external=norm)

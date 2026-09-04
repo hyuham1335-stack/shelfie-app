@@ -112,8 +112,11 @@ def build(state, data, calibration, promotions):
     lines += _tbl([
         ("모델 호출 수", "%s / %s%s" % (
             budget.get("total"), budget.get("max"),
-            " (**근사** — 제출 수에서 유도한 값이다)"
-            if budget.get("approx") else "")),
+            ("\n  기준: **%s** — 봉투가 에이전트 기동을 지시한 횟수다.\n%s"
+             % (budget.get("basis"),
+                "\n".join("  - %s" % b
+                          for b in budget.get("blind_spots") or [])))
+            if budget.get("basis") else "")),
         ("라운드", (state.get("counters") or {}).get("round", {}).get("used")),
         ("수리", (state.get("counters") or {}).get("repair", {}).get("used")),
         ("테스트 실행 수", tests.get("ran")),

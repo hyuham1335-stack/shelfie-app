@@ -60,8 +60,8 @@ DONE = "done"
 
 COUNTERS = ("round", "repair", "xverify_return", "review_repair", "pr_repair")
 
-# 닫힌 어휘다. budget.model_calls 가 next/record 이벤트 수에서 유도되는
-# 근사치이므로, 어휘가 열려 있으면 그 근사치의 정의가 조용히 흔들린다.
+# 닫힌 어휘다. budget.model_calls 가 봉투의 지시에서 유도되므로, 어휘가
+# 열려 있으면 그 값의 정의가 조용히 흔들린다.
 EVENT_KINDS = (
     "run_created", "phase_enter", "phase_pass", "phase_fail", "phase_skip",
     "submit_received", "check_fail",
@@ -198,9 +198,12 @@ def create_run(root, slug, request_path, profile=None, seed_bytes=None, now=None
         "cross_verify": {"mode": _cross_verify_mode(config)},
         "grade": None,
         "gaps": [],
-        "budget": {"model_calls": {"total": 0,
-                                   "max": (config.get("budget") or {}).get("model_calls_max"),
-                                   "approx": True, "by_phase": {}}},
+        "budget": {"model_calls": {
+            "total": 0,
+            "max": (config.get("budget") or {}).get("model_calls_max"),
+            "basis": BUDGET_BASIS,
+            "blind_spots": list(BUDGET_BLIND_SPOTS),
+            "by_phase": {}, "counted": []}},
     }
     save(paths, s)
     append_event(paths, "run_created", cmd="init", phase="01-plan",
@@ -373,21 +376,61 @@ def demote(s, grade, gap=None):
     return s.get("grade")
 
 
-def bump_model_calls(s, phase, n=1):
-    """(total, max, exhausted). 예산이 없으면(max=None) 소진되지 않는다.
+# `model_calls` 의 관측 단위. **실행기는 모델 호출을 볼 수 없다** — 모델이
+# 기동하고 실행기는 결과만 받는다(ADR-H014). 그래서 볼 수 있는 것을 센다:
+# **봉투가 에이전트 기동을 지시한 횟수.**
+BUDGET_BASIS = "instructed"
 
-    **과다 계수가 안전 방향이다.** 이 숫자는 제출 수에서 유도한 근사치이고
-    (`approx: true`), 재제출은 그 전에 모델을 한 번 태운 뒤이므로 함께 센다.
-    일찍 걸리는 것이 영원히 안 걸리는 것보다 낫다 — 재지 않는 예산은 소진되지
-    않아 exit 5 가 발화하지 못한다.
-    """
+# 이 기준이 틀리는 두 방향. 보고서가 이것을 그대로 적는다 — 한쪽으로만
+# 틀리는 값이 아니므로 "하한" 이라고 부르면 그것도 재지 않은 주장이 된다.
+BUDGET_BLIND_SPOTS = (
+    "모델이 스스로 낸 호출은 세지 못한다 (과소)",
+    "지시를 메인이 대신 처리하면 센 것이 실제로 안 일어난다 (과다)",
+)
+
+
+def _budget_node(s):
     node = s.setdefault("budget", {}).setdefault(
-        "model_calls", {"total": 0, "max": None, "approx": True, "by_phase": {}})
+        "model_calls", {"total": 0, "max": None, "by_phase": {}})
+    node["basis"] = BUDGET_BASIS
+    node["blind_spots"] = list(BUDGET_BLIND_SPOTS)
+    node.pop("approx", None)            # "근사" 는 무엇이 근사인지 말하지 못한다
+    node.setdefault("counted", [])
+    return node
+
+
+def bump_model_calls(s, phase, n=1):
+    """(total, max, exhausted). 예산이 없으면(max=None) 소진되지 않는다."""
+    node = _budget_node(s)
     node["total"] = node.get("total", 0) + n
     by = node.setdefault("by_phase", {})
     by[phase] = by.get(phase, 0) + n
     max_ = node.get("max")
     return node["total"], max_, (max_ is not None and node["total"] >= max_)
+
+
+def count_instructions(s, phase, keys):
+    """봉투가 낸 **에이전트 기동 지시**를 센다. 반환: (total, max, exhausted).
+
+    키가 필요한 이유는 `next` 가 같은 페이즈에서 여러 번 불릴 수 있기
+    때문이다 — 같은 지시를 두 번 세면 계수가 왕복 횟수를 센다. 이미 센 키는
+    다시 세지 않는다.
+
+    **제출을 세지 않고 지시를 세는 이유** (M26): 제출 기준은 두 방향으로
+    틀렸다. 02 교차검증·07 내장 리뷰·04 의 수리 배정은 `record --reviewer` 를
+    남기지 않아 안 세지고(과소), 리뷰어 출력의 형식만 메인이 고쳐 재제출하면
+    새 모델 호출 없이 세진다(과다). 지시 기준은 **한 방향으로만** 틀리고 그
+    방향에 이름을 붙일 수 있다.
+    """
+    node = _budget_node(s)
+    seen = node["counted"]
+    fresh = [k for k in keys if k not in seen]
+    if not fresh:
+        max_ = node.get("max")
+        return (node.get("total", 0), max_,
+                (max_ is not None and node.get("total", 0) >= max_))
+    seen.extend(fresh)
+    return bump_model_calls(s, phase, len(fresh))
 
 
 # ------------------------------------------------------------------ 지문

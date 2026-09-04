@@ -402,7 +402,8 @@ class TestModelCallBudget:
         mc = s["budget"]["model_calls"]
         assert mc["total"] == 0
         assert mc["max"] == 24
-        assert mc["approx"] is True
+        assert mc["basis"] == "instructed"
+        assert mc["blind_spots"], "두 오차 방향이 이름으로 남아야 한다"
 
     def test_bump_raises_total_and_the_phase_bucket_together(self, repo, request_file):
         _, s = st.create_run(repo, "demo", request_file)
@@ -425,23 +426,34 @@ class TestModelCallBudget:
         s["budget"]["model_calls"]["max"] = None
         assert st.bump_model_calls(s, "01-plan") == (1, None, False)
 
-    def test_reviewer_submission_increments_the_count(self, run01):
+    def test_01_진입이_리뷰어_둘을_지시로_센다(self, run01):
+        """01 은 리뷰어 둘을 병렬로 부른다 — 봉투가 그것을 지시한다."""
         repo, paths, s = run01
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        mc = after["budget"]["model_calls"]
+        assert mc["total"] == 2
+        assert mc["by_phase"] == {"01-plan": 2}
+
+    def test_같은_지시를_두_번_세지_않는다(self, run01):
+        """`next` 는 같은 페이즈에서 여러 번 불린다 — 왕복 횟수를 세면 안 된다."""
+        repo, paths, s = run01
+        cli.run_next(repo, run_id=paths.run_id)
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert after["budget"]["model_calls"]["total"] == 2
+
+    def test_제출은_세지_않는다(self, run01):
+        """제출 기준은 두 방향으로 틀렸다 (M26) — 이제 지시만 센다."""
+        repo, paths, s = run01
+        before = st.load(repo, paths.run_id)[1]["budget"]["model_calls"]["total"]
         _submit_plan(repo, paths, _plan())
         _submit_review(repo, paths, _review("plan"))
         _, after = st.load(repo, paths.run_id)
-        assert after["budget"]["model_calls"]["total"] == 1
-        assert after["budget"]["model_calls"]["by_phase"] == {"01-plan": 1}
+        assert after["budget"]["model_calls"]["total"] == before
 
-    def test_main_authored_output_does_not_count(self, run01):
-        """플랜 본문은 메인이 쓴다. 서브에이전트 호출이 아니다."""
-        repo, paths, s = run01
-        _submit_plan(repo, paths, _plan())
-        _, after = st.load(repo, paths.run_id)
-        assert after["budget"]["model_calls"]["total"] == 0
-
-    def test_a_rejected_resubmission_still_counts(self, run01):
-        """exit 8 로 튕긴 제출도 모델을 한 번 태운 뒤다 — 과다 계수가 안전 방향이다."""
+    def test_형식만_고쳐_재제출해도_계수가_오르지_않는다(self, run01):
+        """메인이 형식만 고친 재제출은 새 모델 호출이 아니다 — 옛 과다 계수."""
         repo, paths, s = run01
         _submit_plan(repo, paths, _plan())
         bad = _review("plan", findings=[
@@ -451,42 +463,27 @@ class TestModelCallBudget:
         (paths.run_dir / "01_review_r1.raw.md").write_text(
             _raw([{"severity": "major", "quote": "다른 말"}]),
             encoding="utf-8")
+        before = st.load(repo, paths.run_id)[1]["budget"]["model_calls"]["total"]
         assert cli.run_record(repo, phase="01", file=str(j),
                               reviewer="plan", round_=1)["exit"] == 8
-        _submit_review(repo, paths, _review("plan"))
         _, after = st.load(repo, paths.run_id)
-        assert after["budget"]["model_calls"]["total"] == 2
+        assert after["budget"]["model_calls"]["total"] == before
 
     def test_exhausted_budget_stops_the_run_with_exit_5(self, run01):
         """예산이 소진되면 다음 모델 호출을 요구하지 않고 멈춘다."""
         repo, paths, s = run01
         s["budget"]["model_calls"]["max"] = 2
         st.save(paths, s)
-        _submit_plan(repo, paths, _plan())
-        assert _submit_review(repo, paths, _review("plan"))["exit"] == 0
-        env = _submit_review(repo, paths, _review("xv"))
+        env = cli.run_next(repo, run_id=paths.run_id)
         assert env["exit"] == 5, env["render"]
         assert "예산" in env["render"]
 
-    def test_an_exhausted_run_does_not_lose_the_submission(self, run01):
-        """exit 5 는 제출을 버리는 것이 아니라 다음 호출을 막는 것이다."""
-        repo, paths, s = run01
-        s["budget"]["model_calls"]["max"] = 2
-        st.save(paths, s)
-        _submit_plan(repo, paths, _plan())
-        _submit_review(repo, paths, _review("plan"))
-        _submit_review(repo, paths, _review("xv"))
-        _, after = st.load(repo, paths.run_id)
-        assert st.phase_status(after, "01-plan") == "passed"
-
     def test_the_packet_header_names_what_it_counts(self, run01):
-        """'근사' 라고만 적으면 무엇이 근사인지 알 수 없다."""
+        """무엇을 세는지 이름으로 말한다 — "근사" 는 그것을 말하지 못한다."""
         repo, paths, s = run01
-        _submit_plan(repo, paths, _plan())
-        _submit_review(repo, paths, _review("plan"))
         env = cli.run_next(repo, run_id=paths.run_id)
-        assert "모델 호출 1/24" in env["render"]
-        assert "제출 기준" in env["render"]
+        assert "모델 호출 2/24" in env["render"]
+        assert "지시 기준" in env["render"]
 
 
 # ---------------------------------------------------------------------------
@@ -5193,7 +5190,8 @@ class TestReport08:
         cli.run_report(repo, run_id=run_id)
         out = (repo / "docs" / "harness" / "pipeline" / "runs"
                / ("%s.md" % run_id)).read_text(encoding="utf-8")
-        assert "근사" in out
+        assert "instructed" in out
+        assert "과소" in out and "과다" in out, "두 오차 방향이 드러나야 한다"
 
 
 # ---------------------------------------------------------------------------

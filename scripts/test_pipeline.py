@@ -516,6 +516,29 @@ class TestLintPhases:
         _rewrite(phases / "01-plan.md", lambda f: f.__setitem__("on_success", "00-nope"))
         assert _fails(_lint(repo), "on_success")
 
+    # ── M24. `done` 은 깨진 포인터가 아니라 종단이다.
+
+    def test_done_은_전이_대상이_없어도_FAIL_이_아니다(self, repo, phases):
+        findings = _lint(repo)
+        assert _fails(findings, "on_success") == []
+        assert [f for f in findings
+                if f["rule"] == "on_success" and f["status"] == "WARN"] == []
+
+    def test_on_success_가_없으면_FAIL(self, repo, phases):
+        """**M24 의 lint 층 회귀.** 마지막 페이즈가 아무것도 안 가리키면
+        런을 닫는 자리가 코드 어디에도 생기지 않는다."""
+        _rewrite(phases / "08-report.md", lambda f: f.pop("on_success", None))
+        assert _fails(_lint(repo), "on_success")
+
+    def test_종단이_둘이면_FAIL(self, repo, phases):
+        """런이 닫히는 자리는 하나다."""
+        _rewrite(phases / "07-pr-review.md",
+                 lambda f: f.__setitem__("on_success", st.DONE))
+        assert _fails(_lint(repo), "terminal")
+
+    def test_done_은_순환_검사를_멈추지_않는다(self, repo, phases):
+        assert _fails(_lint(repo), "cycle") == []
+
     def test_cycle_is_rejected(self, repo, phases):
         _rewrite(phases / "02-cross-verify.md",
                  lambda f: f.__setitem__("on_success", "01-plan"))
@@ -2859,13 +2882,25 @@ class TestPhase05File:
                   if f["rule"] == "on_success" and f["status"] == "WARN"]
         assert future == [], future
 
-    def test_실물_페이즈가_여덟이고_08_은_전이하지_않는다(self, repo):
+    def test_실물_페이즈가_여덟이고_08_은_done_을_가리킨다(self, repo):
+        """**M24.** 08 이 아무것도 안 가리키면 런이 닫히는 자리가 없다."""
         loaded, broken = cli.load_phases(ROOT)
         assert broken == []
         assert sorted(loaded) == ["01-plan", "02-cross-verify", "03-implement",
                                   "04-gate", "05-code-review", "06-pr",
                                   "07-pr-review", "08-report"]
-        assert loaded["08-report"]["front"].get("on_success") is None
+        assert loaded["08-report"]["front"].get("on_success") == st.DONE
+
+    def test_전이_사슬이_01_에서_done_까지_이어진다(self, repo):
+        """단언 하나로 그래프 전체를 못박는다."""
+        loaded, _ = cli.load_phases(ROOT)
+        chain, cur = [], "01-plan"
+        while cur in loaded:
+            chain.append(cur)
+            cur = loaded[cur]["front"].get("on_success")
+        assert chain == ["01-plan", "02-cross-verify", "03-implement", "04-gate",
+                         "05-code-review", "06-pr", "07-pr-review", "08-report"]
+        assert cur == st.DONE
 
     def test_lint_passes_on_the_real_phases(self, repo):
         bad = [f for f in cli.lint_phases(ROOT) if f["status"] == "FAIL"]
@@ -3119,8 +3154,18 @@ class TestGradeSingleSource:
     def test_06_08_의_이벤트_어휘가_있다(self):
         """어휘 밖 kind 는 append_event 가 ValueError 를 던진다."""
         for kind in ("approved", "approval_revoked", "pr_pushed",
-                     "pr_opened", "promoted"):
+                     "pr_opened", "promoted", "run_closed"):
             assert kind in st.EVENT_KINDS
+
+    def test_run_status_어휘가_닫혀_있다(self):
+        """세 값이 리터럴로 흩어져 있던 것을 한 자리로 모은다 (M24)."""
+        assert st.RUN_STATUS == ("active", "escalated", "done")
+        assert st.DONE in st.RUN_STATUS
+
+    def test_run_closed_는_horizon_과_다른_사실이다(self):
+        """`horizon` 은 "다음 페이즈가 아직 없다", `run_closed` 는 "런이
+        끝났다" 다. 같은 kind 로 뭉치면 둘을 구분할 수 없다."""
+        assert "horizon" in st.EVENT_KINDS and "run_closed" in st.EVENT_KINDS
 
     def test_07_수리_카운터가_있다(self):
         assert "pr_repair" in st.COUNTERS
@@ -4070,7 +4115,7 @@ class TestReport08:
         run_id, paths = _enter_08(repo, request_file, phases)
         _report_data(paths)
         env = cli.run_report(repo, run_id=run_id)
-        assert env["exit"] == 0, env["render"]
+        assert env["exit"] == 11, env["render"]
         out = (repo / "docs" / "harness" / "pipeline" / "runs"
                / ("%s.md" % run_id)).read_text(encoding="utf-8")
         for sec in rep_mod.REQUIRED_SECTIONS:
@@ -4136,11 +4181,116 @@ class TestReport08:
 
     def test_보고서는_파이프라인을_실패시키지_않는다(self, repo, request_file,
                                                    phases):
-        """섹션이 비어도 산출은 된다 — 원장에 기록만 한다."""
+        """섹션이 비어도 산출되고 **런도 닫힌다** — 원장에 기록만 한다."""
         run_id, paths = _enter_08(repo, request_file, phases)
         _report_data(paths, narrative={})
         env = cli.run_report(repo, run_id=run_id)
+        assert env["ok"] is True
+        assert env["exit"] == 11
+        assert env["data"]["closed"] is True, "섹션이 빠져도 런은 닫힌다"
+
+    # ── M24. 08 의 동사가 런을 닫는다.
+
+    def test_report_가_런을_닫는다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        env = cli.run_report(repo, run_id=run_id)
+        assert env["exit"] == 11, env["render"]
+        assert env["data"]["closed"] is True
+        _p, s = st.load(repo, run_id)
+        assert s["phases"]["08-report"]["status"] == "passed"
+        assert s["phase"] == st.DONE
+        assert s["run_status"] == st.DONE
+        assert s.get("closed_at")
+
+    def test_런_완료가_render_에_있다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        env = cli.run_report(repo, run_id=run_id)
+        assert "런 완료" in env["render"]
+        assert run_id in env["render"], "보고서 경로도 함께 남는다"
+
+    def test_닫힌_런에_다시_쓰면_덮어쓰고_exit_0(self, repo, request_file, phases):
+        """`08-report.md` 가 요구하는 재작성 — 전이는 한 번뿐이다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        assert cli.run_report(repo, run_id=run_id)["exit"] == 11
+        _report_data(paths, narrative={"문제": "두 번째 판"})
+        env = cli.run_report(repo, run_id=run_id)
         assert env["exit"] == 0
+        assert env["data"]["closed"] is True
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "두 번째 판" in out
+        _p, s = st.load(repo, run_id)
+        assert s["run_status"] == st.DONE
+        kinds = [json.loads(x)["kind"] for x
+                 in paths.events.read_text(encoding="utf-8").splitlines() if x.strip()]
+        assert kinds.count("run_closed") == 1, "두 번 닫히지 않는다"
+
+    def test_07_이_안_끝났으면_보고서만_쓰고_닫지_않는다(self, repo, request_file,
+                                                      phases):
+        """전이 조건은 08 자신의 `requires` 다. 없으면 03 에서 부른 report 가
+        런을 닫아 버린다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        st.set_phase_status(s, "07-pr-review", "running")
+        st.save(_p, s)
+        _report_data(paths)
+        env = cli.run_report(repo, run_id=run_id)
+        assert env["exit"] == 0
+        assert env["data"]["closed"] is False
+        assert (repo / "docs" / "harness" / "pipeline" / "runs"
+                / ("%s.md" % run_id)).exists(), "보고서는 그래도 쓴다"
+        _p, s = st.load(repo, run_id)
+        assert s["run_status"] == "active"
+        assert st.phase_status(s, "08-report") != "passed"
+
+    def test_닫힌_런은_latest_run_id_에서_빠진다(self, repo, request_file, phases):
+        """`state.py` 의 `!= "done"` 필터에 드디어 생산자가 생긴다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        # 살아 있는 런이 하나라도 있으면 닫힌 런은 뽑히지 않는다.
+        other, _ = st.create_run(repo, "other", request_file)
+        assert st.latest_run_id(repo) == other.run_id
+
+    def test_run_closed_이벤트가_등급과_gaps_를_담는다(self, repo, request_file,
+                                                     phases):
+        run_id, paths = _enter_08(repo, request_file, phases,
+                                  grade="PASS_WITH_GAPS")
+        _p, s = st.load(repo, run_id)
+        s["gaps"] = ["stage_absent:e2e"]
+        st.save(_p, s)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        ev = [json.loads(x) for x
+              in paths.events.read_text(encoding="utf-8").splitlines() if x.strip()]
+        closed = [e for e in ev if e["kind"] == "run_closed"]
+        assert len(closed) == 1
+        assert closed[0]["data"]["grade"] == "PASS_WITH_GAPS"
+        assert closed[0]["data"]["gaps"] == ["stage_absent:e2e"]
+
+    def test_닫힌_런에_advance_는_전이하지_않는다(self, repo, request_file, phases):
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        env = cli.run_advance(repo, "08", run_id=run_id)
+        assert env["exit"] == 0
+        assert env["data"]["closed"] is True
+        ev = [json.loads(x) for x
+              in paths.events.read_text(encoding="utf-8").splitlines() if x.strip()]
+        assert len([e for e in ev if e["kind"] == "phase_pass"
+                    and e.get("phase") == "08-report"]) == 1
+
+    def test_record_08_은_report_로_안내한다(self, repo, request_file, phases):
+        """"미구현" 이라고 말하던 자리다 — 구현돼 있고 동사가 다를 뿐이다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        src = _report_data(paths)
+        env = cli.run_record(repo, "08", str(src), run_id=run_id)
+        assert env["exit"] == 2
+        assert "report" in env["render"]
+        assert "미구현" not in env["render"]
 
     def test_gaps_가_건너뛴_게이트로_나열된다(self, repo, request_file, phases):
         run_id, paths = _enter_08(repo, request_file, phases,

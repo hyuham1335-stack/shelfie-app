@@ -41,6 +41,15 @@ RUNS_REL = "_workspace/runs"
 #               그것이 정확한 서술이다.
 PHASE_STATUS = ("running", "passed", "failed", "escalated", "skipped")
 
+# 런 상태 어휘. 셋 다 예전에는 리터럴로 세 곳에 흩어져 있었고, `done` 은
+# **거르는 쪽(`latest_run_id`)만 있고 쓰는 쪽이 없었다** — 그래서 어떤 런도
+# 닫히지 않았다 (M24).
+RUN_STATUS = ("active", "escalated", "done")
+
+# `on_success` 의 종단 센티널. team-spec §1 의 페이즈 표가 08 의 성공 시
+# 다음을 `done` 이라 적는다 — 페이즈 id 가 아니라 "여기서 끝" 이라는 표식이다.
+DONE = "done"
+
 COUNTERS = ("round", "repair", "xverify_return", "review_repair", "pr_repair")
 
 # 닫힌 어휘다. budget.model_calls 가 next/record 이벤트 수에서 유도되는
@@ -51,6 +60,9 @@ EVENT_KINDS = (
     "stage_start", "stage_done", "stage_skipped",
     "attribution", "dispatch", "counter_inc",
     "escalated", "resumed", "horizon",
+    # `horizon` 은 "다음 페이즈가 아직 없다", `run_closed` 는 "런이 끝났다" 다.
+    # 하나로 뭉치면 미완성 실행기와 완주한 런을 원장에서 구분할 수 없다.
+    "run_closed",
     # 06~08. 승인·PR·승격은 "일어났다"가 사후에 확인 가능해야 하는 사건이고,
     # 그 셋 다 외부 상태를 건드린다 — 이벤트가 없으면 되돌아볼 기록이 없다.
     "approved", "approval_revoked", "pr_pushed", "pr_opened", "promoted",
@@ -455,6 +467,20 @@ def fingerprint_matches(saved, fresh):
     if saved.get("scope_globs_sha1") != fresh.get("scope_globs_sha1"):
         return False
     return saved.get("value") == fresh.get("value")
+
+
+# ------------------------------------------------------------------ 런 종료
+
+def close_run(s, now=None):
+    """런을 닫는다. **`run_status` 를 `done` 으로 옮기는 유일한 자리다.**
+
+    `demote` 가 등급의 단일 출처인 것과 같은 규율이다 — 대입이 여러 곳으로
+    흩어지면 되돌리는 경로가 조용히 생긴다. `escalate` 의 대칭 짝이고, 둘 다
+    런의 수명을 끝내는 쪽으로만 움직인다.
+    """
+    s["run_status"] = DONE
+    s["closed_at"] = stamp(now)
+    return s
 
 
 # ------------------------------------------------------------------ 에스컬레이션

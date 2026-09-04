@@ -14,7 +14,8 @@
      "kind": "markdown"}
   ],
   "gate": {"runner": "none"},
-  "allow": {"agents": []}
+  "allow": {"agents": []},
+  "on_success": "done"
 }
 ---
 

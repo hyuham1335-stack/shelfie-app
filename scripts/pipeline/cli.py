@@ -574,7 +574,7 @@ def lint_phases(root, phases_dir=None):
 
     _lint_runner_bin(root, adapter, config, add)
 
-    seen_index, seen_keys = {}, {}
+    seen_index, seen_keys, terminals = {}, {}, []
     max_index = max((p["front"].get("index") or 0) for p in loaded.values())
 
     for pid, item in sorted(loaded.items()):
@@ -645,13 +645,29 @@ def lint_phases(root, phases_dir=None):
 
         # ── 전이
         nxt = front.get("on_success")
-        if nxt and nxt not in loaded:
+        if nxt == st.DONE:
+            # 종단이다. 전이 대상을 찾지 않는다.
+            terminals.append(pid)
+        elif not nxt:
+            add(name, "on_success", "FAIL",
+                "on_success 가 없다 — 마지막 페이즈는 `%s` 를 명시한다. "
+                "적지 않으면 런이 닫히는 자리가 코드 어디에도 생기지 않는다 (M24)"
+                % st.DONE)
+        elif nxt not in loaded:
             nxt_idx = _index_prefix(nxt)
             if nxt_idx is not None and nxt_idx > max_index:
                 add(name, "on_success", "WARN",
                     "%r 는 아직 없다 (FUTURE) — 그 페이즈가 생기면 이어진다" % nxt)
             else:
                 add(name, "on_success", "FAIL", "전이 대상이 없다: %r" % nxt)
+
+    # **종단이 없는 것은 FAIL 이 아니다** — 확장 중인 실행기는 마지막 페이즈가
+    # 아직 없는 다음을 가리키는 상태가 정상이고, 그 자리는 이미 WARN 이 본다.
+    # 둘 이상인 것만 막는다: 런이 닫히는 자리는 하나여야 한다.
+    if len(terminals) > 1:
+        add("(전체)", "terminal", "FAIL",
+            "종단이 둘 이상이다: %s — 런이 닫히는 자리는 하나다"
+            % ", ".join(sorted(terminals)))
 
     _lint_cycle(loaded, add)
     _lint_taxonomy(root, add)
@@ -1061,7 +1077,7 @@ def _horizon_render(pid, loaded=None):
     05 가 생긴 뒤에도 그대로 남아 `feature.md` 와 어긋나 있었다. 이제 범위는
     실재하는 페이즈 파일에서 유도한다 — 문자열을 두 곳에 두지 않는다.
     """
-    if not pid:
+    if not pid or pid == st.DONE:
         return ("## 런 완료\n\n"
                 "마지막 페이즈까지 끝났다. `status` 로 등급과 남은 gap 을 본다.")
     scope = ""
@@ -1119,6 +1135,13 @@ def run_record(root, phase, file, reviewer=None, round_=None, run_id=None):
         return st.envelope("record", False, 3, s, {"requires_report": checks},
                            "## 선행 조건 미충족\n\n" +
                            "\n".join("- %s" % c["message"] for c in failed), None)
+
+    if pid in _CLOSED_BY:
+        return st.envelope(
+            "record", False, 2, s, {"phase": pid, "closed_by": _CLOSED_BY[pid]},
+            "`%s` 는 제출로 닫지 않는다 — `%s` 가 닫는다.\n\n"
+            "페이즈는 자기 동사로 닫힌다: 04 는 `gate`, 08 은 `report` 다."
+            % (pid, _CLOSED_BY[pid]), None)
 
     st.append_event(paths, "submit_received", cmd="record", phase=pid,
                     file=paths.rel(file), reviewer=reviewer)
@@ -1178,12 +1201,36 @@ def _normalize_phase(phase, loaded):
     return None
 
 
-def _advance_to_next(root, paths, s, phase_item, ctx, cmd="record"):
-    """통과 시 전이하고 **다음 페이즈 지시문을 바로 낸다** (왕복 절약)."""
+def _close_run(root, paths, s, phase_item, ctx, cmd):
+    """마지막 페이즈 통과 → 런 종료. **상태 변이는 여기 하나뿐이다.**
+
+    `st.close_run` 이 `run_status` 의 단일 출처이고, 이 함수가 그것을 부르는
+    유일한 자리다 — 등급이 세 곳에서 대입되던 것을 `st.demote` 로 모은 것과
+    같은 규율이다 (ADR-H015).
+    """
     pid = phase_item["front"]["id"]
     st.set_phase_status(s, pid, "passed")
     st.append_event(paths, "phase_pass", cmd=cmd, phase=pid)
+    s["phase"] = st.DONE
+    st.close_run(s)
+    st.append_event(paths, "run_closed", cmd=cmd, phase=pid,
+                    grade=s.get("grade"), gaps=s.get("gaps") or [])
+    st.save(paths, s)
+    return st.envelope(cmd, True, 11, s,
+                       {"next_phase": st.DONE, "closed": True,
+                        "grade": s.get("grade"), "gaps": s.get("gaps") or []},
+                       _horizon_render(None), None)
+
+
+def _advance_to_next(root, paths, s, phase_item, ctx, cmd="record"):
+    """통과 시 전이하고 **다음 페이즈 지시문을 바로 낸다** (왕복 절약)."""
+    pid = phase_item["front"]["id"]
     nxt = phase_item["front"].get("on_success")
+    if nxt == st.DONE:
+        return _close_run(root, paths, s, phase_item, ctx, cmd)
+
+    st.set_phase_status(s, pid, "passed")
+    st.append_event(paths, "phase_pass", cmd=cmd, phase=pid)
     s["phase"] = nxt
     st.save(paths, s)
 
@@ -1881,6 +1928,11 @@ def _record_06(root, paths, s, phase_item, ctx, file, reviewer, round_):
     return _advance_to_next(root, paths, s, phase_item, ctx)
 
 
+# 제출로 닫지 않는 페이즈. **각자의 동사가 닫는다** — "미구현" 이라고 말하면
+# 실제로는 구현돼 있는데 없는 것처럼 읽힌다 (M24).
+_CLOSED_BY = {"04-gate": "gate --phase 04",
+              "08-report": "report --out <경로>"}
+
 _RECORD_HANDLERS = {"01-plan": _record_01, "02-cross-verify": _record_02,
                     "03-implement": _record_03, "05-code-review": _record_05,
                     "06-pr": _record_06,
@@ -2345,9 +2397,36 @@ def run_report(root, out=None, run_id=None):
     st.save(paths, s)
     rel = str(target.relative_to(root)) if str(target).startswith(str(root)) \
         else str(target)
-    return st.envelope("report", True, 0, s,
-                       {"out": rel, "missing_sections": missing},
-                       _report_render(rel, missing, s), None)
+    data = {"out": rel, "missing_sections": missing}
+
+    # 이미 닫힌 런 — 파일만 다시 쓰고 **전이하지 않는다.** exit 11 은 전이의
+    # 순간이므로 두 번 내면 재작성과 첫 종료가 원장에서 구분되지 않는다.
+    if s.get("run_status") == st.DONE:
+        return st.envelope("report", True, 0, s, dict(data, closed=True),
+                           _report_render(rel, missing, s)
+                           + "\n\n이 런은 이미 닫혀 있다. 보고서만 다시 썼다.",
+                           None)
+
+    # **전이 조건은 08 자신의 `requires` 다.** 여기 따로 적으면 페이즈 파일과
+    # 갈라지고, 안 두면 03 에서 부른 report 가 런을 닫아 버린다.
+    loaded, _ = load_phases(root)
+    item = loaded.get("08-report")
+    ctx = build_context(root, paths, s)
+    checks = check_requires(root, (item or {}).get("front", {}).get("requires"),
+                            ctx, s) if item else []
+    if item is None or [c for c in checks if not c["ok"]]:
+        # **보고서는 파이프라인을 실패시키지 않는다** — 썼다고 말하고 exit 0 이다.
+        return st.envelope(
+            "report", True, 0, s,
+            dict(data, closed=False, requires_report=checks),
+            _report_render(rel, missing, s)
+            + "\n\n**런을 닫지 않았다** — 08 의 선행 조건이 아직 안 맞는다."
+              " 보고서만 썼다.", None)
+
+    env = _close_run(root, paths, s, item, ctx, cmd="report")
+    env["data"].update(data)
+    env["render"] = _report_render(rel, missing, s) + "\n\n" + env["render"]
+    return env
 
 
 def _report_render(rel, missing, s):
@@ -2945,6 +3024,10 @@ def run_advance(root, phase, run_id=None):
     paths, s = st.load(root, run_id)
     if s is None:
         return st.envelope("advance", False, 3, None, {}, "런이 없다.", None)
+    if s.get("run_status") == st.DONE:
+        return st.envelope("advance", True, 0, s, {"closed": True},
+                           "이 런은 이미 닫혔다 (`run_status: done`). "
+                           "전이할 것이 없다.", None)
     loaded, _ = load_phases(root)
     pid = _normalize_phase(phase, loaded)
     if pid is None:
@@ -3088,12 +3171,16 @@ def cmd_status(root, args):
             None))
     data = {
         "run_id": s["run_id"], "slug": s.get("slug"),
+        "run_status": s.get("run_status"),
         "phase": s.get("phase"), "phases": s.get("phases") or {},
         "run_dir": str(paths.run_dir),
         "contract": s.get("contract"), "grade": s.get("grade"),
         "gaps": s.get("gaps") or [],
     }
+    # 상태를 함께 적는다 — 닫힌 뒤에는 페이즈가 `done` 이라 그것만 보면
+    # 끝난 런과 망가진 런이 화면에서 같아 보인다.
     lines = ["## 런 `%s` (%s)" % (s["run_id"], s.get("slug")), "",
+             "상태: **%s**" % (s.get("run_status") or "?"),
              "현재 페이즈: **%s**" % s.get("phase"), ""]
     for pid in sorted((s.get("phases") or {})):
         lines.append("- `%s` — %s" % (pid, s["phases"][pid].get("status")))

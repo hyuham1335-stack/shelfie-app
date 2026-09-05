@@ -1032,6 +1032,22 @@ def render_packet(root, phase, ctx, s, checks=None):
     return "\n\n".join(p for p in parts if p), cmd
 
 
+def _cross_verify_reviewer(front):
+    """페이즈의 리뷰어 중 교차검증기의 `code`. 없으면 None.
+
+    "누가 교차검증기인가" 를 판정하는 자리는 **여기 하나**다. 두 곳에서 따로
+    판정하면 갈라지는 날이 오고, 그날 폴백 기록이 조용히 빠진다.
+    """
+    for r in ((front.get("review") or {}).get("reviewers") or []):
+        if r.get("kind") == "cross_verify":
+            return r.get("code")
+    return None
+
+
+def _is_cross_verifier(phase_item, reviewer):
+    return _cross_verify_reviewer(phase_item["front"]) == reviewer
+
+
 def _cross_verify_render(config, s, front):
     """교차검증기가 누구인지 봉투가 말한다.
 
@@ -1039,13 +1055,26 @@ def _cross_verify_render(config, s, front):
     싣는다) 이 이름은 여기서만 나올 수 있다. **코어에 도구 이름을 박지 않는다** —
     config 를 읽을 뿐이고, 그래서 스택·도구를 바꿔도 코어는 그대로다.
     """
-    if not (front.get("review") or {}).get("reviewers"):
-        return ""
-    if not any(r.get("kind") == "cross_verify"
-               for r in front["review"]["reviewers"]):
+    if _cross_verify_reviewer(front) is None:
         return ""
     cv = config.get("cross_verify") or {}
-    mode = ((s.get("cross_verify") or {}).get("mode")) or "skipped"
+    node = s.get("cross_verify") or {}
+    mode = node.get("mode") or "skipped"
+
+    # **일시 실패는 부재가 아니다.** primary 가 선언돼 있는데 직전 회차가
+    # 실패로 폴백했다면 이번 회차는 다시 시도한다 — 상류 과부하는 대개 한
+    # 라운드보다 먼저 끝난다. 예전에는 이 분기가 없어 한 번 폴백하면 그 런
+    # 내내 폴백이 굳었다 (P3 의 다섯 라운드).
+    if node.get("last_primary_error") and cv.get("primary"):
+        return ("## 교차검증\n\n직전 회차는 외부 관측기 `%s` 가 **실패**해 "
+                "폴백 `%s` 로 돌았다 — %s\n\n**이번 회차는 primary 를 다시 "
+                "시도한다.** 일시 실패는 부재가 아니고, 상류 과부하는 대개 한 "
+                "라운드보다 먼저 끝난다. 또 실패하면 폴백으로 가되 제출에 "
+                "`primary_error` 를 다시 싣는다 — 그래야 다음 회차가 같은 "
+                "판단을 할 수 있다."
+                % (cv.get("primary"), cv.get("fallback"),
+                   node["last_primary_error"]))
+
     if mode == "primary":
         return ("## 교차검증\n\n외부 관측기 `%s` 를 쓴다. 이것이 있으면 "
                 "**1라운드 수렴이 열린다** — 둘 다 폴백이 아니고 Major 이상이 "
@@ -1469,6 +1498,13 @@ def _record_01_review(root, paths, s, phase_item, ctx, file, reviewer, round_):
     slot[reviewer] = {"mode": payload.get("mode") or "primary",
                       "keys": got["keys"], "blocking": got["blocking"],
                       "closed": got["closed"]}
+    # **교차검증기의 회차 기록은 런 요약에도 접힌다.** 예전에는 여기 slot 에만
+    # 들어가 `state.cross_verify` 는 config 가 찍은 값을 그대로 들고 있었다 —
+    # 다섯 라운드가 전부 폴백인데 상태는 `primary` 라고 적었고, 보고서는 그
+    # 사실을 한 글자도 말하지 않았다 (P3).
+    if _is_cross_verifier(phase_item, reviewer):
+        st.note_cross_verify_round(s, round_, slot[reviewer]["mode"],
+                                   payload.get("primary_error"))
     st.save(paths, s)
 
     expected = [r["code"] for r in
@@ -1511,6 +1547,21 @@ def _previous_open(rounds, round_, reviewer=None):
     return out
 
 
+def _note_cross_verify_gap(s):
+    """폴백으로 돈 회차가 있으면 등급이 그것을 말한다.
+
+    **`external:disabled` 와 같은 형태다** — 리뷰가 약해진 것은 통과가 아니고,
+    gap 에 이름이 박혀야 보고서가 그것을 적을 수 있다. 예전에는 폴백이 gap 이
+    아니라 `PASS` 로 끝났고, P3 는 다섯 라운드가 전부 폴백인데 보고서에 그
+    낱말이 한 번도 안 나왔다.
+
+    등급은 `demote` 가 나쁜 쪽으로만 움직이므로 여기서 되돌아가지 않는다.
+    """
+    node = s.get("cross_verify") or {}
+    if node.get("degraded_rounds"):
+        st.demote(s, "PASS_WITH_GAPS", gap="cross_verify:fallback")
+
+
 def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
     subs = [dict(v, code=k) for k, v in slot.items()]
     prev_keys = {k["key"] for r in rounds for sub in rounds[r].values()
@@ -1523,8 +1574,15 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
     max_rounds = (conv.get("max_by_profile") or {}).get(profile) or 5
 
     if ok:
-        s["phases"]["01-plan"]["rounds"] = round_
+        # **`rounds` 를 덮지 않는다.** 예전에는 여기서 수렴 회차(정수)를
+        # 그 자리에 대입해 라운드별 제출 기록을 통째로 날렸다. 01 이 다시
+        # 돌지 않으면 무해했지만, 02 의 Critical 이 01 로 되돌리는 경로가
+        # 처음 돌자 `_previous_open` 이 정수를 순회하려다 죽었고 단조성
+        # 검사가 근거로 삼는 이전 회차 지적이 사라졌다. 정수를 읽는
+        # 소비자는 어디에도 없었다 — 순수한 손실이다 (P3).
+        s["phases"]["01-plan"]["converged_at_round"] = round_
         st.counter_inc(s, "round", max_rounds)
+        _note_cross_verify_gap(s)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 
     used, _max, exceeded = st.counter_inc(s, "round", max_rounds)
@@ -1538,11 +1596,18 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
 
     st.save(paths, s)
     focus = conv.get("focus_round_2") or ""
+    cv_note = _cross_verify_render(ctx["config"], s, phase_item["front"])
     return st.envelope(
         "record", True, 0, s, {"round": used + 1, "reason": reason},
         "## %d라운드가 필요하다\n\n%s\n\n다음 회차의 강제 초점: %s\n\n"
-        "플랜은 **부분 편집**으로 고친다 — 전체를 다시 쓰면 접두부가 라운드마다 쌓인다."
-        % (used + 1, reason, focus or "(없음)"),
+        "플랜은 **부분 편집**으로 고친다 — 전체를 다시 쓰면 접두부가 라운드마다 "
+        "쌓인다.%s"
+        # **라운드마다 교차검증기를 다시 말한다.** 이 절은 `render_packet`
+        # 에서만 나왔고 그건 `next` 에서만 불리는데, 01 의 루프는
+        # `record → record` 라 봉투가 그 말을 다시 할 경로가 물리적으로
+        # 없었다 — 그래서 한 번 폴백하면 그 런 내내 굳었다 (P3).
+        % (used + 1, reason, focus or "(없음)",
+           ("\n\n" + cv_note) if cv_note else ""),
         "python scripts/pipeline/cli.py record --phase 01 --file <리뷰 json> "
         "--reviewer <code> --round %d --run-id %s" % (used + 1, s["run_id"]))
 
@@ -1593,8 +1658,11 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
 
     critical = [f for f in payload.get("findings") or []
                 if f.get("severity") == "critical" and _accepted(payload, f)]
-    s["cross_verify"] = dict(s.get("cross_verify") or {},
-                             mode=payload.get("mode") or "primary")
+    # **병합이지 덮어쓰기가 아니다.** 예전에는 02 의 `mode` 로 통째로 덮어
+    # 01 의 회차 기록이 사라졌다. 02 가 primary 로 돌았다고 해서 01 이 폴백
+    # 이었다는 사실이 없던 일이 되지 않는다.
+    st.note_cross_verify_round(s, "02", payload.get("mode") or "primary",
+                               payload.get("primary_error"))
     if critical:
         used, max_, exceeded = st.counter_inc(s, "xverify_return", 1)
         if exceeded and used > 1:

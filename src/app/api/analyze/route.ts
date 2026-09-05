@@ -154,7 +154,7 @@ export async function POST(request: Request): Promise<Response> {
 
   /* --- 2단계: 알라딘 대조 (동시성 12, 예산 12s) ------------------- */
 
-  // 조회 **전**에 줄인다. 확신도 하한과 80건 상한이 여기서 걸리지 않으면
+  // 조회 **전**에 줄인다. 확신도 하한과 65건 상한이 여기서 걸리지 않으면
   // 판독 한 번의 이상 동작이 알라딘 일일 한도를 한 요청에 소진시킨다 (FR-012).
   const { toLookup, unreadable } = reduceBeforeLookup(candidates);
 

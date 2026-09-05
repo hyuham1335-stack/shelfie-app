@@ -35,7 +35,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { BookCover } from "@/components/booklist/BookCover";
 import { BookList } from "@/components/booklist/BookList";
-import { ErrorBanner } from "@/components/common/ErrorBanner";
+import { ErrorBanner, MESSAGE } from "@/components/common/ErrorBanner";
 import { Notice } from "@/components/common/Notice";
 import { Skeleton } from "@/components/common/Skeleton";
 import { GuidedQuestions } from "@/components/mood/GuidedQuestions";
@@ -962,9 +962,21 @@ function ResolvePanelView({
         <Notice>알라딘에서 찾을 수 없는 책이에요 (원서·절판일 수 있어요)</Notice>
       )}
 
-      {/* 조회 실패는 데이터 문제가 아니다. 절판·원서 안내를 쓰지 않는다 (ADR-005) */}
+      {/*
+        조회 실패는 데이터 문제가 아니다. 절판·원서 안내를 쓰지 않는다 (ADR-005).
+
+        단절은 그중에서도 **사용자가 지금 고칠 수 있는** 실패다. 상류 장애 문구로
+        뭉치면 연결이 끊긴 사람에게 서버를 기다리라고 말하게 되고, 그러면 같은
+        `OFFLINE`에 배너와 이 패널이 서로 다른 말을 한다. 문구는 손으로 다시 적지
+        않고 `ErrorBanner`의 표에서 가져온다 — 표 전체를 쓰지 않는 이유는
+        `TIMEOUT`처럼 이 자리에서 뜻이 맞지 않는 문장이 섞여 있기 때문이다.
+      */}
       {panel.stage === "failed" && (
-        <Notice>지금 확인할 수 없었어요. 잠시 후 다시 시도해 주세요</Notice>
+        <Notice>
+          {panel.errorCode === "OFFLINE"
+            ? MESSAGE.OFFLINE
+            : "지금 확인할 수 없었어요. 잠시 후 다시 시도해 주세요"}
+        </Notice>
       )}
 
       {panel.candidates.length > 0 && (

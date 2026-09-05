@@ -41,8 +41,8 @@ describe("증폭 방지 상한 (TRD 10번 — 판독 한 번의 이상 동작이
     expect(MAX_CANDIDATES_PER_PHOTO).toBe(60);
   });
 
-  it("알라딘 조회 전 후보 총량은 80건으로 자른다 (TR-005)", () => {
-    expect(MAX_CANDIDATES_FOR_LOOKUP).toBe(80);
+  it("알라딘 조회 전 후보 총량은 65건으로 자른다 (TR-005)", () => {
+    expect(MAX_CANDIDATES_FOR_LOOKUP).toBe(65);
   });
 
   it("사용자에게 보여줄 알라딘 후보는 5건이다 (TR-008, ambiguous 후보와 같은 값)", () => {

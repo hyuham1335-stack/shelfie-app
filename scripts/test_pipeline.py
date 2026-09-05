@@ -791,7 +791,15 @@ class TestPhaseParser:
         ctx = cli.build_context(repo, paths, s)
         assert cli.resolve("${config.project.name}", ctx) == "shelfie"
         assert cli.resolve("${run.dir}/x.md", ctx).endswith("x.md")
-        assert cli.resolve("${calibration.derived.tests_ran_floor}", ctx) == 1179
+
+        # 기대값을 리터럴로 박지 않는다 — 이 칸은 `calibrate` 가 다시 잴 때마다
+        # 바뀌는 **실측값**이고, 숫자를 여기 적으면 재측정이 이 테스트를 깬다.
+        # 이 검사가 묻는 것은 값이 얼마인가가 아니라 `calibration` 네임스페이스가
+        # 파일까지 도달하는가다.
+        floor = json.loads(
+            (repo / "harness" / "calibration.json").read_text(encoding="utf-8")
+        )["derived"]["tests_ran_floor"]
+        assert cli.resolve("${calibration.derived.tests_ran_floor}", ctx) == floor
 
     def test_unresolved_placeholder_raises(self, repo, phases, request_file):
         paths, s = st.create_run(repo, "demo", request_file)
@@ -1213,6 +1221,31 @@ class TestReviewConvergence:
         assert env["exit"] == 0, env["render"]
 
 
+    def test_convergence_keeps_the_round_record(self, run01):
+        """수렴이 라운드 기록을 지우지 않는다 — 02 가 01 로 되돌릴 수 있다.
+
+        예전에는 수렴 경로가 `phases["01-plan"]["rounds"]` 에 **수렴 회차(정수)**
+        를 대입해 회차별 제출 기록을 통째로 날렸다. 01 이 다시 돌지 않으면
+        무해했지만, 02 의 Critical 이 01 로 되돌리는 경로가 처음 돌자
+        `_previous_open` 이 정수를 순회하려다 죽었다. 그리고 그 기록은
+        **단조성 검사가 근거로 삼는 것**이라, 죽지 않았더라도 이전 회차 지적이
+        조용히 사라지는 것을 더는 잡지 못했을 것이다.
+
+        그 정수를 읽는 소비자는 어디에도 없었다 — 순수한 손실이었다 (P3).
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        assert _submit_review(repo, paths, _review("plan"))["exit"] == 0
+        assert _submit_review(repo, paths, _review("xv"))["exit"] == 0
+
+        _, after = st.load(repo, paths.run_id)
+        node = after["phases"]["01-plan"]
+        assert st.phase_status(after, "01-plan") == "passed"
+        assert isinstance(node["rounds"], dict), node["rounds"]
+        assert set(node["rounds"]["1"]) == {"plan", "xv"}
+        assert node["converged_at_round"] == 1
+
+
 class TestCrossVerifySource:
     """폴백이 섞이면 1라운드 수렴이 막힌다 — 이 리포의 모든 런이 그랬다."""
 
@@ -1269,6 +1302,140 @@ class TestCrossVerifySource:
         (repo / ".claude" / "agents" / "plan-reviewer.md").unlink(missing_ok=True)
         bad = [c for c in cli._pipeline_checks(repo) if c["status"] == "FAIL"]
         assert any("plan-reviewer" in (c.get("message") or "") for c in bad), bad
+
+
+class TestCrossVerifyTransientFailure:
+    """primary 가 **있는데 지금 응답을 못 하는 것**은 부재가 아니다.
+
+    P3 는 상류가 503 을 내자 폴백으로 갈아탔고 **다섯 라운드 내내 폴백이
+    굳었다.** 같은 도구가 02 에서는 성공했다. 그런데 그 사실이 상태에도
+    보고서에도 남지 않았고, 폴백 xv 가 민 설계를 02 의 primary 가 Critical 로
+    반려하면서 왕복 예산 1회와 라운드 예산 다섯을 다 썼다.
+
+    앱 코드에 `lookup_failed` != `no_match` 를 요구하면서(ADR-005) 하네스가
+    "지금 못 함" 과 "없음" 을 한 어휘로 뭉개고 있었다.
+    """
+
+    def _fallback(self, round_=1, err=None):
+        r = _review("xv", round_=round_, mode="fallback")
+        if err:
+            r["primary_error"] = err
+        return r
+
+    def test_a_fallback_round_lands_in_the_run_summary(self, run01):
+        """라운드 제출이 런 요약에 접힌다 — 예전에는 slot 에만 들어갔다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+
+        _, after = st.load(repo, paths.run_id)
+        cv = after["cross_verify"]
+        assert cv["rounds"]["1"] == "fallback", cv
+        assert cv["degraded_rounds"] == 1, cv
+        # config 가 선언한 것과 실제로 관측한 것은 다른 값이다
+        assert cv["configured"] == "primary", cv
+        assert cv["mode"] == "fallback", cv
+
+    def test_a_transient_failure_is_not_an_absence(self, run01):
+        """`primary_error` 의 유무가 일시 실패와 부재를 가른다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback(err="HTTP 503 high demand"))
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["cross_verify"]["last_primary_error"] == "HTTP 503 high demand"
+
+    def test_an_absence_leaves_no_error(self, run01):
+        """primary 가 애초에 없던 런은 `last_primary_error` 가 비어 있다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["cross_verify"]["last_primary_error"] is None
+
+    def test_the_next_round_packet_asks_to_retry_primary(self, run01):
+        """봉투가 라운드마다 교차검증기를 다시 말한다.
+
+        예전에는 `## 교차검증` 절이 `render_packet` 에서만 나왔고 그건 `next`
+        에서만 불렸다. 01 의 루프는 `record -> record` 라 그 말을 다시 할
+        경로가 **물리적으로 없었다.**
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        finding = {"id": "F-1", "severity": "major", "title": "범위",
+                   "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("plan", findings=[finding]))
+        env = _submit_review(repo, paths,
+                             self._fallback(err="HTTP 503 high demand"))
+
+        assert env["exit"] == 0, env["render"]
+        assert "## 교차검증" in env["render"], env["render"]
+        assert "다시 시도" in env["render"], env["render"]
+        # 도구 이름은 config 에서 온다 — 코어에 박지 않는다
+        primary = json.loads(
+            (repo / "harness" / "config.json").read_text(encoding="utf-8")
+        )["cross_verify"]["primary"]
+        assert primary in env["render"], env["render"]
+
+    def test_a_fallback_round_degrades_the_grade(self, run01):
+        """폴백은 통과가 아니다 — `external:disabled` 와 같은 형태다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+        # 폴백이 섞이면 1라운드 수렴이 막히므로 2라운드를 돌려 수렴시킨다
+        _submit_review(repo, paths, _review("plan", round_=2), round_=2)
+        _submit_review(repo, paths, _review("xv", round_=2), round_=2)
+
+        _, after = st.load(repo, paths.run_id)
+        assert "cross_verify:fallback" in (after.get("gaps") or []), after.get("gaps")
+        assert after["grade"] == "PASS_WITH_GAPS", after["grade"]
+
+    def test_02_does_not_erase_the_round_history(self, run01):
+        """02 가 primary 로 돌았다고 01 의 폴백이 없던 일이 되지 않는다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback(err="HTTP 503 high demand"))
+        _submit_review(repo, paths, _review("plan", round_=2), round_=2)
+        _submit_review(repo, paths, _review("xv", round_=2), round_=2)
+
+        v = paths.run_dir / "02_verdict.json"
+        v.write_text(json.dumps({"reviewer": "xv", "mode": "primary",
+                                 "status": "ok", "findings": [],
+                                 "adopted": [], "resolved_from_previous": []},
+                                ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "02_verdict.raw.md").write_text("# 판정\n", encoding="utf-8")
+        cli.run_record(repo, phase="02", file=str(v), reviewer=None, round_=None)
+
+        _, after = st.load(repo, paths.run_id)
+        cv = after["cross_verify"]
+        assert cv["rounds"]["1"] == "fallback", cv
+        assert cv["degraded_rounds"] >= 1, cv
+        assert cv["mode"] == "fallback", cv
+
+    def test_mode_vocabulary_is_locked(self, run01):
+        """`mode` 어휘를 늘리지 않는다 — `converged` 가 새 값을 놓치면
+        조용히 1라운드 수렴이 열린다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        env = _submit_review(repo, paths,
+                             _review("xv", mode="fallback_after_failure"))
+        assert env["exit"] == 8, env["render"]
+        assert "mode" in env["render"]
+
+    def test_primary_error_on_a_primary_submission_is_rejected(self, run01):
+        """그 필드는 **폴백으로 갈아탄 이유**이지 성공한 런의 기록이 아니다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        payload = _review("xv", mode="primary")
+        payload["primary_error"] = "HTTP 503"
+        env = _submit_review(repo, paths, payload)
+        assert env["exit"] == 8, env["render"]
 
 
 class TestInitAndNext:

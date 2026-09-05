@@ -791,7 +791,15 @@ class TestPhaseParser:
         ctx = cli.build_context(repo, paths, s)
         assert cli.resolve("${config.project.name}", ctx) == "shelfie"
         assert cli.resolve("${run.dir}/x.md", ctx).endswith("x.md")
-        assert cli.resolve("${calibration.derived.tests_ran_floor}", ctx) == 1179
+
+        # 기대값을 리터럴로 박지 않는다 — 이 칸은 `calibrate` 가 다시 잴 때마다
+        # 바뀌는 **실측값**이고, 숫자를 여기 적으면 재측정이 이 테스트를 깬다.
+        # 이 검사가 묻는 것은 값이 얼마인가가 아니라 `calibration` 네임스페이스가
+        # 파일까지 도달하는가다.
+        floor = json.loads(
+            (repo / "harness" / "calibration.json").read_text(encoding="utf-8")
+        )["derived"]["tests_ran_floor"]
+        assert cli.resolve("${calibration.derived.tests_ran_floor}", ctx) == floor
 
     def test_unresolved_placeholder_raises(self, repo, phases, request_file):
         paths, s = st.create_run(repo, "demo", request_file)

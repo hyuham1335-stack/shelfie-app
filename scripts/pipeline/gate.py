@@ -21,9 +21,11 @@ import harness  # noqa: E402
 import adapters  # noqa: E402
 import attribution as attr  # noqa: E402
 import contract as contract_mod  # noqa: E402
+import state as st  # noqa: E402
 
-GRADE_PASS = "PASS"
-GRADE_GAPS = "PASS_WITH_GAPS"
+# 등급 어휘의 단일 출처는 `state.GRADES` 다. 여기서 문자열을 다시 적으면
+# 두 곳이 갈라지고, 갈라진 것을 알아차리는 것은 갈라진 뒤다.
+GRADE_PASS, GRADE_GAPS, GRADE_INCOMPLETE = st.GRADES
 
 
 def replay_runner(fixture_dir):
@@ -101,12 +103,18 @@ def run_gate(root, config, adapter, calibration, state, phase_front,
         "schema": 1, "at": None, "stages": results, "gaps": gaps,
         "contract": {"units": len(parsed.get("units") or []) if parsed else 0,
                      "entrypoints": len(parsed.get("entrypoints") or []) if parsed else 0,
-                     "unmatched": (parsed or {}).get("unmatched") or []},
+                     "unmatched": (parsed or {}).get("unmatched") or [],
+                     "scope": (parsed or {}).get("scope")},
         "calibration": {"present": bool(calibration),
                         "partial": bool((calibration or {}).get("partial")),
                         "adapter_verified": bool(adapter.get("verified"))},
         "rules_inactive": attr.rules_inactive(adapter),
     }
+    # **scoped 가 사실상 full 이면 그렇게 부르지 않는다.** 선택자를 넓히면
+    # 이 자리가 새 조용한 통과가 된다 — "scoped 통과" 라고 적으면서 전체를
+    # 도는 것은 M16 이 잰 절감이 사라진 것이고, 아무도 모른다.
+    if parsed and (parsed.get("scope") or {}).get("degenerate"):
+        gaps.append("scoped_degenerate")
     if not calibration:
         gaps.append("uncalibrated_run")
     if not adapter.get("verified"):
@@ -182,6 +190,10 @@ def _parse_contract(root, config, state, replay):
     parsed["selectors"] = sel["paths"]
     parsed["unmatched"] = sel["unmatched"]
     parsed["entrypoint_resolver"] = sel["entrypoint_resolver"]
+    parsed["scope"] = {"selected": sel.get("selected"),
+                       "test_files": sel.get("test_files"),
+                       "ratio": sel.get("selected_ratio"),
+                       "degenerate": bool(sel.get("degenerate"))}
     return parsed
 
 

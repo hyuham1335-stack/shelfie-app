@@ -176,11 +176,26 @@ def test_selectors(root, config, adapter, parsed, repo_files=None):
 
     paths = []
     for src in sources:
-        for t in _tests_for_source(src, tests):
+        got = _tests_for_source(root, src, tests, parsed)
+        if not got:
+            # **조용히 0경로를 기여하지 않는다.** 컨테이너는 풀렸는데 대응
+            # 테스트가 없는 소스가 지금까지 `unmatched` 에 남지 않아, scoped 가
+            # 실제보다 좁게 돌고 아무도 몰랐다 (M28).
+            unmatched.append({"kind": "source", "raw": src,
+                              "why": "대응 테스트를 찾지 못했다"})
+        for t in got:
             if t not in paths:
                 paths.append(t)
+
+    # **넓히면 퇴화를 재야 한다.** 선택 경로가 전체 테스트에 가까우면 그것은
+    # scoped 가 아니라 full 이고, "scoped 통과" 라고 적는 것이 새 자리의
+    # 조용한 통과가 된다.
+    ratio = (float(len(paths)) / len(tests)) if tests else 0.0
     return {"paths": sorted(paths), "unmatched": unmatched,
-            "entrypoint_resolver": resolver}
+            "entrypoint_resolver": resolver,
+            "selected": len(paths), "test_files": len(tests),
+            "selected_ratio": round(ratio, 3),
+            "degenerate": bool(tests) and ratio >= DEGENERATE_RATIO}
 
 
 def _source_for_container(container, files):
@@ -211,7 +226,33 @@ def _source_for_entrypoint(adapter, ep, files):
     return None
 
 
-def _tests_for_source(src, tests):
-    """소스의 stem 으로 시작하는 테스트 파일 전부."""
+# scoped 가 사실상 full 이 되는 지점. 넘으면 퇴화로 표기한다.
+DEGENERATE_RATIO = 0.9
+
+
+def _tests_for_source(root, src, tests, parsed=None):
+    """이 소스를 검증하는 테스트 파일. **stem 일치 ∪ 내용 참조.**
+
+    stem 일치만 보면 `page.tsx` → `edge-cases.test.tsx` 같은 통합 테스트가
+    빠져 **수리 루프 안에서 한 번도 안 돌고** `full` 이 뒤에서 잡는다 (M28).
+
+    내용 참조는 소스의 stem 을 **경로 형태로** 찾는다(`./match`·`/match'`).
+    stem 을 그냥 포함으로 보면 `match` 가 `mismatch.test.ts` 를 끌고 오고,
+    `id`·`api` 같은 짧은 stem 은 사실상 전체를 고른다.
+
+    스택 지식은 넣지 않는다 — 확장자도 네이밍 규칙도 보지 않고 문자열만 본다.
+    """
     stem = Path(src).name.split(".")[0]
-    return [t for t in tests if Path(t).name.split(".")[0] == stem]
+    out = [t for t in tests if Path(t).name.split(".")[0] == stem]
+    needles = ["/%s'" % stem, '/%s"' % stem, "/%s.js" % stem, "/%s'" % stem]
+    needles += ["'%s'" % stem, '"%s"' % stem]
+    for t in tests:
+        if t in out:
+            continue
+        try:
+            text = (Path(root) / t).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if any(n in text for n in needles):
+            out.append(t)
+    return out

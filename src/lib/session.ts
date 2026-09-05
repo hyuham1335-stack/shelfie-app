@@ -18,7 +18,7 @@
  * 문서 없이 우회하는 것이다.
  */
 import { MAX_IDENTIFIED_BOOKS, MAX_UNIDENTIFIED_BOOKS } from "./env";
-import type { AnalyzeResponse, ErrorCode, MoodQuestion, Recommendation } from "@/types/api";
+import type { AnalyzeResponse, ClientErrorCode, MoodQuestion, Recommendation } from "@/types/api";
 import type {
   BookReference,
   IdentifiedBook,
@@ -117,8 +117,13 @@ interface SessionData {
   shortfall: boolean;
   /** 재추천 횟수. `MAX_RECOMMEND_ATTEMPTS`에 걸리면 더 못 누른다 (FR-010) */
   recommendCount: number;
-  /** 화면이 읽는 실패 사유. `error` 상태에서는 반드시 채워져 있다 */
-  errorCode: ErrorCode | null;
+  /**
+   * 화면이 읽는 실패 사유. `error` 상태에서는 반드시 채워져 있다.
+   *
+   * 서버 어휘가 아니라 `ClientErrorCode`다 — 네트워크 단절(`OFFLINE`)은 응답이
+   * 아니라 클라이언트의 관측이고, 그래도 화면이 읽는 자리는 여기 하나다.
+   */
+  errorCode: ClientErrorCode | null;
   /**
    * 어느 단계에서 실패했는가. `error` 상태에서는 반드시 채워져 있고, 그 밖의
    * 상태에서는 **반드시 비어 있다** — 남겨 두면 "직전에 실패했었다"가 성공
@@ -149,7 +154,7 @@ export type SessionState =
   | WithStatus<"guidedQuestions">
   | WithStatus<"recommending">
   | WithStatus<"result">
-  | WithStatus<"error", { errorCode: ErrorCode; failedStage: FailedStage }>;
+  | WithStatus<"error", { errorCode: ClientErrorCode; failedStage: FailedStage }>;
 
 /* ------------------------------------------------------------------ *
  * 액션 — 이름은 ARCHITECTURE 상태도의 전이 라벨을 따른다
@@ -168,7 +173,7 @@ export type SessionAction =
   /** analyzing → reviewing | unidentifiedOnly */
   | { type: "ANALYZE_SUCCEEDED"; result: AnalyzeResponse }
   /** analyzing → emptyShelf(EMPTY_SHELF) | error */
-  | { type: "ANALYZE_FAILED"; code: ErrorCode; requestId: string | null }
+  | { type: "ANALYZE_FAILED"; code: ClientErrorCode; requestId: string | null }
   /** unidentifiedOnly → reviewing, reviewing → reviewing (미확인 책 수정·재검색) */
   | { type: "BOOK_RESOLVED"; rawText: string; book: ResolvedCandidate }
   /** reviewing → moodInput (추천 단계로 이동) */
@@ -186,7 +191,7 @@ export type SessionAction =
   /** recommending → result */
   | { type: "RECOMMEND_SUCCEEDED"; recommendations: Recommendation[]; shortfall: boolean }
   /** recommending → moodInput(무관한 입력·검증 실패) | error(외부 API 오류) */
-  | { type: "RECOMMEND_FAILED"; code: ErrorCode; requestId: string | null }
+  | { type: "RECOMMEND_FAILED"; code: ClientErrorCode; requestId: string | null }
   /** result → moodInput (다시 추천받기) */
   | { type: "RECOMMEND_AGAIN" }
   /**

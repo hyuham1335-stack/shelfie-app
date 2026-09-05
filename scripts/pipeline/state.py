@@ -41,16 +41,43 @@ RUNS_REL = "_workspace/runs"
 #               그것이 정확한 서술이다.
 PHASE_STATUS = ("running", "passed", "failed", "escalated", "skipped")
 
-COUNTERS = ("round", "repair", "xverify_return")
+# 런 상태 어휘. 셋 다 예전에는 리터럴로 세 곳에 흩어져 있었고, `done` 은
+# **거르는 쪽(`latest_run_id`)만 있고 쓰는 쪽이 없었다** — 그래서 어떤 런도
+# 닫히지 않았다 (M24).
+# `abandoned` 는 "이어질 일이 없다" 다. `done`(완주)과 갈라 두는 이유는
+# 보고서와 원장이 둘을 같은 것으로 읽으면 안 되기 때문이고, `active` 로
+# 남겨 두지 않는 이유는 **이어지지 않을 런이 이어질 것처럼 보이는 것 자체가
+# 거짓**이기 때문이다.
+RUN_STATUS = ("active", "escalated", "done", "abandoned")
 
-# 닫힌 어휘다. budget.model_calls 가 next/record 이벤트 수에서 유도되는
-# 근사치이므로, 어휘가 열려 있으면 그 근사치의 정의가 조용히 흔들린다.
+# `latest_run_id` 가 기본값으로 집지 않는 상태. `escalated` 는 빠져 있다 —
+# 재개 가능한 런이고, 안 집으면 사람의 판단을 기다리는 런이 화면에서 사라진다.
+TERMINAL_STATUS = ("done", "abandoned")
+
+# `on_success` 의 종단 센티널. team-spec §1 의 페이즈 표가 08 의 성공 시
+# 다음을 `done` 이라 적는다 — 페이즈 id 가 아니라 "여기서 끝" 이라는 표식이다.
+DONE = "done"
+
+COUNTERS = ("round", "repair", "xverify_return", "review_repair", "pr_repair")
+
+# 닫힌 어휘다. budget.model_calls 가 봉투의 지시에서 유도되므로, 어휘가
+# 열려 있으면 그 값의 정의가 조용히 흔들린다.
 EVENT_KINDS = (
     "run_created", "phase_enter", "phase_pass", "phase_fail", "phase_skip",
     "submit_received", "check_fail",
+    # `check_fail` 은 "제출이 규약을 어겼다", `reviewer_failed` 는 "그 리뷰어가
+    # 아예 안 돌았다" 다. 뭉치면 원장에서 **형식 문제와 미수행이 같아 보이고**,
+    # 05 의 라우팅 결함 진단이 불가능해진다.
+    "reviewer_failed",
     "stage_start", "stage_done", "stage_skipped",
     "attribution", "dispatch", "counter_inc",
     "escalated", "resumed", "horizon",
+    # `horizon` 은 "다음 페이즈가 아직 없다", `run_closed` 는 "런이 끝났다" 다.
+    # 하나로 뭉치면 미완성 실행기와 완주한 런을 원장에서 구분할 수 없다.
+    "run_closed",
+    # 06~08. 승인·PR·승격은 "일어났다"가 사후에 확인 가능해야 하는 사건이고,
+    # 그 셋 다 외부 상태를 건드린다 — 이벤트가 없으면 되돌아볼 기록이 없다.
+    "approved", "approval_revoked", "pr_pushed", "pr_opened", "promoted",
 )
 
 GRADES = ("PASS", "PASS_WITH_GAPS", "INCOMPLETE")
@@ -171,9 +198,12 @@ def create_run(root, slug, request_path, profile=None, seed_bytes=None, now=None
         "cross_verify": {"mode": _cross_verify_mode(config)},
         "grade": None,
         "gaps": [],
-        "budget": {"model_calls": {"total": 0,
-                                   "max": (config.get("budget") or {}).get("model_calls_max"),
-                                   "approx": True, "by_phase": {}}},
+        "budget": {"model_calls": {
+            "total": 0,
+            "max": (config.get("budget") or {}).get("model_calls_max"),
+            "basis": BUDGET_BASIS,
+            "blind_spots": list(BUDGET_BLIND_SPOTS),
+            "by_phase": {}, "counted": []}},
     }
     save(paths, s)
     append_event(paths, "run_created", cmd="init", phase="01-plan",
@@ -252,7 +282,7 @@ def latest_run_id(root, include_done=False):
             s = json.loads((d / "state.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if include_done or s.get("run_status") != "done":
+        if include_done or s.get("run_status") not in TERMINAL_STATUS:
             return s.get("run_id") or d.name
         best = best or (s.get("run_id") or d.name)
     return best
@@ -322,21 +352,85 @@ def counter_inc(s, name, max_):
     return node["used"], max_, node["used"] >= max_ if max_ is not None else False
 
 
-def bump_model_calls(s, phase, n=1):
-    """(total, max, exhausted). 예산이 없으면(max=None) 소진되지 않는다.
+def demote(s, grade, gap=None):
+    """등급을 **강등만** 한다. 반환: 최종 등급.
 
-    **과다 계수가 안전 방향이다.** 이 숫자는 제출 수에서 유도한 근사치이고
-    (`approx: true`), 재제출은 그 전에 모델을 한 번 태운 뒤이므로 함께 센다.
-    일찍 걸리는 것이 영원히 안 걸리는 것보다 낫다 — 재지 않는 예산은 소진되지
-    않아 exit 5 가 발화하지 못한다.
+    이 함수가 있기 전에는 세 곳이 `s["grade"] = ...` 를 직접 대입했고
+    (게이트 · 02 스킵 · 05 판정), **나중에 쓰는 쪽이 이겼다.** 게이트가
+    나중에 돌면 05 가 남긴 `PASS_WITH_GAPS` 가 `PASS` 로 되돌아간다 —
+    한 번 드러난 결손이 조용히 사라지는 경로다.
+
+    등급은 `GRADES` 의 인덱스가 클수록 나쁘고, 더 나쁜 쪽으로만 움직인다.
+    `gap` 을 주면 `gaps` 에 중복 없이 더한다 — 등급만 떨어지고 사유가 없으면
+    보고서가 "무엇을 건너뛰었는가"를 적을 수 없다 (§E12 가 나열을 요구한다).
     """
+    if grade is not None and grade not in GRADES:
+        raise ValueError("알 수 없는 등급: %r (%s)" % (grade, ", ".join(GRADES)))
+    if gap and gap not in s.setdefault("gaps", []):
+        s["gaps"].append(gap)
+    cur = s.get("grade")
+    if grade is None:
+        return cur
+    if cur is None or GRADES.index(grade) > GRADES.index(cur):
+        s["grade"] = grade
+    return s.get("grade")
+
+
+# `model_calls` 의 관측 단위. **실행기는 모델 호출을 볼 수 없다** — 모델이
+# 기동하고 실행기는 결과만 받는다(ADR-H014). 그래서 볼 수 있는 것을 센다:
+# **봉투가 에이전트 기동을 지시한 횟수.**
+BUDGET_BASIS = "instructed"
+
+# 이 기준이 틀리는 두 방향. 보고서가 이것을 그대로 적는다 — 한쪽으로만
+# 틀리는 값이 아니므로 "하한" 이라고 부르면 그것도 재지 않은 주장이 된다.
+BUDGET_BLIND_SPOTS = (
+    "모델이 스스로 낸 호출은 세지 못한다 (과소)",
+    "지시를 메인이 대신 처리하면 센 것이 실제로 안 일어난다 (과다)",
+)
+
+
+def _budget_node(s):
     node = s.setdefault("budget", {}).setdefault(
-        "model_calls", {"total": 0, "max": None, "approx": True, "by_phase": {}})
+        "model_calls", {"total": 0, "max": None, "by_phase": {}})
+    node["basis"] = BUDGET_BASIS
+    node["blind_spots"] = list(BUDGET_BLIND_SPOTS)
+    node.pop("approx", None)            # "근사" 는 무엇이 근사인지 말하지 못한다
+    node.setdefault("counted", [])
+    return node
+
+
+def bump_model_calls(s, phase, n=1):
+    """(total, max, exhausted). 예산이 없으면(max=None) 소진되지 않는다."""
+    node = _budget_node(s)
     node["total"] = node.get("total", 0) + n
     by = node.setdefault("by_phase", {})
     by[phase] = by.get(phase, 0) + n
     max_ = node.get("max")
     return node["total"], max_, (max_ is not None and node["total"] >= max_)
+
+
+def count_instructions(s, phase, keys):
+    """봉투가 낸 **에이전트 기동 지시**를 센다. 반환: (total, max, exhausted).
+
+    키가 필요한 이유는 `next` 가 같은 페이즈에서 여러 번 불릴 수 있기
+    때문이다 — 같은 지시를 두 번 세면 계수가 왕복 횟수를 센다. 이미 센 키는
+    다시 세지 않는다.
+
+    **제출을 세지 않고 지시를 세는 이유** (M26): 제출 기준은 두 방향으로
+    틀렸다. 02 교차검증·07 내장 리뷰·04 의 수리 배정은 `record --reviewer` 를
+    남기지 않아 안 세지고(과소), 리뷰어 출력의 형식만 메인이 고쳐 재제출하면
+    새 모델 호출 없이 세진다(과다). 지시 기준은 **한 방향으로만** 틀리고 그
+    방향에 이름을 붙일 수 있다.
+    """
+    node = _budget_node(s)
+    seen = node["counted"]
+    fresh = [k for k in keys if k not in seen]
+    if not fresh:
+        max_ = node.get("max")
+        return (node.get("total", 0), max_,
+                (max_ is not None and node.get("total", 0) >= max_))
+    seen.extend(fresh)
+    return bump_model_calls(s, phase, len(fresh))
 
 
 # ------------------------------------------------------------------ 지문
@@ -356,63 +450,70 @@ def _in_scope(config, path):
     return any(harness.owns_file(role, path) for role in (config.get("roles") or []))
 
 
-def _porcelain_paths(root):
-    r = harness._git(root, "status", "--porcelain", "-z", "--untracked-files=all")
-    if r is None or r.returncode != 0:
-        return None
-    out, fields = [], [f for f in r.stdout.split("\0") if f]
-    i = 0
-    while i < len(fields):
-        entry = fields[i]
-        if len(entry) < 4:
-            i += 1
-            continue
-        code, path = entry[:2], entry[3:]
-        out.append(path)
-        if code[0] in ("R", "C") and i + 1 < len(fields):
-            out.append(fields[i + 1])
-            i += 1
-        i += 1
-    return out
+def _nul_split(result):
+    return [f for f in result.stdout.split("\0") if f] if result else []
+
+
+def _candidate_files(root):
+    """(경로 목록, algo). 지문에 들어갈 후보를 센다 — 소유 판정은 뒤에서 한다.
+
+    추적 파일에 **미추적·비무시** 파일을 더한다. 03 이 방금 쓴 파일은 아직
+    `git add` 전이고, 그것을 빼면 게이트가 보지 않은 코드가 영수증을 통과한다.
+    `--exclude-standard` 가 없으면 `.gitignore` 가 뺀 `_workspace/` 가 들어와
+    커맨드마다 지문이 바뀐다.
+    """
+    tracked = harness._git(root, "ls-files", "-z")
+    if tracked is None or tracked.returncode != 0:
+        # git 이 없다. 워크 탐색은 `.gitignore` 대신 WALK_SKIP 을 따르므로
+        # **다른 모집단을 센다** — algo 를 갈라 둘이 우연히 같아도 안 맞게 한다.
+        return harness.list_files(root), "walk-sha256"
+    others = harness._git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    paths = set(_nul_split(tracked))
+    if others is not None and others.returncode == 0:
+        paths |= set(_nul_split(others))
+    return sorted(paths), "tree-sha256"
 
 
 def fingerprint(root, config, now=None):
-    """커밋 상태 + 소유 범위 미커밋 변경의 **내용** 해시.
+    """소유 범위 파일 **내용**의 해시. HEAD 는 보지 않는다.
 
-    - HEAD 만 보면 워킹트리 수정을 놓치고, status 만 보면 변경이 커밋으로
-      옮겨간 것을 놓친다. 둘 다 본다.
+    - **커밋이 지문을 바꾸지 않는다.** 예전에는 `HEAD + 미커밋 파일 해시` 라
+      06 이 PR diff 를 위해 요구하는 커밋이 04 영수증을 **반드시** 낡게 만들었다
+      — 바이트가 하나도 안 바뀌었는데도. 영수증이 증언하는 것은 "게이트가
+      무엇을 테스트했는가" 이고 그것은 커밋 여부가 아니라 내용이다 (M25).
     - **mtime 을 쓰지 않는다.** 되돌렸다가 같은 내용으로 다시 쓴 파일은
       지문이 같아야 한다 — 아니면 advance 가 늘 거부한다.
+    - **없는 파일은 넣지 않는다.** `ABSENT` 표식을 쓰면 "삭제 미커밋"(인덱스에
+      남아 표식이 붙는다)과 "삭제 커밋"(목록에서 사라진다)이 다른 값이 되어
+      커밋 중립성에 삭제 모양의 구멍이 남는다. 생략하면 둘이 같고, 삭제 이전
+      지문과는 여전히 다르다 — "삭제도 변경이다" 는 지켜진다.
     - scope_globs_sha1 은 roles[].owns 가 런 도중 바뀐 것을 잡는다 (M19 와 같은 규율).
     """
     root = Path(root)
-    head = harness._git(root, "rev-parse", "HEAD")
-    changed = _porcelain_paths(root)
-    if changed is None:
-        algo, inputs = "fs-sha256", []
-        for rel in harness.list_files(root):
-            if _in_scope(config, rel):
-                inputs.append("F\t%s\t%s" % (rel, _sha256_file(root / rel)))
-    else:
-        algo = "git-sha256"
-        head_val = head.stdout.strip() if head and head.returncode == 0 else "NO-HEAD"
-        inputs = ["HEAD\t%s" % head_val]
-        for rel in changed:
-            if _in_scope(config, rel):
-                inputs.append("W\t%s\t%s" % (rel, _sha256_file(root / rel)))
+    candidates, algo = _candidate_files(root)
+    inputs = []
+    for rel in candidates:
+        if not _in_scope(config, rel):
+            continue
+        digest = _sha256_file(root / rel)
+        if digest is None:                      # 삭제됐다 — 항목을 만들지 않는다
+            continue
+        inputs.append("C\t%s\t%s" % (rel, digest))
 
     value = hashlib.sha256("\n".join(sorted(inputs)).encode("utf-8")).hexdigest()
     return {"algo": algo, "value": value, "at": stamp(now),
             "scope_globs_sha1": _scope_signature(config),
+            # **뜻이 바뀌었다** — 예전에는 HEAD 줄을 포함한 입력 줄 수(=변경
+            # 파일 수 + 1)였고 지금은 해시한 소유 범위 파일 수다.
             "file_count": len(inputs)}
 
 
 def _sha256_file(path):
-    """없는 파일(삭제됨)은 고정 표식 — 삭제도 변경이다."""
+    """없는 파일(삭제됨)은 None — 호출부가 항목을 생략한다."""
     try:
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
     except OSError:
-        return "ABSENT"
+        return None
 
 
 def fingerprint_matches(saved, fresh):
@@ -428,6 +529,30 @@ def fingerprint_matches(saved, fresh):
     if saved.get("scope_globs_sha1") != fresh.get("scope_globs_sha1"):
         return False
     return saved.get("value") == fresh.get("value")
+
+
+# ------------------------------------------------------------------ 런 종료
+
+def close_run(s, now=None, status=DONE, reason=None):
+    """런을 닫는다. **`run_status` 를 종단으로 옮기는 유일한 자리다.**
+
+    `demote` 가 등급의 단일 출처인 것과 같은 규율이다 — 대입이 여러 곳으로
+    흩어지면 되돌리는 경로가 조용히 생긴다. `escalate` 의 대칭 짝이고, 둘 다
+    런의 수명을 끝내는 쪽으로만 움직인다.
+
+    `status` 를 파라미터로 둔 것은 종단이 둘이기 때문이다 — 08 이 닫는
+    `done` 과 사람이 버리는 `abandoned`. **함수를 새로 만들면 대입이 둘로
+    갈라져 위의 규율이 실제로 깨진다** (ADR-H016 이 지키려던 것은 "대입
+    자리가 하나" 이지 "호출자가 하나" 가 아니다).
+    """
+    if status not in TERMINAL_STATUS:
+        raise ValueError("종단 상태가 아니다: %r (%s)"
+                         % (status, ", ".join(TERMINAL_STATUS)))
+    s["run_status"] = status
+    s["closed_at"] = stamp(now)
+    if reason:
+        s["closed_reason"] = reason
+    return s
 
 
 # ------------------------------------------------------------------ 에스컬레이션
@@ -482,6 +607,11 @@ def envelope(cmd, ok, exit_, state, data, render, next_command):
             "escalated": bool(s.get("escalated")),
             "grade": s.get("grade"),
             "gaps": s.get("gaps") or [],
+            # 06~08. 승인과 PR 은 모델이 다음 행동을 고르는 데 필요한 사실이고,
+            # 봉투에 없으면 모델이 state.json 을 직접 열어 읽게 된다 — 그것이
+            # "봉투에서 읽는 것은 render 와 next_command 둘뿐" 이라는 계약을 깬다.
+            "approval": s.get("approval") or {},
+            "pr": s.get("pr") or {},
         },
         "data": data or {},
         "render": render or "",

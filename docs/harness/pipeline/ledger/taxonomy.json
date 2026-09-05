@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "_note": "스택 비종속 코드만 시드로 배포한다. 프로젝트가 코드를 **추가**하는 것은 자유이고, doctor 와 lint-phases 가 유니크·어휘·rule 참조 실재를 검증한다. status 가 active 이고 enforceable 이 prose 가 아닌 것만 05 의 '검토 제외' 목록에 들어간다 — 기계 강제 규칙이 늘수록 05 가 자동으로 싸지고 좁아진다.",
+  "categories": [
+    {
+      "code": "BOUNDARY_VIOLATION",
+      "enforceable": "lint",
+      "rule": "no-restricted-imports",
+      "status": "active",
+      "note": "레이어 경계를 넘는 import"
+    },
+    {
+      "code": "NAMING",
+      "enforceable": "lint",
+      "rule": "naming-convention",
+      "status": "active",
+      "note": "네이밍 규약 위반"
+    },
+    {
+      "code": "RESPONSE_SHAPE",
+      "enforceable": "lint",
+      "rule": "response-shape",
+      "status": "proposed",
+      "note": "응답 형태의 일관성. 어휘만 두고 규칙은 아직 없다"
+    },
+    {
+      "code": "INPUT_VALIDATION",
+      "enforceable": "lint",
+      "rule": "input-validation",
+      "status": "proposed",
+      "note": "경계에서의 입력 검증 누락"
+    },
+    {
+      "code": "AUTHZ_MISSING_RULE",
+      "enforceable": "prose",
+      "status": "active",
+      "note": "인가 규칙 누락. 캐치올 위치는 기계가 판정하지 못한다"
+    },
+    {
+      "code": "MIG_DESTRUCTIVE",
+      "enforceable": "check",
+      "status": "active",
+      "rule": "migration",
+      "note": "되돌릴 수 없는 스키마 변경"
+    },
+    {
+      "code": "MIG_MISSING",
+      "enforceable": "check",
+      "status": "proposed",
+      "rule": "migration",
+      "note": "스키마 변경에 마이그레이션이 없다"
+    },
+    {
+      "code": "TX_BOUNDARY",
+      "enforceable": "prose",
+      "status": "active",
+      "note": "트랜잭션 경계"
+    },
+    {
+      "code": "CONCURRENCY",
+      "enforceable": "prose",
+      "status": "active",
+      "note": "동시성·락 순서"
+    },
+    {
+      "code": "TEST_MISSING_FAILURE_PATH",
+      "enforceable": "prose",
+      "status": "active",
+      "note": "실패 경로가 테스트되지 않았다"
+    },
+    {
+      "code": "CONTRACT_DEFECT",
+      "enforceable": "none",
+      "status": "escalate_only",
+      "note": "계약은 메인 단독 소유다. 수리가 아니라 에스컬레이션이고 자동 승격 대상이 아니다"
+    },
+    {
+      "code": "other/*",
+      "enforceable": "prose",
+      "status": "unpromotable",
+      "note": "분류되지 않은 것. 어휘 밖으로 새지 않게 받아 두되 승격하지 않는다"
+    }
+  ]
+}

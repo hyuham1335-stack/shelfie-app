@@ -16,10 +16,10 @@
  * `photoIndex`를 `0`으로 지어내지 않는 것과 같은 종류의 위조다.
  */
 import { useState } from "react";
-import type { ErrorCode } from "@/types/api";
+import type { ClientErrorCode } from "@/types/api";
 
 /** 에러 코드별로 사용자 언어의 정해진 문구를 쓴다. 필드 경로·zod 원문은 노출하지 않는다 */
-const MESSAGE: Record<ErrorCode, string> = {
+const MESSAGE: Record<ClientErrorCode, string> = {
   INVALID_REQUEST: "요청을 처리할 수 없어요. 입력을 확인하고 다시 시도해 주세요",
   TOO_MANY_PHOTOS: "사진은 최대 5장까지 올릴 수 있어요",
   UNSUPPORTED_IMAGE_TYPE: "JPG·PNG·WEBP 사진만 올릴 수 있어요",
@@ -31,6 +31,10 @@ const MESSAGE: Record<ErrorCode, string> = {
   IRRELEVANT_MOOD: "책 고르는 데 참고할 내용을 적어 주세요",
   RATE_LIMITED: "요청이 몰렸어요. 잠시 후 다시 시도해 주세요",
   UPSTREAM_UNAVAILABLE: "지금 책을 확인할 수 없어요. 잠시 후 다시 시도해 주세요",
+  // 클라이언트에서만 나는 코드다. 502와 **문구를 나눈다** — 상류 장애는 기다리는
+  // 것이 할 일이지만 단절은 사용자가 지금 고칠 수 있는 것이고, 같은 문장으로
+  // 뭉치면 연결이 끊긴 사람에게 상류를 기다리라고 말하게 된다 (PRD 엣지 케이스).
+  OFFLINE: "인터넷 연결을 확인해 주세요",
   RECOMMENDATION_VALIDATION_FAILED:
     "추천을 만들지 못했어요. 잠시 후 다시 시도해 주세요",
   TIMEOUT: "시간이 오래 걸려 중단됐어요. 사진 장수를 줄여 다시 시도해 주세요",
@@ -45,7 +49,7 @@ const MESSAGE: Record<ErrorCode, string> = {
 const FALLBACK_MESSAGE = "문제가 생겼어요. 잠시 후 다시 시도해 주세요";
 
 export interface ErrorBannerProps {
-  code: ErrorCode;
+  code: ClientErrorCode;
   /**
    * 에러 응답 본문의 `requestId`. 있으면 화면에서 지우지 않는다.
    * `null`은 "응답 본문이 없었다"는 사실이며(`lib/api-client`가 그렇게 준다),

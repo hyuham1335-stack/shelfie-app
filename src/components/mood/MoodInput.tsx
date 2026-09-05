@@ -32,7 +32,7 @@
 import { useState } from "react";
 import { Notice } from "@/components/common/Notice";
 import { MAX_IRRELEVANT_STREAK } from "@/lib/env";
-import type { ErrorCode } from "@/types/api";
+import type { ClientErrorCode } from "@/types/api";
 
 /** `recommendRequestSchema.mood`의 제약을 화면에서도 그대로 쓴다 */
 export const MOOD_MIN_LENGTH = 2;
@@ -63,7 +63,7 @@ export const MOOD_EXAMPLES = [
  * 연속이 아니면 의미가 없다 — 세션 초반에 한 번 오탐이 났다고 그 뒤의 정상 입력까지
  * 누적해 세면, 판정을 무시하는 시점이 앞당겨져 억지 추천이 늘어난다.
  */
-export function nextIrrelevantCount(current: number, code: ErrorCode | null): number {
+export function nextIrrelevantCount(current: number, code: ClientErrorCode | null): number {
   return code === "IRRELEVANT_MOOD" ? current + 1 : 0;
 }
 

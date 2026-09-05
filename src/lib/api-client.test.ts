@@ -364,6 +364,95 @@ describe("네트워크·타임아웃", () => {
     }
   });
 
+  /* ---------------------------------------------------------------- *
+   * 오프라인과 상류 장애를 가른다 (PRD 5번 [오프라인·네트워크 단절], ADR-005)
+   *
+   * `fetch`가 던졌다는 사실만으로는 **누가 고칠 수 있는 문제인지** 알 수 없다.
+   * 연결이 끊긴 사용자에게 "잠시 후 다시 시도해 주세요"라고 말하면 기다려도
+   * 아무 일이 일어나지 않고, 상류 장애를 "인터넷 연결을 확인해 주세요"라고 말하면
+   * 멀쩡한 와이파이를 껐다 켜게 만든다. 시스템 문제를 데이터·환경 문제로 설명하지
+   * 않는다는 규칙이 이 자리에도 걸린다.
+   *
+   * **`navigator.onLine`은 jsdom 전역이다.** 덮은 채로 두면 이 파일 뒤의 검사는
+   * 물론 다른 파일의 검사까지 오프라인 분기를 탄다. `delete`로 되돌리지 않는다 —
+   * 원본이 프로토타입의 getter라 `delete`는 그 동작을 되살리지 못하고 `undefined`로
+   * 굳힌다. `vi.spyOn` + `afterEach`의 `vi.restoreAllMocks()`(이 파일 위쪽)로
+   * 되돌리고, 되돌아왔다는 것 자체를 아래 마지막 검사가 단정한다.
+   * ---------------------------------------------------------------- */
+
+  /** 이 검사 동안만 연결 상태를 바꾼다. 되돌리는 것은 `afterEach`다 */
+  function setOnLine(value: boolean): void {
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(value);
+  }
+
+  it("연결이 끊긴 채로 fetch가 던지면 OFFLINE으로 가른다", async () => {
+    setOnLine(false);
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const result = await analyzePhotos(SESSION_ID, [IMAGE]);
+
+    // 응답을 하나도 받지 못했으므로 매길 HTTP 상태가 없다(0). OFFLINE은
+    // 클라이언트 전용 어휘라 서버가 낼 수 없고, `status: 0`이 그 사실이다.
+    expect(result).toEqual({
+      ok: false,
+      code: "OFFLINE",
+      requestId: null,
+      status: 0,
+    });
+  });
+
+  it("연결이 살아 있는데 fetch가 던지면 UPSTREAM_UNAVAILABLE로 남는다", async () => {
+    setOnLine(true);
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    const result = await requestRecommendations(RECOMMEND_INPUT);
+
+    // 상류 장애를 단절이라고 부르지 않는다. `onLine === true`는 단절의 근거가
+    // 아니라 **단절이 아니라는 근거**로만 쓴다.
+    expect(result).toEqual({
+      ok: false,
+      code: "UPSTREAM_UNAVAILABLE",
+      requestId: null,
+      status: 0,
+    });
+  });
+
+  it("연결이 끊겨 있어도 우리가 건 타임아웃이면 TIMEOUT이 이긴다", async () => {
+    setOnLine(false);
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+
+      const pending = analyzePhotos(SESSION_ID, [IMAGE]);
+      await vi.advanceTimersByTimeAsync(CLIENT_TIMEOUT_MS.analyze);
+
+      // 70초를 기다린 사실을 "인터넷을 확인하세요"로 덮으면 사진 장수를 줄이라는
+      // 안내가 사라진다. 우리가 abort한 것은 우리가 아는 사실이고, `onLine`은
+      // 그때 무엇이었든 그보다 약한 근거다.
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        code: "TIMEOUT",
+        requestId: null,
+        status: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("앞 검사가 덮은 navigator.onLine이 되돌아와 있다 (격리 회귀 — 삭제하지 마라)", () => {
+    // 이 단정이 없으면 격리가 깨진 날 이 파일은 그대로 통과하고, 대신 이 파일을
+    // **뒤따르는** 검사들이 알 수 없는 이유로 무너진다. 원인에서 잡는다.
+    expect(navigator.onLine).toBe(true);
+  });
+
   it("각 호출에 AbortSignal을 붙인다", async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, { candidates: [] }));
     await resolveBook(SESSION_ID, "사피엔스");

@@ -18,6 +18,7 @@
 import { errorResponseSchema } from "@/lib/schemas";
 import type {
   AnalyzeResponse,
+  ClientErrorCode,
   ErrorCode,
   MoodQuestionsResponse,
   RecommendRequest,
@@ -37,10 +38,14 @@ import type { BookReference } from "@/types/book";
  * `status`는 HTTP 상태 코드이고, **응답을 받지 못한 경우(네트워크 단절·클라이언트
  * 타임아웃)는 `0`**이다. 화면이 분기하는 기준은 언제나 `code`이며 `status`는
  * 진단용이다.
+ *
+ * 실패 갈래의 `code`는 서버 어휘(`ErrorCode`)보다 넓은 `ClientErrorCode`다 —
+ * 응답을 하나도 받지 못한 사실(`OFFLINE`)은 서버가 말해 줄 수 없고 여기서만
+ * 관측된다.
  */
 export type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: ErrorCode; requestId: string | null; status: number };
+  | { ok: false; code: ClientErrorCode; requestId: string | null; status: number };
 
 /**
  * 클라이언트 타임아웃. **서버 하드 상한보다 길게 잡는다** — 같은 값이면
@@ -156,12 +161,20 @@ async function post<T>(path: string, body: unknown, timeoutMs: number): Promise<
       signal: controller.signal,
     });
   } catch {
-    // 응답을 받지 못했다. 클라이언트 타임아웃은 서버 504와 화면 동작이 같으므로
-    // 같은 code로 정규화하고, 그 외(네트워크 단절·오프라인)는 재시도 안내가
-    // 붙는 UPSTREAM_UNAVAILABLE로 보낸다.
+    // 응답을 받지 못했다. 셋을 가른다.
+    //
+    // ① 우리가 건 타임아웃은 서버 504와 화면 동작이 같으므로 같은 code로 정규화한다.
+    // ② 브라우저가 단절을 **알고 있으면**(`onLine === false`) OFFLINE이다 — 사용자가
+    //    할 일은 연결을 확인하는 것이지 상류가 낫기를 기다리는 것이 아니다.
+    // ③ 그 밖은 지금과 같이 UPSTREAM_UNAVAILABLE.
+    //
+    // `onLine === true`를 단절이 **아니라는** 근거로만 쓴다. 이 값은 랜 케이블이
+    // 꽂혀 있다는 뜻에 가까워 참일 때 연결을 보장하지 못하므로, 상류 장애를 단절이라고
+    // 부르지 않기 위해 거짓일 때만 신뢰한다 (ADR-005 — 실패와 데이터 없음을 뭉개지 않는다).
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
     return {
       ok: false,
-      code: timedOut ? "TIMEOUT" : "UPSTREAM_UNAVAILABLE",
+      code: timedOut ? "TIMEOUT" : offline ? "OFFLINE" : "UPSTREAM_UNAVAILABLE",
       requestId: null,
       status: 0,
     };

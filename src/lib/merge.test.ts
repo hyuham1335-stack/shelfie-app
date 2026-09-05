@@ -43,16 +43,26 @@ function 확인(overrides: Partial<확인된책> & { isbn13: string }): 확인�
  * 세션당 알라딘 호출 상한 — **이 describe는 지우지 않는다.**
  *
  * TRD 10번이 세션당 260회를 적고 있지만, 그 값을 실제로 만드는 것은 산문이 아니라
- * `lib/env.ts`의 상수들이다. 누군가 `MAX_CANDIDATES_FOR_LOOKUP`을 80에서 200으로
- * 올리면 알라딘 일일 한도(5,000회)가 세션 8회에 소진되는데, 그것을 막는 것이
+ * `lib/env.ts`의 상수들이다. 누군가 `MAX_CANDIDATES_FOR_LOOKUP`을 65에서 200으로
+ * 올리면 알라딘 일일 한도(5,000회)가 세션 6회에 소진되는데, 그것을 막는 것이
  * 문서뿐이라면 그 상한은 검증되지 않은 상한이다. 그래서 여기서 **선언(상한)과
  * 유도값(현재 구성이 내는 값)의 관계**를 잠근다. 값을 복창하는 테스트가 아니라
  * 관계를 검사하는 테스트이며, 상한을 올려서 이 테스트를 통과시키는 것은 발견을
  * 지우는 일이다 (TRD 8번의 "삭제하지 않는다" 목록과 같은 성격).
+ *
+ * 유도식은 **실행 경로에서 읽는다.** `route.ts`는 조회 전 축소를 통과한 후보를
+ * ItemSearch에 태우고, 그 전량이 승격될 수 있으므로 같은 수가 ItemLookUp에도
+ * 실린다 — 두 단계가 같은 수를 태운다. 그래서 항은 `조회 상한 × 2단계`이지
+ * `조회 상한 + 표시 상한`이 아니다. 옛 식은 후보 상한 80에서 260을 냈지만 실행
+ * 경로는 320을 냈다 — 선언이 통과하는 동안 실제 호출은 상한을 넘고 있었다.
+ *
+ * 이 런의 방향은 위 경고의 **반대**다. 상한을 올려 식을 통과시킨 것이 아니라
+ * 상한을 80에서 65로 **내리고** 식을 실행 경로에 맞췄다. 새 식은 더 세게
+ * 깨진다 — 후보 상한 200이면 `200 × 2 × 2 = 800 > 260`이다.
  */
 describe("세션당 알라딘 호출 상한 (TRD 10번 — 문서에만 있는 상한은 검증되지 않은 상한이다)", () => {
-  it("유도값이 선언된 상한을 넘지 않는다 — 조회 전 후보 상한을 올리면 여기서 깨진다", () => {
-    const 유도값 = (MAX_CANDIDATES_FOR_LOOKUP + MAX_IDENTIFIED_BOOKS) * ALADIN_CALLS_PER_LOOKUP;
+  it("실행 경로의 유도값이 선언된 상한을 넘지 않는다 — 검색·조회 두 단계가 같은 수를 태운다", () => {
+    const 유도값 = MAX_CANDIDATES_FOR_LOOKUP * 2 * ALADIN_CALLS_PER_LOOKUP;
 
     expect(유도값).toBeLessThanOrEqual(MAX_ALADIN_CALLS_PER_SESSION);
   });
@@ -61,7 +71,7 @@ describe("세션당 알라딘 호출 상한 (TRD 10번 — 문서에만 있는 �
     expect(ALADIN_CALLS_PER_LOOKUP).toBe(2);
   });
 
-  it("reduceBeforeLookup이 실제로 그 상한 안에서 자른다 — 후보 300건도 조회는 80건뿐이다", () => {
+  it("reduceBeforeLookup이 실제로 그 상한 안에서 자른다 — 후보 300건도 조회는 상한만큼뿐이다", () => {
     const 후보들 = Array.from({ length: 300 }, (_, i) =>
       추출({ title: `서로 다른 책 ${i}`, confidence: 0.3 + (i % 70) / 100, photoIndex: i % MAX_PHOTOS }),
     );
@@ -75,10 +85,12 @@ describe("세션당 알라딘 호출 상한 (TRD 10번 — 문서에만 있는 �
     );
   });
 
-  it("확인 상한도 유도식의 항이다 — 50을 올리면 유도값이 함께 오른다", () => {
-    expect(MAX_IDENTIFIED_BOOKS).toBeLessThanOrEqual(
-      MAX_ALADIN_CALLS_PER_SESSION / ALADIN_CALLS_PER_LOOKUP - MAX_CANDIDATES_FOR_LOOKUP,
-    );
+  it("표시 상한은 조회 상한을 넘지 않는다 — 넘으면 capIdentified의 절단이 죽은 상수가 된다", () => {
+    // 유도식에서 `MAX_IDENTIFIED_BOOKS`가 빠졌으므로 이제 이 상수가 잠그는 것은
+    // 호출량이 아니라 **뜻**이다. 조회 상한보다 많이 표시하겠다고 선언하면
+    // 확인된 책이 표시 상한에 닿는 일이 영원히 없어 `overflowCount`가 언제나
+    // 0이 된다 — 발화하지 않는 절단은 있으나 마나 한 절단이다 (FR-005).
+    expect(MAX_IDENTIFIED_BOOKS).toBeLessThanOrEqual(MAX_CANDIDATES_FOR_LOOKUP);
   });
 });
 
@@ -151,7 +163,7 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
     expect(unreadable[0].confidence).toBe(0.2);
   });
 
-  it("후보 300건을 넣어도 toLookup이 80건을 넘지 않는다 (TR-005 성공 지표)", () => {
+  it("후보 300건을 넣어도 toLookup이 조회 상한을 넘지 않는다 (TR-005 성공 지표)", () => {
     const 후보들 = Array.from({ length: 300 }, (_, i) =>
       추출({
         title: `서로 다른 책 ${i}`,
@@ -163,10 +175,10 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
     const { toLookup } = reduceBeforeLookup(후보들);
 
     expect(toLookup).toHaveLength(MAX_CANDIDATES_FOR_LOOKUP);
-    expect(MAX_CANDIDATES_FOR_LOOKUP).toBe(80);
+    expect(MAX_CANDIDATES_FOR_LOOKUP).toBe(65);
   });
 
-  it("80건 상한으로 잘린 후보는 버려지지 않고 unreadable로 남는다", () => {
+  it("조회 상한으로 잘린 후보는 버려지지 않고 unreadable로 남는다", () => {
     const 후보들 = Array.from({ length: 300 }, (_, i) =>
       추출({ title: `책 ${i}`, confidence: 0.5, photoIndex: i % MAX_PHOTOS }),
     );

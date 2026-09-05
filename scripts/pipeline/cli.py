@@ -1523,7 +1523,13 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
     max_rounds = (conv.get("max_by_profile") or {}).get(profile) or 5
 
     if ok:
-        s["phases"]["01-plan"]["rounds"] = round_
+        # **`rounds` 를 덮지 않는다.** 예전에는 여기서 수렴 회차(정수)를
+        # 그 자리에 대입해 라운드별 제출 기록을 통째로 날렸다. 01 이 다시
+        # 돌지 않으면 무해했지만, 02 의 Critical 이 01 로 되돌리는 경로가
+        # 처음 돌자 `_previous_open` 이 정수를 순회하려다 죽었고 단조성
+        # 검사가 근거로 삼는 이전 회차 지적이 사라졌다. 정수를 읽는
+        # 소비자는 어디에도 없었다 — 순수한 손실이다 (P3).
+        s["phases"]["01-plan"]["converged_at_round"] = round_
         st.counter_inc(s, "round", max_rounds)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 

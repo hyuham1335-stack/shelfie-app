@@ -1221,6 +1221,31 @@ class TestReviewConvergence:
         assert env["exit"] == 0, env["render"]
 
 
+    def test_convergence_keeps_the_round_record(self, run01):
+        """수렴이 라운드 기록을 지우지 않는다 — 02 가 01 로 되돌릴 수 있다.
+
+        예전에는 수렴 경로가 `phases["01-plan"]["rounds"]` 에 **수렴 회차(정수)**
+        를 대입해 회차별 제출 기록을 통째로 날렸다. 01 이 다시 돌지 않으면
+        무해했지만, 02 의 Critical 이 01 로 되돌리는 경로가 처음 돌자
+        `_previous_open` 이 정수를 순회하려다 죽었다. 그리고 그 기록은
+        **단조성 검사가 근거로 삼는 것**이라, 죽지 않았더라도 이전 회차 지적이
+        조용히 사라지는 것을 더는 잡지 못했을 것이다.
+
+        그 정수를 읽는 소비자는 어디에도 없었다 — 순수한 손실이었다 (P3).
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        assert _submit_review(repo, paths, _review("plan"))["exit"] == 0
+        assert _submit_review(repo, paths, _review("xv"))["exit"] == 0
+
+        _, after = st.load(repo, paths.run_id)
+        node = after["phases"]["01-plan"]
+        assert st.phase_status(after, "01-plan") == "passed"
+        assert isinstance(node["rounds"], dict), node["rounds"]
+        assert set(node["rounds"]["1"]) == {"plan", "xv"}
+        assert node["converged_at_round"] == 1
+
+
 class TestCrossVerifySource:
     """폴백이 섞이면 1라운드 수렴이 막힌다 — 이 리포의 모든 런이 그랬다."""
 

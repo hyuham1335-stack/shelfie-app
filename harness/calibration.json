@@ -1,29 +1,29 @@
 {
-  "measured_at": "2026-09-02T17:49:09+0900",
+  "measured_at": "2026-09-05T13:50:05+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": true,
   "stages": {
     "compile": {
-      "sec": 3.0,
+      "sec": 3.28,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T17:49:09+0900"
+      "measured_at": "2026-09-05T13:50:05+0900"
     },
     "lint": {
-      "sec": 9.31,
+      "sec": 10.0,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T17:49:09+0900"
+      "measured_at": "2026-09-05T13:50:05+0900"
     },
     "check": {
-      "sec": 1.72,
+      "sec": 1.8,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T17:49:09+0900"
+      "measured_at": "2026-09-05T13:50:05+0900"
     },
     "scoped": {
       "sec": 4.33,
@@ -35,14 +35,14 @@
       "stale_reason": "선택 대상 없음 — 계약이 있어야 측정된다. --select <test-name> 으로 수동 측정할 수 있다"
     },
     "full": {
-      "sec": 29.67,
+      "sec": 39.77,
       "ok": true,
       "exit_code": 0,
-      "tests_ran": 1311,
+      "tests_ran": 1347,
       "suites": 46,
       "failures": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T17:49:09+0900"
+      "measured_at": "2026-09-05T13:50:05+0900"
     },
     "e2e": {
       "sec": null,
@@ -51,11 +51,11 @@
       "reason": "cmd:null — 이 스택에 없는 스테이지"
     },
     "build": {
-      "sec": 8.59,
+      "sec": 9.44,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-02T17:49:09+0900"
+      "measured_at": "2026-09-05T13:50:05+0900"
     },
     "docs": {
       "sec": null,
@@ -79,7 +79,7 @@
     "background_threshold_sec": 180,
     "background_full_regression": false,
     "full_timeout_sec": 300,
-    "tests_ran_floor": 1179,
+    "tests_ran_floor": 1212,
     "retry_budget": 2
   }
 }

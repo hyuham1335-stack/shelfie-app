@@ -1304,6 +1304,140 @@ class TestCrossVerifySource:
         assert any("plan-reviewer" in (c.get("message") or "") for c in bad), bad
 
 
+class TestCrossVerifyTransientFailure:
+    """primary 가 **있는데 지금 응답을 못 하는 것**은 부재가 아니다.
+
+    P3 는 상류가 503 을 내자 폴백으로 갈아탔고 **다섯 라운드 내내 폴백이
+    굳었다.** 같은 도구가 02 에서는 성공했다. 그런데 그 사실이 상태에도
+    보고서에도 남지 않았고, 폴백 xv 가 민 설계를 02 의 primary 가 Critical 로
+    반려하면서 왕복 예산 1회와 라운드 예산 다섯을 다 썼다.
+
+    앱 코드에 `lookup_failed` != `no_match` 를 요구하면서(ADR-005) 하네스가
+    "지금 못 함" 과 "없음" 을 한 어휘로 뭉개고 있었다.
+    """
+
+    def _fallback(self, round_=1, err=None):
+        r = _review("xv", round_=round_, mode="fallback")
+        if err:
+            r["primary_error"] = err
+        return r
+
+    def test_a_fallback_round_lands_in_the_run_summary(self, run01):
+        """라운드 제출이 런 요약에 접힌다 — 예전에는 slot 에만 들어갔다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+
+        _, after = st.load(repo, paths.run_id)
+        cv = after["cross_verify"]
+        assert cv["rounds"]["1"] == "fallback", cv
+        assert cv["degraded_rounds"] == 1, cv
+        # config 가 선언한 것과 실제로 관측한 것은 다른 값이다
+        assert cv["configured"] == "primary", cv
+        assert cv["mode"] == "fallback", cv
+
+    def test_a_transient_failure_is_not_an_absence(self, run01):
+        """`primary_error` 의 유무가 일시 실패와 부재를 가른다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback(err="HTTP 503 high demand"))
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["cross_verify"]["last_primary_error"] == "HTTP 503 high demand"
+
+    def test_an_absence_leaves_no_error(self, run01):
+        """primary 가 애초에 없던 런은 `last_primary_error` 가 비어 있다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["cross_verify"]["last_primary_error"] is None
+
+    def test_the_next_round_packet_asks_to_retry_primary(self, run01):
+        """봉투가 라운드마다 교차검증기를 다시 말한다.
+
+        예전에는 `## 교차검증` 절이 `render_packet` 에서만 나왔고 그건 `next`
+        에서만 불렸다. 01 의 루프는 `record -> record` 라 그 말을 다시 할
+        경로가 **물리적으로 없었다.**
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        finding = {"id": "F-1", "severity": "major", "title": "범위",
+                   "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("plan", findings=[finding]))
+        env = _submit_review(repo, paths,
+                             self._fallback(err="HTTP 503 high demand"))
+
+        assert env["exit"] == 0, env["render"]
+        assert "## 교차검증" in env["render"], env["render"]
+        assert "다시 시도" in env["render"], env["render"]
+        # 도구 이름은 config 에서 온다 — 코어에 박지 않는다
+        primary = json.loads(
+            (repo / "harness" / "config.json").read_text(encoding="utf-8")
+        )["cross_verify"]["primary"]
+        assert primary in env["render"], env["render"]
+
+    def test_a_fallback_round_degrades_the_grade(self, run01):
+        """폴백은 통과가 아니다 — `external:disabled` 와 같은 형태다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+        # 폴백이 섞이면 1라운드 수렴이 막히므로 2라운드를 돌려 수렴시킨다
+        _submit_review(repo, paths, _review("plan", round_=2), round_=2)
+        _submit_review(repo, paths, _review("xv", round_=2), round_=2)
+
+        _, after = st.load(repo, paths.run_id)
+        assert "cross_verify:fallback" in (after.get("gaps") or []), after.get("gaps")
+        assert after["grade"] == "PASS_WITH_GAPS", after["grade"]
+
+    def test_02_does_not_erase_the_round_history(self, run01):
+        """02 가 primary 로 돌았다고 01 의 폴백이 없던 일이 되지 않는다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback(err="HTTP 503 high demand"))
+        _submit_review(repo, paths, _review("plan", round_=2), round_=2)
+        _submit_review(repo, paths, _review("xv", round_=2), round_=2)
+
+        v = paths.run_dir / "02_verdict.json"
+        v.write_text(json.dumps({"reviewer": "xv", "mode": "primary",
+                                 "status": "ok", "findings": [],
+                                 "adopted": [], "resolved_from_previous": []},
+                                ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "02_verdict.raw.md").write_text("# 판정\n", encoding="utf-8")
+        cli.run_record(repo, phase="02", file=str(v), reviewer=None, round_=None)
+
+        _, after = st.load(repo, paths.run_id)
+        cv = after["cross_verify"]
+        assert cv["rounds"]["1"] == "fallback", cv
+        assert cv["degraded_rounds"] >= 1, cv
+        assert cv["mode"] == "fallback", cv
+
+    def test_mode_vocabulary_is_locked(self, run01):
+        """`mode` 어휘를 늘리지 않는다 — `converged` 가 새 값을 놓치면
+        조용히 1라운드 수렴이 열린다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        env = _submit_review(repo, paths,
+                             _review("xv", mode="fallback_after_failure"))
+        assert env["exit"] == 8, env["render"]
+        assert "mode" in env["render"]
+
+    def test_primary_error_on_a_primary_submission_is_rejected(self, run01):
+        """그 필드는 **폴백으로 갈아탄 이유**이지 성공한 런의 기록이 아니다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        payload = _review("xv", mode="primary")
+        payload["primary_error"] = "HTTP 503"
+        env = _submit_review(repo, paths, payload)
+        assert env["exit"] == 8, env["render"]
+
+
 class TestInitAndNext:
 
     def test_init_creates_a_run_and_next_renders_the_first_packet(self, repo, phases):

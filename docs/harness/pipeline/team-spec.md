@@ -323,6 +323,14 @@ docs/harness/pipeline/runs/{run_id}.md          # 08 보고서
 
 **외부 교차검증기가 없는 머신이 있다.** `config.cross_verify.primary`가 부재하면 **폴백 에이전트**로 대체하고 `state.cross_verify.mode`에 기록한다. **둘 중 하나가 폴백이면 1라운드 수렴을 허용하지 않는다** — "독립 관측 두 개"라는 전제가 약해지기 때문이다.
 
+**부재와 일시 실패는 다르다.** 예전에는 이 절이 "부재" 만 알았고, 그래서 primary 가 살아 있는데 상류가 잠깐 과부하인 것과 그 도구가 애초에 없는 것이 **같은 어휘로 뭉개졌다.** P3 가 그 대가를 실측했다 — 상류 503 두 번에 폴백으로 갈아탄 뒤 **다섯 라운드 내내 폴백이 굳었고**, 같은 도구가 02 에서는 성공했다. 그 다섯 라운드가 민 설계를 02 의 primary 가 Critical 로 반려해 왕복 예산 1회와 라운드 예산 전부를 썼다.
+
+앱 코드에 `lookup_failed` ≠ `no_match` 를 요구하면서(ADR-005) 하네스가 그 둘을 뭉개고 있었다. 이제 가른다 — 제출의 **`primary_error`** 가 있으면 일시 실패이고 **다음 회차의 봉투가 다시 시도하라고 말한다**(상류 과부하는 대개 한 라운드보다 먼저 끝난다). 없으면 부재이고 재시도할 것이 없다.
+
+**`mode` 어휘는 둘로 유지한다.** 셋째 값을 만들면 `converged` 의 `mode == "fallback"` 검사가 그것을 놓쳐 **조용히 1라운드 수렴이 열린다.**
+
+**그리고 폴백은 드러난다.** 회차별 `mode` 가 `state.cross_verify.rounds` 에 접히고, 한 회차라도 폴백이면 `degraded_rounds` 가 오르며 gap `cross_verify:fallback` 이 등급을 `PASS_WITH_GAPS` 로 내린다. 보고서의 `## 리뷰` 표가 그 값을 적는다 — `external:disabled` 와 같은 형태이고, **약해진 관측은 통과가 아니다.**
+
 #### 수렴 판정 — 모델 자기판단 배제
 
 각 회차가 리뷰어별로 **두 파일**을 낸다: 출력 원문 `.raw.md` + 구조화 `.json`.
@@ -1064,6 +1072,7 @@ prose  → config.project.rules_dir  →  agent-memory/{role}  →  config.proje
 | 전역 | `budget.model_calls` 초과 | 정책 | 페이즈 경계에서 에스컬레이션 + **어느 페이즈가 넘었는지** 명시 |
 | 전역 | 인코딩 · 경로 길이 | 정책 | 모든 I/O UTF-8, 240자 초과는 `lint-phases`가 거부 (§E4) |
 | 01 | `cross_verify.primary` 부재 | — | 폴백 에이전트 + **1라운드 수렴 불허** + 원장 기록 |
+| 01 | `cross_verify.primary` **일시 실패**(503·타임아웃) | — | 폴백 + 제출에 `primary_error` + **다음 회차 봉투가 재시도를 지시** + gap `cross_verify:fallback` |
 | 01 | `drift_score > 0` | 제출물 | exit 4 + 원문 인용과 함께 재조정 패킷 |
 | 01 | quote 위조 / 단조성 위반 | 제출물 | exit 8, 재제출(카운터 소모) |
 | 01 | 라운드 상한 초과 | 정책 | exit 7 → 에스컬레이션 3지선다 |

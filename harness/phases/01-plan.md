@@ -113,12 +113,25 @@
 리뷰어는 회차마다 **두 파일**을 낸다 — 출력 원문 `.raw.md` 와 구조화 `.json`.
 
 ```json
-{"reviewer":"plan|xv","round":1,"mode":"primary|fallback",
+{"reviewer":"plan|xv","round":1,"mode":"primary|fallback","primary_error":null,
  "findings":[{"id":"F-1","severity":"critical|major|minor","category":"…",
               "title":"…","quote":"raw 원문의 부분문자열","evidence":"…",
               "suggestion":"…"}],
  "resolved_from_previous":[{"id":"F-0","resolved_by":"…"}]}
 ```
+**`mode` 는 둘뿐이다. 부재와 일시 실패는 `primary_error` 로 가른다.**
+
+- `primary_error` 가 **있으면** — primary 를 시도했는데 실패했다(일시). 다음 회차의
+  봉투가 **다시 시도하라**고 말한다. 상류 과부하는 대개 한 라운드보다 먼저 끝난다
+- `primary_error` 가 **없으면** — primary 가 애초에 없다(구조). 재시도할 것이 없다
+
+셋째 `mode` 값을 만들지 않는 이유는 `converged` 의 `mode == "fallback"` 검사가 새 값을
+놓치면 **조용히 1라운드 수렴이 열리기** 때문이다. 07 의 `external` 이 "상태 + 사유" 로
+쓰는 것과 같은 형태다.
+
+> **이것은 자진 신고다.** 실행기는 어느 도구가 실제로 불렸는지 볼 수 없다. 다만 유인이
+> 안전한 방향이다 — 과잉 신고는 재시도 지시 한 번이고, 과소 신고는 지금과 같다.
+
 
 `reviewer` 가 `main` 이면 거부된다. 작성자가 자기 글을 리뷰한 것은 독립 관측이 아니다.
 

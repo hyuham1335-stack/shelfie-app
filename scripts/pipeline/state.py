@@ -195,7 +195,7 @@ def create_run(root, slug, request_path, profile=None, seed_bytes=None, now=None
         "counters": {},
         "escalated": False,
         "contract": {"mode": "contract", "present": False},
-        "cross_verify": {"mode": _cross_verify_mode(config)},
+        "cross_verify": _cross_verify_init(config),
         "grade": None,
         "gaps": [],
         "budget": {"model_calls": {
@@ -248,6 +248,23 @@ def _calibration_summary(calibration):
             "adapter_verified": bool(calibration.get("adapter_verified"))}
 
 
+def _cross_verify_init(config):
+    """런 시작 시의 교차검증 요약.
+
+    **`configured` 와 `mode` 는 다른 것을 말한다.** `configured` 는 config 가
+    무엇을 선언했는가이고 `mode` 는 **실제로 무엇이 관측했는가**다. 예전에는
+    하나뿐이라 config 가 `primary` 를 선언하면 라운드가 전부 폴백으로 돌아도
+    상태는 `primary` 라고 적었다 — P3 가 다섯 라운드 내내 그랬고, 그 사실이
+    상태에도 보고서에도 남지 않았다.
+
+    `mode` 는 라운드가 제출될 때마다 `note_cross_verify_round` 가 내린다.
+    올리지는 않는다 — 한 번 약해진 관측은 뒤 라운드가 좋아도 그 런의 사실이다.
+    """
+    return {"mode": _cross_verify_mode(config),
+            "configured": _cross_verify_mode(config),
+            "rounds": {}, "degraded_rounds": 0, "last_primary_error": None}
+
+
 def _cross_verify_mode(config):
     """primary 도 fallback 도 없으면 skipped — 02 가 등급에 드러낸다."""
     cv = config.get("cross_verify") or {}
@@ -256,6 +273,28 @@ def _cross_verify_mode(config):
     if cv.get("fallback"):
         return "fallback"
     return "skipped"
+
+
+def note_cross_verify_round(s, round_, mode, primary_error=None):
+    """한 회차의 교차검증이 무엇으로 돌았는지 런 요약에 접는다.
+
+    **부재와 일시 실패를 가른다** — `primary_error` 가 있으면 primary 를
+    시도했다가 실패한 것이고(일시), 없으면 primary 가 애초에 없던 것이다(구조).
+    앱 코드에 `lookup_failed` ≠ `no_match` 를 요구하면서(ADR-005) 하네스가
+    그 둘을 한 어휘로 뭉개고 있었다.
+
+    `mode` 는 **내려가기만 한다.** 3회차가 primary 로 회복돼도 1·2회차가
+    폴백이었다는 것은 그 런의 사실이고, 등급이 그것을 말해야 한다.
+    """
+    node = s.setdefault("cross_verify", {})
+    node.setdefault("rounds", {})[str(round_)] = mode
+    if primary_error:
+        node["last_primary_error"] = primary_error
+    node["degraded_rounds"] = sum(
+        1 for v in node["rounds"].values() if v == "fallback")
+    if mode == "fallback":
+        node["mode"] = "fallback"
+    return node
 
 
 def _vcs_baseline(root):

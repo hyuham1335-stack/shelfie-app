@@ -32,6 +32,8 @@ GAP_REASONS = {
     "stage_not_touched": "그 스테이지가 볼 변경이 없었다",
     "adapter_unverified": "어댑터가 `verified: false` 다 — 실물로 완주한 적이 없다",
     "cross_verify_unavailable": "교차검증 primary·fallback 이 둘 다 불가였다",
+    "cross_verify:fallback": ("01 의 교차검증이 폴백으로 돈 회차가 있다 — "
+                              "독립 관측 둘이라는 전제가 그만큼 약해졌다"),
     "review05": "05 의 리뷰어가 전부 또는 일부 실패했다",
     "external": "외부 PR 리뷰를 받지 못했다",
     "infra_skipped": "인프라 프로브 실패로 건너뛴 검증이 있다",
@@ -75,6 +77,7 @@ def build(state, data, calibration, promotions):
     r05 = state.get("review05") or {}
     r07 = state.get("review07") or {}
     audit = state.get("audit") or {}
+    cv = state.get("cross_verify") or {}
 
     lines = ["# 런 보고서 — %s" % state.get("run_id"), ""]
     lines += ["> 요청 슬러그: `%s`" % (state.get("slug") or "?"), ""]
@@ -140,7 +143,15 @@ def build(state, data, calibration, promotions):
         ("내장 리뷰", r07.get("code_review")),
         ("escaped_05", r07.get("escaped_05")),
         ("감사 런", audit.get("is_audit_run")),
+        # **01 의 관측 품질이 이 표에 없었다.** 05·07 만 적어서, 교차검증이
+        # 다섯 라운드 내내 폴백이어도 보고서는 아무 말도 하지 않았다 (P3).
+        ("01 교차검증", cv.get("mode")),
+        ("폴백 회차", "%s / %s" % (cv.get("degraded_rounds") or 0,
+                                   len(cv.get("rounds") or {}))),
     ])
+    if cv.get("last_primary_error"):
+        lines += ["", "- **교차검증 primary 가 실패한 적이 있다** — `%s`. "
+                  "부재가 아니라 일시 실패다." % cv["last_primary_error"]]
     lines.append("")
 
     lines += ["## 캘리브레이션 상태", ""]

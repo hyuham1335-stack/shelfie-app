@@ -14,6 +14,7 @@ union 이고, 집계 파일을 따로 두지 않는다 — 수백 줄 규모라 
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -53,6 +54,9 @@ EXCLUDED_FROM_COUNT = ("warn_only",)
 
 _SEVERITY_RANK = {"minor": 0, "major": 1, "critical": 2}
 
+# 카테고리 코드의 형태. 글롭처럼 보이는 코드를 새로 만들지 못하게 한다 (M39).
+_CODE_SHAPE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
 SEED_TAXONOMY = {
     "version": 1,
     "_note": ("스택 비종속 코드만 시드로 배포한다. 프로젝트가 코드를 **추가**하는 "
@@ -89,8 +93,17 @@ SEED_TAXONOMY = {
          "status": "escalate_only",
          "note": "계약은 메인 단독 소유다. 수리가 아니라 에스컬레이션이고 "
                  "자동 승격 대상이 아니다"},
-        {"code": "other/*", "enforceable": "prose", "status": "unpromotable",
-         "note": "분류되지 않은 것. 어휘 밖으로 새지 않게 받아 두되 승격하지 않는다"},
+        {"code": "DOC_CODE_DRIFT", "enforceable": "prose", "status": "active",
+         "note": ("문서·주석이 코드가 말하는 사실과 어긋난다. 기계가 못 "
+                  "막는다 — 어느 문장이 어느 상수를 참칭하는지는 판정이다")},
+        {"code": "OTHER", "enforceable": "prose", "status": "unpromotable",
+         "note": ("분류되지 않은 것. **글롭이 아니라 문자열 그대로의 코드다** "
+                  "— categories() 가 만드는 dict 의 키이고 append() 는 "
+                  "`code not in known` 으로만 본다. 받아 두되 승격하지 않는다")},
+        {"code": "other/*", "enforceable": "prose", "status": "retired",
+         "note": ("OTHER 로 갈렸다 (M39). 원장의 옛 줄이 이 코드를 쓰므로 "
+                  "지우지 않는다 — append-only 원장의 과거를 읽을 수 있게 "
+                  "남긴다. retired 는 이미 NEVER_PROMOTE 라 거동이 안 바뀐다")},
     ],
 }
 
@@ -175,6 +188,12 @@ def validate_taxonomy(data):
         if not code:
             errors.append("code 가 없는 항목이 있다")
             continue
+        # **"이 코드는 글롭인가" 가 제출 1회를 무르게 한 질문이다** (M39).
+        # 규칙이 그 질문에 영구히 답한다. `retired` 는 면제한다 — 원장의 옛
+        # 줄이 그 코드를 쓰고, append-only 원장의 과거를 읽을 수 있어야 한다.
+        if c.get("status") != "retired" and not _CODE_SHAPE.match(code):
+            errors.append("%s 의 코드 형태가 규약 밖이다 — 대문자·숫자·밑줄만 "
+                          "쓴다(글롭처럼 보이는 코드는 글롭이 아니다)" % code)
         enf = c.get("enforceable")
         if enf not in ENFORCEABLE:
             errors.append("%s 의 enforceable 이 어휘 밖이다: %r (%s)"
@@ -437,7 +456,51 @@ def stage_promotions(root):
 
     candidates.sort(key=lambda c: (-_SEVERITY_RANK[c["severity"]], c["category"]))
     return {"candidates": candidates, "held": held,
+            "by_category": _by_category(root, cats),
             "distinct_runs": distinct_runs(root),
             "thresholds": {k: {"count": v[0], "distinct_runs": v[1]}
                            for k, v in THRESHOLDS.items()},
+            "axis_note": (
+                "승격 버킷의 축은 finding_key = sha1(category|target_role|"
+                "정규화 제목)다. `by_category` 는 **보고용이고 승격하지 않는다** "
+                "— 카테고리가 잦은 것과 같은 규칙이 잦은 것은 다른 사실이다. "
+                "제목이 매번 다른 카테고리는 임계에 영원히 닿지 않고, 그것은 "
+                "결함이 아니라 '승격의 산물이 규칙' 이라는 정의의 결과다 "
+                "(M39 · ADR-H026)."),
             "note": "05 는 staged 까지다. 실제 쓰기는 07 에서 런당 한 번이다."}
+
+
+def _by_category(root, cats):
+    """카테고리 축의 빈도. **승격하지 않는 관측이다** (M39 · ADR-H026).
+
+    `held` 가 "임계가 높다" 와 "런이 모자라다" 를 갈라 놓듯, 이 롤업은 셋째
+    침묵 — "축이 틀렸다" — 를 갈라 놓는다. 이 리포에서 가장 자주 나는 결함이
+    무엇인지 보고서가 말할 수 있게 하는 것이 전부이고, `candidates` 와
+    `held` 는 한 비트도 달라지지 않는다.
+
+    `warn_only` 와 승격 불가 상태도 **세되 따로 표시한다** — 빼면 같은 침묵을
+    반복한다.
+    """
+    buckets = {}
+    for row in observations(root):
+        code = row.get("category")
+        cat = cats.get(code) or {}
+        b = buckets.setdefault(code, {
+            "category": code, "count": 0, "runs": set(), "keys": set(),
+            "excluded_from_promotion_count": 0,
+            "status": cat.get("status"), "enforceable": cat.get("enforceable"),
+            "promotable": cat.get("status") not in NEVER_PROMOTE})
+        b["count"] += 1
+        if row.get("run_id"):
+            b["runs"].add(row["run_id"])
+        if row.get("finding_key"):
+            b["keys"].add(row["finding_key"])
+        if row.get("resolution") in EXCLUDED_FROM_COUNT:
+            b["excluded_from_promotion_count"] += 1
+    out = []
+    for b in buckets.values():
+        out.append({k: v for k, v in b.items() if k not in ("runs", "keys")})
+        out[-1]["distinct_runs"] = len(b["runs"])
+        out[-1]["distinct_keys"] = len(b["keys"])
+    out.sort(key=lambda b: (-b["count"], b["category"] or ""))
+    return out

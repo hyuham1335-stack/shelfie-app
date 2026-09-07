@@ -2643,3 +2643,45 @@ PR #4 의 CI 가 `src/app/edge-cases.test.tsx` 한 건으로 죽었다. **이 �
 3. **여전히 안 돈 경로 셋** — M32(왕복 뒤 라운드 지급) · M33(ambiguous 두 역할) · M35(교차검증 재프로브). 셋 다 **자연 실패를 기다리는 중**이고 일부러 만들지 않는다
 4. **어댑터 `verified: true` 는 다섯 런째 절반이다.** 게이트가 또 한 번도 실패하지 않아 `attribution` 의 실패 경로가 안 돌았다
 5. **다음은 알라딘 이관이다** — 마감 2026-10-30. 첫 산출물은 코드가 아니라 ADR-002 를 대체하는 새 ADR 이다
+
+### P5 가 연 결함 여덟을 닫았다 (2026-09-07)
+
+M36 까지 아홉을 한 브랜치에서 닫았다. **파이프라인을 태우지 않고 메인 세션이
+손으로 고쳤다** — 대상이 전부 `main_owned_paths`(`harness/**`·`scripts/**`·
+`docs/**`)라 워커(`impl`·`test`, `src/**` 소유)가 만질 수 없다. M32~M34 증분과
+같은 방식이다.
+
+| ID | 코드 자리 | 무는 테스트 |
+|---|---|---|
+| M36 | `cli.py` 의 헬퍼 넷 + `_lint_loop`. 02·04·05·07·`retry` 의 하드코딩과 `or` 폴백을 걷었다 | `TestLoopDeclarationsAreRead` 다섯 — **전부 값을 바꾸는 변이 테스트다** |
+| M37 | `_review_render` — `merged` 일 때 라우팅 코드로 `record` 명령 줄을 찍는다 | `test_merged_봉투가_리뷰어별_제출을_말한다` |
+| M38 | `_review_repair_render` — 회계 의무 + `_previous_open` 목록을 봉투에 싣는다 | `test_델타_봉투가_minor_회계_의무를_말한다` |
+| M39 | `ledger.SEED_TAXONOMY`·`validate_taxonomy`·`stage_promotions` + `taxonomy.json` | `TestDocDriftAxis` 다섯 |
+| M40 | `precheck.run`/`changed_files`/`_changed_lines` 에 `scope` 를 잇는다 | `TestPrecheckScope` 둘 |
+| M41·M42 | `pr._adopted`·`_inv_block`·`_quoted_request` | `TestPr06BodyTruth` 셋 |
+| M43 | `cli._write_review05` — 라운드별 실적을 남기고 최댓값을 쓴다 | `test_델타_라운드가_1회차_리뷰어_수를_지우지_않는다` |
+| M44 | `precheck._check_infra` + `adapter.schema.json` + `_lint_infra_preflight` | `TestPrecheckInfra` 넷 |
+
+**한 커밋이 둘을 담은 자리가 하나 있다** — M40 과 M44 는 같은 함수를 고치고,
+무엇보다 M40 이 변경 집합을 넓히면 06 에서 인프라 프로브가 **새로 발화한다.**
+갈라 놓으면 두 커밋 사이의 상태가 "06 이 키 없다고 죽는다" 가 된다. 그 이유를
+커밋 본문에 적었다.
+
+**실측 둘을 기록해 둔다.**
+- 원장의 `other/*` 는 **16건 · 3런 · 서로 다른 제목 16종**이고 그중 **9건이
+  `target_role: main`** 이다. 어휘를 고쳐도 승격되지 않는 이유가 그것이고,
+  축을 바꾸지 않기로 한 근거이기도 하다 ([[ADR-H026]])
+- `by_category` 롤업 추가 전후로 실물 원장의 `candidates`·`held` 가 **비트
+  단위로 동일**함을 대조했다
+
+**테스트 502 → 544** (`test_harness` 포함 614 통과) · `doctor` 통과 ·
+`lint-phases` FAIL 0. **앱 테스트는 돌리지 않았다** — `src/**` 를 한 줄도 안
+고쳤고, 안 만진 것에 대한 초록불을 이 증분의 근거로 쓰지 않는다.
+
+**M40 만 이 증분 자신에게서 한 번 확인됐다** — 이 브랜치에서 `--scope pr` 이
+21파일 / 1800줄(`git diff --shortstat main` 과 일치), `--scope worktree` 가
+5파일이고, `files_max` 10 을 넘어 exit 9 가 났다. 예측한 그 자리다. 파이프라인
+런이 아니므로 **관측이지 차단이 아니다.**
+
+**나머지 여덟은 배선만 확인됐다.** 테스트는 배선을 보고 런은 비용을 본다.
+P6 가 확인할 목록은 [ROADMAP.md](ROADMAP.md) 에 표로 남겼다.

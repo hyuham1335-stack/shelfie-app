@@ -31,45 +31,65 @@ import harness  # noqa: E402
 import adapters  # noqa: E402
 
 
+# `--scope` 의 어휘. **셋째 값을 만들지 않는다** — 소비자 없는 어휘를 두는
+# 것이 M36 의 모양이다.
+SCOPES = ("pr", "worktree")
+
+
 def run(root, scope="pr", changed=None, config=None, adapter=None):
     """반환: {"exit", "checks":[...], "budget":{...}, "classification", ...}
 
     `classification` 은 실패 3분류의 어휘다 — `policy` / `infra` / None.
+
+    `scope` 는 **무엇을 잴 것인가**다 (M40 · ADR-H028):
+
+    - `pr` — base 에서 워크트리까지. 커밋된 것 + 미커밋 + 새 파일. 이 검사가
+      묻는 질문이 "이 PR 이 예산 안인가" 이므로 이것이 기본이다
+    - `worktree` — 미커밋만. "03 이 방금 쓴 것이 예산 안인가"
+
+    예전에는 이 인자를 받고 **한 번도 쓰지 않았다.** 늘 미커밋만 재서, 06 이
+    커밋 뒤에 부르면 `at_06` 이 항상 0파일/0줄이었다.
     """
     root = Path(root)
+    if scope not in SCOPES:
+        raise ValueError("알 수 없는 scope: %r (%s)" % (scope, ", ".join(SCOPES)))
     if config is None or adapter is None:
         config, adapter, _cal = adapters.load(root)
 
     checks = []
     if changed is None:
-        changed = changed_files(root)
+        changed = changed_files(root, scope, config)
 
-    budget = _check_budget(root, config, changed, checks)
+    budget = _check_budget(root, config, changed, checks, scope)
     _check_branch(root, config, checks)
     _check_divergence(root, config, checks)
-    infra = _check_infra(adapter, changed, checks)
+    infra, gaps = _check_infra(adapter, changed, checks)
 
     policy_failed = [c for c in checks if not c["ok"] and c["kind"] == "policy"]
     if infra:
         return _result(10, checks, budget, "infra", changed,
-                       counter_consumed=False, infra=infra)
+                       counter_consumed=False, infra=infra, gaps=gaps)
     if policy_failed:
         # **정책 실패도 카운터를 소모하지 않는다** (§2.5 의 실패 3분류).
         # 전에는 True 를 반환했으나 그것을 읽는 코드가 없어 실제로는 아무것도
         # 태우지 않았다 — 선언과 실제가 갈라져 있었고, 명세에 정책이 예산을
         # 태워야 한다는 근거는 없다. 선언을 실제에 맞췄다.
         return _result(9, checks, budget, "policy", changed,
-                       counter_consumed=False)
-    return _result(0, checks, budget, None, changed, counter_consumed=False)
+                       counter_consumed=False, gaps=gaps)
+    return _result(0, checks, budget, None, changed, counter_consumed=False,
+                   gaps=gaps)
 
 
 def _result(exit_, checks, budget, classification, changed, counter_consumed,
-            infra=None):
+            infra=None, gaps=None):
     return {"exit": exit_, "checks": checks, "budget": budget,
             "classification": classification,
             "counter_consumed": counter_consumed,
             "changed_count": len(changed),
             "infra_failures": infra or [],
+            # 면제된 프로브. **조용히 통과시키지 않는다** — 부르는 쪽이 등급을
+            # 내리고 보고서·PR 본문이 이름으로 적는다 (§E9 · M44).
+            "gaps": gaps or [],
             "note": ("인프라 실패는 카운터를 소모하지 않는다 — 코드가 아니라 "
                      "환경의 문제이므로 재시도 예산을 태울 이유가 없다."
                      if classification == "infra" else
@@ -86,13 +106,31 @@ def _add(checks, name, ok, kind, message="", **extra):
 
 # ------------------------------------------------------------------- 변경 집합
 
-def changed_files(root):
-    """미커밋 변경 + 새 파일. **새 파일을 빼면 예산이 사실보다 작게 잡힌다.**
+def changed_files(root, scope="worktree", config=None):
+    """변경 파일 집합. `scope` 가 무엇까지 세는지를 정한다.
 
-    `git diff` 는 추적되지 않는 파일을 못 본다 — 안 보는 것이지 없는 것이
-    아니다. 03 이 방금 만든 파일이 정확히 그 상태다.
+    미커밋 변경 + 새 파일은 **어느 scope 에서도 센다.** 빼면 예산이 사실보다
+    작게 잡힌다 — `git diff` 는 추적되지 않는 파일을 못 보고, 03 이 방금 만든
+    파일이 정확히 그 상태다.
+
+    `scope="pr"` 이면 **base 이후의 커밋분까지 합친다.** 두 점 diff(`git diff
+    {base}`)를 쓰므로 base 가 앞서 있으면 base 쪽 변경까지 끌어오지만,
+    `_check_divergence` 가 `behind > 0` 을 exit 9 로 이미 막는다 — 예산 검사가
+    뜻을 갖는 상태에서는 두 점과 세 점이 같다. 그 의존이 깨지면 divergence 가
+    먼저 잡는다.
+
+    기본값이 `worktree` 인 것은 이 함수를 직접 부르는 자리(05 라우팅)가 오늘의
+    동작을 그대로 원하기 때문이다. 범위를 넓히면 05 가 브랜치의 앞선 커밋까지
+    리뷰 라우팅에 넣게 되고, 그것은 근거가 따로 필요한 별개 결정이다.
     """
     out = set()
+    if scope == "pr":
+        base = ((config or {}).get("vcs") or {}).get("base_branch") or "main"
+        r = harness._git(root, "diff", "--name-only", base)
+        if r is not None and r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if line.strip():
+                    out.add(line.strip().strip('"').replace("\\", "/"))
     # `-uall` 이 없으면 git 이 **새 디렉터리를 한 줄로 뭉친다**(`?? src/x/`).
     # 그러면 파일 열 개짜리 새 폴더가 예산에 1 로 잡히고, 03 이 만든 새
     # 모듈이 정확히 그 형태다 — 예산이 사실보다 작게 잡히는 경로다.
@@ -104,10 +142,17 @@ def changed_files(root):
     return sorted(out)
 
 
-def _changed_lines(root, changed):
-    """추적분은 `git diff --numstat`, 새 파일은 줄 수를 직접 센다."""
+def _changed_lines(root, changed, scope="worktree", config=None):
+    """추적분은 `git diff --numstat`, 새 파일은 줄 수를 직접 센다.
+
+    `scope="pr"` 이면 기준이 `HEAD` 가 아니라 base 다. 한 파일이 커밋과
+    미커밋 양쪽에 있어도 base→워크트리 **순변화** 한 번으로 세어진다.
+    """
     total = 0
-    r = harness._git(root, "diff", "--numstat", "HEAD")
+    ref = "HEAD"
+    if scope == "pr":
+        ref = ((config or {}).get("vcs") or {}).get("base_branch") or "main"
+    r = harness._git(root, "diff", "--numstat", ref)
     counted = set()
     if r is not None and r.returncode == 0:
         for line in r.stdout.splitlines():
@@ -131,9 +176,9 @@ def _changed_lines(root, changed):
 
 # --------------------------------------------------------------------- 검사들
 
-def _check_budget(root, config, changed, checks):
+def _check_budget(root, config, changed, checks, scope="worktree"):
     budget = config.get("budget") or {}
-    files, lines = len(changed), _changed_lines(root, changed)
+    files, lines = len(changed), _changed_lines(root, changed, scope, config)
     over = []
     if budget.get("files_max") and files > budget["files_max"]:
         over.append("파일 %d > %d" % (files, budget["files_max"]))
@@ -202,19 +247,30 @@ def _check_infra(adapter, changed, checks):
     멈춘다. 반대로 건드렸는데 프로브를 건너뛰면 전체 회귀가 한꺼번에
     빨간불이 되고 그것을 코드 문제로 읽게 된다 (§E9).
     """
-    failures = []
+    failures, gaps = [], []
     for probe in adapter.get("infra_preflight") or []:
         touched = probe.get("required_when_touched")
         if touched and not any(harness.glob_any(touched, c) for c in changed):
             continue
         ok, detail = _probe(probe)
+        # **M44.** "건드렸는가" 만 묻고 "키 없이도 도는가" 를 안 물으면, 목업으로
+        # 떨어지는 서비스에서 키 부재가 런을 죽인다 — P4 가 그렇게 죽었다.
+        # 다만 면제가 조용하면 그것은 면제가 아니라 구멍이다. 명세가 이미
+        # 답을 적어 뒀다(§E9): "프로브가 실패해 스킵된 검증은 통과가 아니라
+        # 미검증이다 — PASS_WITH_GAPS + 명시."
+        if not ok and (probe.get("on_missing") or "fail") == "warn":
+            _add(checks, "인프라:%s" % probe.get("name"), True, "infra",
+                 "%s — 면제: %s" % (detail, probe.get("why") or "이유 미기재"),
+                 waived=True)
+            gaps.append("infra_skipped:%s" % probe.get("name"))
+            continue
         # detail 에 값은 절대 싣지 않는다 — precheck 결과는 원장·보고서로 가고
         # 그것들은 리포에 남는다. 존재 여부만 남긴다.
         _add(checks, "인프라:%s" % probe.get("name"), ok, "infra", detail)
         if not ok:
             failures.append({"name": probe.get("name"), "kind": probe.get("kind"),
                              "detail": detail})
-    return failures
+    return failures, gaps
 
 
 def _probe(probe):

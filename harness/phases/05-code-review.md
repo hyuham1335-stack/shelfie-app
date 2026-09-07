@@ -165,6 +165,10 @@ python scripts/pipeline/cli.py contract-trace --run-id {run_id}
   제출은 받지 않는다. **`next` 가 확정한 `planned` 밖이면 exit 8 이다**(델타
   라운드에서는 지목된 한 명 밖이면 그렇다). 분모를 제출자에서 유도하면 누가
   리뷰했는지가 리뷰한 사람의 주장이 된다
+- **`merged` 는 실행 방식이지 제출 형태가 아니다** (M37). 모드가 `merged` 여도
+  한 에이전트가 관점을 순차로 적용할 뿐, **제출은 라우팅된 코드 수만큼 그대로
+  갈라진다.** `--reviewer merged` 는 `planned` 밖이라 exit 8 이다. 봉투가 그
+  라우팅 코드로 명령 줄을 직접 찍어 준다
 - **규약 위반 제출은 1회 되돌린다. 2회째는 그 리뷰어를 `failed` 로 확정하고
   흐름을 잇는다** — 계속 튕기면 그 리뷰어가 영원히 슬롯에 못 들어가고, 결손이
   등급에 드러날 자리가 없어진다
@@ -229,7 +233,10 @@ python scripts/pipeline/cli.py record --phase 05 --reviewer {code} \
 - **스킬 본문을 프롬프트에 복사하지 마라.** 이유: 리뷰어 수만큼 고정비가 곱해진다.
   첫 줄에서 파일을 읽으라고 지시한다
 - **Minor 를 고치려 들지 마라.** 이유: 수리 대상은 Critical/Major 뿐이다.
-  Minor 는 원장에 쌓이고 보고서로 간다
+  Minor 는 원장에 쌓이고 보고서로 간다. **다만 다음 회차 제출에서 회계는 한다**
+  (M38) — 단조성 검사는 심각도를 가리지 않고 열린 지적 전부를 요구하고, 하나라도
+  빠지면 "조용히 증발했다"로 exit 8 이다. **수리 면제이지 회계 면제가 아니다.**
+  회계할 목록은 수리 봉투가 직접 적어 준다
 - **소스를 고친 뒤 재게이트 없이 넘어가지 마라.** 이유: 지문이 어긋나 06 이
   자동으로 막는다. 막히는 것이 정상 동작이다
 - **여기서 push 하거나 PR 을 만들지 마라.** 이유: 그것은 06 의 일이고 06 은 아직
@@ -240,7 +247,8 @@ python scripts/pipeline/cli.py record --phase 05 --reviewer {code} \
 | 무엇 | 분류 | 어떻게 |
 |---|---|---|
 | `precheck` 예산 초과 · base behind | 정책 | **exit 9 즉시 사용자 판단.** 자동 분할·자동 리베이스 금지 |
-| `infra_preflight` 프로브 실패 | infra | exit 10 · **카운터 미소모** · 즉시 에스컬레이션 |
+| `infra_preflight` 프로브 실패 (`on_missing: fail`) | infra | exit 10 · **카운터 미소모** · 즉시 에스컬레이션 |
+| 〃 (`on_missing: warn`) | — | exit 0 + `infra_skipped:{name}` gap · 등급 `PASS_WITH_GAPS`. **면제는 통과가 아니다** — 키 없이도 목업으로 도는 경로가 있을 때만 쓰고, 그 이유를 어댑터의 `why` 에 적는다 (M44) |
 | 계약 부재 | — | `no_contract` 모드로 진행. `skipped_no_contract` 로 기록 |
 | 계약이 재개 사이에 변경됨 | 정책 | exit 3 + "03 부터 재실행" |
 | 리뷰어 호출 실패·타임아웃 | infra | 그 리뷰어만 1회 재시도 → 실패 시 `--failed --reason` 으로 신고. **비차단 스킵** + `degraded` |
@@ -258,3 +266,8 @@ python scripts/pipeline/cli.py record --phase 05 --reviewer {code} \
 **`review_repair.max: 2` · `stuck_after_identical: 2` · `local_repair.max_per_run: 3`
 과 그 판정 기준 세 숫자는 미검증 상속값이다.** 원본 명세에서 왔고 이 리포에서
 재본 적이 없다. 첫 세 런의 원장이 이 값을 검사한다.
+
+**`loop.counter` · `loop.max` · `loop.on_exceed` 는 코드가 여기서 읽는다** (M36).
+예전에는 카운터 이름이 코드에 박혀 있었고 상한에는 `or 2` 폴백이 있었다 —
+**폴백은 곧 새 하드코딩이다.** 지금은 선언이 없으면 exit 2 이고, 그 사실을
+`lint-phases` 가 런 전에 먼저 잡는다.

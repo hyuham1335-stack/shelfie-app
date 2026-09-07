@@ -1704,6 +1704,114 @@ class TestRoundBudgetAfterRoundTrip:
         assert "지급" in line, line
 
 
+class TestLoopDeclarationsAreRead:
+    """M36 — 선언만 있고 코드가 안 읽는 설정을 잡는다.
+
+    **지금 동작이 선언값과 우연히 일치했다.** 그래서 "읽는지" 만 보는 단언은
+    되돌려도 초록이다. 여기 있는 것은 전부 **값을 바꾸는 변이 테스트**다 —
+    선언을 고치면 동작이 따라 바뀌는가를 묻는다. ADR-H023 이 
+    `stuck_after_identical` 에서 겪은 함정이 그것이다.
+    """
+
+    CRITICAL = {"id": "F-1", "severity": "critical", "title": "설계를 뒤집는다",
+                "quote": "빈 문자열을 먼저 거른다."}
+
+    def _xv(self, repo):
+        return repo / "harness" / "phases" / "02-cross-verify.md"
+
+    def _round_trip(self, repo, paths):
+        """01 을 수렴시키고 02 에 Critical 판정을 낸다. 반환: 02 의 봉투."""
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, _review("xv"))
+        v = paths.run_dir / "02_verdict.json"
+        v.write_text(json.dumps(
+            {"reviewer": "xv", "mode": "primary", "status": "ok",
+             "findings": [dict(self.CRITICAL)],
+             "adopted": [{"id": "F-1", "verdict": "accept"}],
+             "resolved_from_previous": []}, ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "02_verdict.raw.md").write_text(
+            "# " + "판정", encoding="utf-8")
+        return cli.run_record(repo, phase="02", file=str(v), reviewer=None,
+                              round_=None)
+
+    def test_왕복_상한을_프론트매터에서_읽는다(self, run01):
+        """상한 3 이면 두 번째 왕복이 허용된다. 하드코딩 1 이면 에스컬레이션이다."""
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].__setitem__("max", 3))
+
+        first = self._round_trip(repo, paths)
+        assert first["exit"] == 4, first["render"]
+        second = self._round_trip(repo, paths)
+        assert second["exit"] == 4, second["render"]
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["xverify_return"]["max"] == 3, after["counters"]
+        assert not after.get("escalated"), "상한 3 인데 두 번째에서 멈췄다"
+
+    def test_상한을_안_올리면_두_번째_왕복이_멈춘다(self, run01):
+        """실물 선언(max 1)의 동작이 안 바뀌었음을 잠근다."""
+        repo, paths, s = run01
+        assert self._round_trip(repo, paths)["exit"] == 4
+        second = self._round_trip(repo, paths)
+        _, after = st.load(repo, paths.run_id)
+        assert after.get("escalated"), second["render"]
+
+    def test_왕복_상한을_지우면_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].pop("max"))
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.max", env["data"]
+        assert "02-cross-verify" in env["render"], env["render"]
+
+    def test_되돌아갈_페이즈를_지우면_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].pop("on_fail_return_to"))
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.on_fail_return_to", env["data"]
+        _, after = st.load(repo, paths.run_id)
+        assert after["phase"] == "02-cross-verify", "되돌아가지 않았어야 한다"
+
+    def test_카운터를_지우면_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].pop("counter"))
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.counter", env["data"]
+
+    def test_on_exceed_어휘_밖은_런타임이_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo),
+                 lambda f: f["loop"].__setitem__("on_exceed", "continue"))
+        assert self._round_trip(repo, paths)["exit"] == 4
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.on_exceed", env["data"]
+        _, after = st.load(repo, paths.run_id)
+        assert not after.get("escalated"), "어휘 밖인데 escalate 로 낙하했다"
+
+    def test_on_exceed_어휘_밖은_lint_가_거부한다(self, repo, phases):
+        _rewrite(phases / "04-gate.md",
+                 lambda f: f["loop"].__setitem__("on_exceed", "continue"))
+        assert _fails(_lint(repo), "on_exceed"), _lint(repo)
+
+    def test_converge_와_loop_의_on_exceed_가_어긋나면_거부한다(self, repo, phases):
+        _rewrite(phases / "01-plan.md",
+                 lambda f: f["converge"].__setitem__("on_exceed", "continue"))
+        assert _fails(_lint(repo), "on_exceed"), _lint(repo)
+
+    def test_되돌아갈_페이즈는_자기보다_앞이어야_한다(self, repo, phases):
+        _rewrite(phases / "02-cross-verify.md",
+                 lambda f: f["loop"].__setitem__("on_fail_return_to", "03-implement"))
+        assert _fails(_lint(repo), "on_fail_return_to"), _lint(repo)
+
+    def test_상한이_없으면_lint_가_거부한다(self, repo, phases):
+        _rewrite(phases / "04-gate.md", lambda f: f["loop"].pop("max"))
+        assert _fails(_lint(repo), "loop_max"), _lint(repo)
+
+
 class TestInitAndNext:
 
     def test_init_creates_a_run_and_next_renders_the_first_packet(self, repo, phases):
@@ -2827,6 +2935,84 @@ class TestLedgerBaseline:
         assert ldg.distinct_runs(repo) == 1
 
 
+class TestDocDriftAxis:
+    """M39 — 문서 드리프트가 어휘 밖으로 새고 승격 경로를 못 가졌다.
+
+    `other/*` 는 글롭처럼 생겼지만 `categories()` 가 만드는 dict 의 **문자열
+    키**다. 그리고 `unpromotable` 이라, 이 리포에서 가장 자주 나는 결함이
+    승격 후보가 되지 않았다 (원장 실측 17건 · 3런).
+    """
+
+    def test_문서_드리프트_코드가_어휘에_있다(self, repo):
+        ldg.seed(repo)
+        assert "DOC_CODE_DRIFT" in ldg.categories(repo)
+        ldg.append(repo, "r1", "05",
+                   [_finding(category="DOC_CODE_DRIFT")])
+        assert len(ldg.read_all(repo)) == 1
+
+    def test_seed_와_디스크_taxonomy_의_코드_집합이_같다(self, repo):
+        """M39 는 두 곳을 동시에 고쳐야 한다. 갈라져도 아무도 몰랐다."""
+        disk = harness._read_json(ROOT / ldg.TAXONOMY_REL)
+        seeded = {c["code"] for c in ldg.SEED_TAXONOMY["categories"]}
+        assert {c["code"] for c in disk["categories"]} == seeded
+
+    def test_글롭처럼_생긴_새_코드는_거부된다(self, repo):
+        data = {"version": 1, "categories": [
+            {"code": "foo/*", "enforceable": "prose", "status": "active"}]}
+        assert any("코드 형태" in e for e in ldg.validate_taxonomy(data)),             ldg.validate_taxonomy(data)
+
+    def test_실물_taxonomy_가_형태_규칙을_통과한다(self, repo):
+        """`other/*` 는 retired 라 면제된다 — 원장의 과거를 읽을 수 있어야 한다."""
+        disk = harness._read_json(ROOT / ldg.TAXONOMY_REL)
+        assert ldg.validate_taxonomy(disk) == []
+
+    def test_other_글롭은_경로처럼_매칭되지_않는다(self, repo):
+        """성격 규정 — 지금도 통과한다. 제출 1회를 무르게 한 그 오해를 잠근다."""
+        ldg.seed(repo)
+        with pytest.raises(ValueError):
+            ldg.append(repo, "r1", "05", [_finding(category="other/무엇")])
+
+    def test_제목이_매번_다르면_임계에_닿지_않는다(self, repo):
+        """**M39 의 진실이다.** 어휘를 고쳐도 승격은 안 된다.
+
+        버킷 키가 `sha1(category|target_role|정규화 제목)` 이라, 카테고리가
+        아무리 잦아도 제목이 매번 다르면 임계에 영원히 못 닿는다. 나중에
+        누가 "고쳐졌다" 고 착각하지 않게 단언으로 못박는다.
+        """
+        ldg.seed(repo)
+        for run in ("r1", "r2", "r3"):
+            for n in (1, 2):
+                ldg.append(repo, run, "05",
+                           [_finding(category="DOC_CODE_DRIFT",
+                                     title="%s 의 %d 번째 어긋남" % (run, n))])
+        got = ldg.stage_promotions(repo)
+        assert got["candidates"] == [], got["candidates"]
+        assert got["held"] == [], got["held"]
+        roll = {b["category"]: b for b in got["by_category"]}
+        assert roll["DOC_CODE_DRIFT"]["count"] == 6, roll
+        assert roll["DOC_CODE_DRIFT"]["distinct_runs"] == 3, roll
+        assert roll["DOC_CODE_DRIFT"]["distinct_keys"] == 6, roll
+        assert roll["DOC_CODE_DRIFT"]["promotable"] is True, roll
+
+    def test_롤업이_승격을_바꾸지_않는다(self, repo):
+        """같은 제목이 임계를 넘으면 후보가 되는 경로는 그대로다."""
+        ldg.seed(repo)
+        for run in ("r1", "r2"):
+            ldg.append(repo, run, "05",
+                       [_finding(category="NAMING", severity="critical",
+                                 title="같은 이름")])
+        got = ldg.stage_promotions(repo)
+        assert len(got["candidates"]) == 1, got
+
+    def test_승격_불가_카테고리도_롤업에는_보인다(self, repo):
+        """드러내고 안 고치는 것이 이 리포의 기본 수다."""
+        ldg.seed(repo)
+        ldg.append(repo, "r1", "05", [_finding(category="OTHER")])
+        roll = {b["category"]: b
+                for b in ldg.stage_promotions(repo)["by_category"]}
+        assert roll["OTHER"]["promotable"] is False, roll
+
+
 class TestLedgerPromotion:
     """임계값 여섯과 distinct_runs >= 2. 전부 미검증 상속값이다."""
 
@@ -3313,6 +3499,73 @@ def _bulk_change(repo, files, lines=1):
                                for j in range(lines)) + "\n", encoding="utf-8")
 
 
+def _commit_all(repo, msg="wip"):
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", msg)
+
+
+class TestPrecheckScope:
+    """M40 — `scope` 를 받고 한 번도 쓰지 않았다.
+
+    변경 집합이 늘 미커밋 diff 라, 06 에서 커밋 뒤에 부르면 `at_06` 이 항상
+    0파일/0줄이었다 (P5 실측: `at_05` 8/91 · `at_06` 0/0). 같은 페이즈의 PR
+    본문은 `main...HEAD` 로 11파일을 옳게 적었다 — 한 페이즈가 두 방법으로
+    재고 다른 답을 냈다.
+    """
+
+    def test_커밋된_변경이_scope_pr_에_잡힌다(self, repo):
+        """P5 의 증상 그 자체다."""
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 3)
+        _commit_all(repo)
+        got = pc.run(repo, scope="pr")
+        assert got["budget"]["files"] == 3, got["budget"]
+        assert got["budget"]["lines"] > 0, got["budget"]
+
+    def test_scope_worktree_는_미커밋만_본다(self, repo):
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 3)
+        _commit_all(repo)
+        got = pc.run(repo, scope="worktree")
+        assert got["budget"]["files"] == 0, got["budget"]
+
+    def test_커밋과_미커밋이_이중계수되지_않는다(self, repo):
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 1, lines=10)
+        _commit_all(repo)
+        _bulk_change(repo, 1, lines=11)      # 같은 파일을 한 줄 더 더럽힌다
+        got = pc.run(repo, scope="pr")
+        assert got["budget"]["files"] == 1, got["budget"]
+
+    def test_미커밋만_있어도_scope_pr_이_본다(self, repo):
+        """05 시점의 동작이다 — 03 이 방금 쓴 것은 아직 커밋 전이다."""
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 2)
+        got = pc.run(repo, scope="pr")
+        assert got["budget"]["files"] == 2, got["budget"]
+
+    def test_알_수_없는_scope_는_거부된다(self, repo):
+        _branch(repo, "feat-x")
+        with pytest.raises(ValueError):
+            pc.run(repo, scope="staged")
+
+
+def _probe_policy(repo, name, value):
+    """실물 어댑터의 프로브 정책을 바꾼다.
+
+    실물 `anthropic_key` 는 M44 이후 `on_missing: warn` 이다(목업으로 떨어지는
+    경로가 있다). **exit 10 기전 자체를 보는 테스트는 그 정책에 기대면 안 된다**
+    — 기전과 이 리포의 정책은 다른 사실이다.
+    """
+    ap = repo / "harness" / "adapters" / "nextjs-ts.json"
+    d = harness._read_json(ap)
+    for probe in d["infra_preflight"]:
+        if probe["name"] == name:
+            probe["on_missing"] = value
+    ap.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8")
+
+
 class TestPrecheckBudget:
     """예산 초과는 exit 9 다 — **자동 분할하지 않는다.** 범위 판단은 사람의 것이다."""
 
@@ -3375,10 +3628,78 @@ class TestPrecheckInfra:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         got = pc.run(repo, scope="pr")
         assert got["exit"] == 10
         assert got["classification"] == "infra"
         assert got["counter_consumed"] is False
+
+    def _touch_services(self, repo):
+        p = repo / "src" / "services"
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "anthropic.ts").write_text("export const a = 1" + "\n",
+                                        encoding="utf-8")
+
+    def _on_missing(self, repo, value, why="목업으로 떨어진다"):
+        ap = repo / "harness" / "adapters" / "nextjs-ts.json"
+        d = harness._read_json(ap)
+        for probe in d["infra_preflight"]:
+            if probe["name"] == "anthropic_key":
+                if value is None:
+                    probe.pop("on_missing", None)
+                    probe.pop("why", None)
+                else:
+                    probe["on_missing"] = value
+                    if why is not None:
+                        probe["why"] = why
+        ap.write_text(json.dumps(d, ensure_ascii=False, indent=2)+ "\n",
+                      encoding="utf-8")
+
+    def test_on_missing_warn_은_exit_10_을_내지_않는다(self, repo, monkeypatch):
+        """M44 — P4 를 죽인 기전. 키가 없어도 목업이 돌면 회귀가 안 깨진다."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _branch(repo, "feat-x")
+        self._touch_services(repo)
+        self._on_missing(repo, "warn")
+        got = pc.run(repo, scope="pr")
+        assert got["exit"] == 0, got["checks"]
+
+    def test_면제는_통과가_아니라_gap_이다(self, repo, monkeypatch):
+        """면제가 조용하면 그것은 면제가 아니라 구멍이다."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _branch(repo, "feat-x")
+        self._touch_services(repo)
+        self._on_missing(repo, "warn")
+        got = pc.run(repo, scope="pr")
+        assert got["gaps"] == ["infra_skipped:anthropic_key"], got
+        waived = [c for c in got["checks"] if c.get("waived")]
+        assert len(waived) == 1, got["checks"]
+        assert "목업으로 떨어진다" in waived[0]["message"], waived[0]
+
+    def test_기본값은_여전히_fail_이다(self, repo, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _branch(repo, "feat-x")
+        self._touch_services(repo)
+        self._on_missing(repo, None)
+        got = pc.run(repo, scope="pr")
+        assert got["exit"] == 10, got["checks"]
+        assert got["classification"] == "infra"
+        assert not got["gaps"], got["gaps"]
+
+    def test_why_없는_warn_은_lint_가_거부한다(self, repo, phases, monkeypatch):
+        self._on_missing(repo, "warn", why=None)
+        ap = repo / "harness" / "adapters" / "nextjs-ts.json"
+        d = harness._read_json(ap)
+        for probe in d["infra_preflight"]:
+            probe.pop("why", None)
+        ap.write_text(json.dumps(d, ensure_ascii=False, indent=2)+ "\n",
+                      encoding="utf-8")
+        rows = [r for r in cli.lint_phases(repo)
+                if r["status"] == "FAIL" and r["rule"] == "infra_preflight"]
+        assert rows, cli.lint_phases(repo)
+
+    def test_실물_어댑터가_스키마를_만족한다(self, repo, phases):
+        assert _fails(_lint(repo), "infra_preflight") == []
 
     def test_present_env_probe_passes(self, repo, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-테스트")
@@ -3386,6 +3707,7 @@ class TestPrecheckInfra:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         got = pc.run(repo, scope="pr")
         assert got["exit"] == 0
 
@@ -3396,6 +3718,7 @@ class TestPrecheckInfra:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         got = pc.run(repo, scope="pr")
         assert "sk-비밀값-12345" not in json.dumps(got, ensure_ascii=False)
 
@@ -4025,6 +4348,76 @@ class TestReview05Failure:
         assert "제출" in env["render"]
 
 
+class TestReview05EnvelopeContract:
+    """M37·M38 — 봉투가 기계 검사를 다 말하지 않아 제출이 두 번 반려됐다.
+
+    둘 다 **페이즈 파일이 아니라 `cli.py` 가 조건부로 그리는 문장**이 원인이다.
+    페이즈 파일만 고치면 다음 런이 또 밟는다.
+    """
+
+    def _routed(self, mode, codes):
+        return {"phases": {"05-code-review": {
+            "mode": mode,
+            "routing": {"reviewers": [{"code": c, "skill": "%s-reviewer" % c,
+                                       "matched_count": 1} for c in codes],
+                        "dropped": [], "capped": False}}}}
+
+    def test_merged_봉투가_리뷰어별_제출을_말한다(self):
+        """M37 — `mode: merged` 가 "제출도 하나" 로 읽혔다."""
+        out = cli._review_render(self._routed("merged", ["data", "sec", "arch"]))
+        # 명령 줄에 `merged` 가 제출자로 등장하면 안 된다. 산문은 그 낱말을
+        # 쓰지만("`--reviewer merged` 를 받지 않는다") 명령은 쓰지 않는다.
+        cmds = [l for l in out.splitlines() if l.startswith("python ")]
+        assert cmds, out
+        assert not [l for l in cmds if "--reviewer merged" in l], out
+        for code in ("data", "sec", "arch"):
+            assert [l for l in cmds if "--reviewer %s" % code in l], out
+        assert "실행 방식" in out, out
+
+    def test_fanout_봉투는_그_문단을_넣지_않는다(self):
+        out = cli._review_render(self._routed("fanout", ["data", "sec"]))
+        assert "실행 방식" not in out, out
+
+    def test_merged_제출은_기계가_거부한다(self, repo, request_file, phases):
+        """성격 규정 — 지금도 통과한다. 봉투가 말하는 규칙이 기계와 같음을 잠근다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        cli.run_contract_trace(repo, run_id=run_id)
+        paths, s = st.load(repo, run_id)
+        node = s["phases"]["05-code-review"]
+        node["planned"] = ["arch"]
+        node["routing"] = {"reviewers": [{"code": "arch"}], "dropped": [],
+                           "capped": False}
+        node["mode"] = "merged"
+        st.save(paths, s)
+        f = _reviewer_files(paths, "merged", [])
+        env = cli.run_record(repo, "05", str(f), reviewer="merged", round_=1,
+                             run_id=run_id)
+        assert env["exit"] == 8, env["render"]
+
+    def test_델타_봉투가_minor_회계_의무를_말한다(self):
+        """M38 — 봉투는 "Minor 는 고치지 않는다" 만 적었다."""
+        blocking = [{"severity": "major", "target_role": "impl",
+                     "title": "경계가 새고 있다"}]
+        prev = [{"id": "F-9", "severity": "minor", "reviewer": "arch",
+                 "key": "k9", "title_norm": "주석이 낡았다"}]
+        out = cli._review_repair_render(blocking, 2, delta="arch",
+                                        previous_open=prev)
+        assert "resolved_from_previous" in out, out
+        assert "회계" in out, out
+        # 열린 목록을 봉투가 직접 준다 — 모델이 재구성하지 않게
+        assert "F-9" in out, out
+        assert "주석이 낡았다" in out, out
+
+    def test_열린_지적이_없으면_목록을_적지_않는다(self):
+        blocking = [{"severity": "major", "target_role": "impl", "title": "x"}]
+        out = cli._review_repair_render(blocking, 2, delta="arch",
+                                        previous_open=[])
+        assert "F-9" not in out
+        assert "회계" in out, "의무 자체는 목록 유무와 무관하다"
+
+
 class TestReview05DeltaRound:
     """델타 재리뷰는 1명이고(M27), 그 1명이 G-4 를 되돌리지 않는다."""
 
@@ -4040,6 +4433,46 @@ class TestReview05DeltaRound:
                            "dropped": [], "capped": False}
         node["mode"] = "fanout"
         return run_id, paths, s, node
+
+    def test_델타_라운드가_1회차_리뷰어_수를_지우지_않는다(self, repo):
+        """M43 — 1회차에 셋이 돌았는데 상태가 `1/1` 로 기록됐다."""
+        s, node = {}, {}
+        cli._write_review05(s, node, ["data", "sec", "arch"], 3, [],
+                            {"data": {"keys": []}, "sec": {"keys": []},
+                             "arch": {"keys": []}}, round_=1)
+        cli._write_review05(s, node, ["arch"], 1, [],
+                            {"arch": {"keys": []}}, round_=2)
+        got = s["review05"]
+        assert got["reviewers_planned"] == 3, got
+        assert got["reviewers_ok"] == 3, got
+        assert got["rounds"]["1"]["planned"] == 3, got["rounds"]
+        assert got["rounds"]["2"]["planned"] == 1, got["rounds"]
+
+    def test_status_는_델타_뒤에도_최악을_보존한다(self, repo):
+        """이 수정이 만들 수 있는 유일한 회귀를 잠근다.
+
+        실적을 최댓값으로 접는다고 `status` 까지 새 값에서 유도하면 델타
+        라운드가 1회차의 `degraded` 를 지운다.
+        """
+        s, node = {}, {}
+        cli._write_review05(s, node, ["data", "sec", "arch"], 2, [],
+                            {"data": {"keys": []}, "sec": {"keys": []},
+                             "arch": {"keys": None}}, round_=1)
+        cli._write_review05(s, node, ["arch"], 1, [],
+                            {"arch": {"keys": []}}, round_=2)
+        got = s["review05"]
+        assert got["status"] == "degraded", got
+        assert got["reviewers_planned"] == 3, got
+        assert got["reviewers_ok"] == 2, got
+
+    def test_실패한_리뷰어가_라운드를_넘어_남는다(self, repo):
+        s, node = {}, {}
+        cli._write_review05(s, node, ["data", "arch"], 1, [],
+                            {"data": {"keys": None}, "arch": {"keys": []}},
+                            round_=1)
+        cli._write_review05(s, node, ["arch"], 1, [],
+                            {"arch": {"keys": []}}, round_=2)
+        assert s["review05"]["reviewers_failed"] == ["data"], s["review05"]
 
     def test_worst_status_is_a_pure_function(self, repo):
         assert rv.worst_status(["ok", "degraded"]) == "degraded"
@@ -4345,6 +4778,7 @@ class TestPrecheckSpecAlignment:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         cli.run_init(repo, "x", request_file)
         env = cli.run_precheck(repo, scope="pr")
         assert env["exit"] == 10
@@ -4611,6 +5045,90 @@ class TestPr06Preflight:
         cli.run_approve(repo, "06", revoke=True, run_id=run_id)
         env = cli.run_pr(repo, run_id=run_id)
         assert env["exit"] == 9
+
+
+class TestPr06BodyTruth:
+    """M41·M42 — 본문이 파이썬 repr 을 찍고 없는 결손을 보고했다."""
+
+    def _body(self, repo, paths, s):
+        return pr_mod.build_body(repo, paths, s,
+                                 harness._read_json(repo / harness.CONFIG_REL))
+
+    def _verdict(self, paths, adopted):
+        (paths.run_dir / "02_verdict.json").write_text(
+            json.dumps({"reviewer": "xv", "adopted": adopted},
+                       ensure_ascii=False), encoding="utf-8")
+
+    def _plan(self, paths, text):
+        (paths.run_dir / "01_plan.md").write_text(text, encoding="utf-8")
+
+    def test_채택_판정이_파이썬_repr_로_나가지_않는다(self, repo, request_file,
+                                                    phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._verdict(paths, [{"id": "F-1", "verdict": "reject",
+                               "reason": "관계의 한쪽 끝이 외부가 아니다"}])
+        body = self._body(repo, paths, s)
+        assert "{'id'" not in body, body
+        assert "F-1" in body and "reject" in body, body
+        assert "관계의 한쪽 끝이 외부가 아니다" in body, body
+
+    def test_문자열_원소도_받는다(self, repo, request_file, phases):
+        """스키마가 문자열을 금하지 않는다. 본문 조립 중 예외는 06 을 죽인다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._verdict(paths, ["F-1 을 채택했다"])
+        assert "F-1 을 채택했다" in self._body(repo, paths, s)
+
+    def test_INTENT_블록의_INV_가_본문에_나온다(self, repo, request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        intent = json.dumps({"invariants": [
+            {"id": "INV-1", "kind": "must", "text": "상한을 바꾸지 않는다"},
+            {"id": "INV-2", "kind": "must_not", "text": "로직을 고치지 않는다"}]},
+            ensure_ascii=False)
+        self._plan(paths, "<!-- INTENT " + intent + " -->" + chr(10) * 2 +
+                   "# 플랜" + chr(10))
+        body = self._body(repo, paths, s)
+        assert "INV-1" in body and "상한을 바꾸지 않는다" in body, body
+        assert "INV-2" in body, body
+        assert "INV 블록이 없다" not in body, body
+
+    def test_INV_가_진짜_없으면_없다고_적는다(self, repo, request_file, phases):
+        """수정이 내용을 지어내지 않게 잠근다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._plan(paths, "# 플랜" + chr(10) + chr(10) + "본문뿐이다." + chr(10))
+        assert "INV 블록이 없다" in self._body(repo, paths, s)
+
+    def test_헤딩_형태의_INV_도_받는다(self, repo, request_file, phases):
+        """다른 스택은 헤딩을 쓸 수 있다 — 폴백을 남긴다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._plan(paths, "## INV" + chr(10) * 2 + "- INV-9 지키는 것" +
+                   chr(10) * 2 + "## 다음" + chr(10))
+        body = self._body(repo, paths, s)
+        assert "INV-9" in body and "INV 블록이 없다" not in body, body
+
+    def test_요청_인용이_경계에서_끊기고_끊긴_사실을_적는다(self, repo,
+                                                          request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        long_req = (chr(10)).join("%d 번째 줄이다. 문장이 여기서 끝난다." % i
+                                  for i in range(200))
+        paths.request.write_text(long_req, encoding="utf-8")
+        body = self._body(repo, paths, s)
+        quoted = [l for l in body.splitlines() if l.startswith("> ")]
+        assert quoted, body
+        # 마지막 인용 줄이 문장 중간에서 잘리지 않았다
+        assert quoted[-1].rstrip().endswith("끝난다."), quoted[-1]
+        assert "원문" in body and str(len(long_req)) in body, body
 
 
 class TestPr06Body:

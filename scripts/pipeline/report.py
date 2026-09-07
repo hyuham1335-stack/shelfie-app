@@ -46,6 +46,32 @@ GAP_REASONS = {
 }
 
 
+def _ledger_axis_lines(data):
+    """원장의 카테고리 축 빈도. **승격하지 않는 관측이다** (M39 · ADR-H026).
+
+    승격 버킷의 축은 제목이라, 카테고리가 아무리 잦아도 제목이 매번 다르면
+    임계에 닿지 않는다. 그 사실을 보고서가 말하지 않으면 "승격 0건" 이
+    "지적이 없었다" 로 읽힌다.
+    """
+    roll = (data.get("ledger") or {}).get("by_category") or []
+    if not roll:
+        return []
+    top = roll[:5]
+    out = ["", "**원장의 카테고리 축** (승격 후보와는 다른 셈이다 — 승격은 "
+               "제목 단위이고 이 표는 카테고리 단위다):", "",
+           "| category | 관측 | 런 | 서로 다른 제목 | 승격 가능 |",
+           "|---|---|---|---|---|"]
+    out += ["| `%s` | %s | %s | %s | %s |"
+            % (b.get("category"), b.get("count"), b.get("distinct_runs"),
+               b.get("distinct_keys"),
+               "예" if b.get("promotable") else "아니오")
+            for b in top]
+    out += ["", "**서로 다른 제목 수가 관측 수와 같으면 그 카테고리는 임계에 "
+                "닿지 않는다.** 자주 나는 것과 같은 것이 반복되는 것은 다른 "
+                "사실이고, 승격이 배우는 것은 후자다."]
+    return out
+
+
 def explain_gap(gap):
     """gap 하나를 사람이 읽는 한 줄로. 모르는 것은 **모른다고 적는다.**"""
     head = str(gap).split(":")[0]
@@ -136,6 +162,7 @@ def build(state, data, calibration, promotions):
         lines += ["- `%s` — **%s** · %s" % (p.get("rule_id"), p.get("status"),
                                             p.get("reason") or "사유 없음")
                   for p in other]
+    lines += _ledger_axis_lines(data)
     lines.append("")
 
     lines += ["## 건너뛴 게이트", ""]

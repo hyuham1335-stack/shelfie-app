@@ -67,10 +67,12 @@
   "migration": null,
 
   "infra_preflight": [
-    {"name": "anthropic_key", "kind": "env", "var": "ANTHROPIC_API_KEY", "required_when_touched": ["src/services/anthropic.ts"]}
+    {"name": "anthropic_key", "kind": "env", "var": "ANTHROPIC_API_KEY", "required_when_touched": ["src/services/anthropic.ts"],
+     "on_missing": "warn",
+     "why": "키가 없으면 src/services/anthropic.ts:268·:321 이 목업을 돌려주고 그 목업도 zod 스키마를 통과한다. 골든 테스트는 스스로 skip 한다(ADR-010). 즉 키 부재는 회귀 실패를 뜻하지 않는다 — 다만 골든 경로를 안 태웠으므로 통과가 아니라 infra_skipped gap 이다."}
   ],
 
-  "_infra_preflight_note": "aladin_key 프로브를 또다 (2026-09-07). 원래 {name: aladin_key, var: ALADIN_TTB_KEY, required_when_touched: [src/services/aladin.ts]} 가 있었다. **알라딘 OpenAPI 가 종료된다** — 신규 인증키 발급이 2026-09-04 에 닫혔고 서비스는 2026-10-30 에 끝난다. 그 키를 발급받을 방법이 없으므로 **이 조건은 영원히 만족될 수 없고**, 남겨 두면 src/services/aladin.ts 를 건드리는 모든 런이 05 precheck 에서 영구히 멈춘다. 런 P4(20260907-1326-f749)가 실물로 그 자리를 밟았다. **anthropic_key 는 남긴다** — 그 키는 지금도 발급받을 수 있어 조건이 성립한다. 다만 **프로브 설계 자체에 결함이 하나 남는다** — 이 리포의 services/ 는 키가 없으면 목업을 돌려주고(anthropic.ts:268·:321) 그 목업도 스키마를 통과하며 골든 테스트는 스스로 skip 하므로(shelf.golden.test.ts:169, ADR-010), 키 부재가 반드시 회귀 실패를 뜻하지 않는다. 프로브에 mock_fallback 면제 조건을 두는 것은 precheck.py 변경이라 별건으로 남긴다.",
+  "_infra_preflight_note": "aladin_key 프로브를 또다 (2026-09-07). 원래 {name: aladin_key, var: ALADIN_TTB_KEY, required_when_touched: [src/services/aladin.ts]} 가 있었다. **알라딘 OpenAPI 가 종료된다** — 신규 인증키 발급이 2026-09-04 에 닫혔고 서비스는 2026-10-30 에 끝난다. 그 키를 발급받을 방법이 없으므로 **이 조건은 영원히 만족될 수 없고**, 남겨 두면 src/services/aladin.ts 를 건드리는 모든 런이 05 precheck 에서 영구히 멈춘다. 런 P4(20260907-1326-f749)가 실물로 그 자리를 밟았다. **anthropic_key 는 남긴다** — 그 키는 지금도 발급받을 수 있어 조건이 성립한다. 그리고 **프로브 설계의 결함(M44)은 닫혔다** — 이 리포의 services/ 는 키가 없으면 목업을 돌려주고(anthropic.ts:268·:321) 그 목업도 스키마를 통과하며 골든 테스트는 스스로 skip 하므로(shelf.golden.test.ts:169, ADR-010), 키 부재가 반드시 회귀 실패를 뜻하지 않는다. 그래서 on_missing: warn 을 달았다 — exit 10 대신 infra_skipped:anthropic_key gap 이고 등급이 PASS_WITH_GAPS 로 내려간다. **면제는 통과가 아니다**(§E9, ADR-H027).",
 
   "infra_failure_patterns": [
     "ECONNREFUSED",

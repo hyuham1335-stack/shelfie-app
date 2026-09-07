@@ -104,6 +104,9 @@ python scripts/pipeline/cli.py contract-trace --run-id <id>
 - 리뷰어에게 **리포 탐색을 허용하지 마라.** 부족하면 `need_more_context` 에 적게 한다
 
 리뷰어마다 `.raw.md` 와 `.json` **두 파일**을 받고 하나씩 제출한다.
+**모드가 `merged` 여도 그렇다** — `merged` 는 한 에이전트가 관점을 순차로
+적용한다는 뜻이지 제출이 하나라는 뜻이 아니다. `--reviewer merged` 는 라우팅
+밖이라 exit 8 이다 (M37).
 
 ```bash
 python scripts/pipeline/cli.py record --phase 05 --file <리뷰 json> \
@@ -115,7 +118,10 @@ python scripts/pipeline/cli.py record --phase 05 --file <리뷰 json> \
 다시 알려 주고 다시 받는다.
 
 exit 4 면 Critical/Major 수리다. **Minor 는 고치지 않는다** — 원장에 쌓이고
-보고서로 간다.
+보고서로 간다. **다만 다음 회차 제출에서 회계는 한다** (M38): 열려 있던 지적은
+Minor 를 포함해 전부 다시 내거나 `resolved_from_previous`·
+`reraised_from_previous` 로 처리한다. 빠지면 "조용히 증발했다"로 exit 8 이다.
+회계할 목록은 수리 봉투가 적어 준다 — 네가 재구성하지 마라.
 
 ### 05 와 06 사이 — **여기서 커밋한다**
 

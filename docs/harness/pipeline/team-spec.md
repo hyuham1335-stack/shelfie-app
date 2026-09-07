@@ -234,6 +234,9 @@ docs/harness/pipeline/runs/{run_id}.md          # 08 보고서
 {"contract":{"present":true,"sha256":"…"},
  "cross_verify":{"mode":"primary|fallback|skipped"},
  "review05":{"status":"ok|degraded|failed","reviewers_planned":3,"reviewers_ok":3,
+             "round_status":{"1":"ok","2":"ok"},
+             "rounds":{"1":{"planned":3,"ok":3,"failed":[]},
+                       "2":{"planned":1,"ok":1,"failed":[]}},
              "mode":"merged|fanout","major":0,"need_more_context":[],
              "dropped_by_enforcement":0,"truncated":false},
  "precheck":{"at_05":{"files":7,"lines":213,"base_behind":0,"infra":{}},"at_06":{}},
@@ -598,6 +601,13 @@ stateDiagram-v2
 | `degraded` | 1개 이상 실패했지만 1개 이상 성공 |
 | `failed` | 전부 실패, 또는 계획된 리뷰어가 0개 |
 
+**`reviewers_planned`·`reviewers_ok` 도 라운드를 가로질러 보존한다** (M43).
+`status` 가 "런 안에서 좋아지지 않는다" 이므로 실적은 대칭으로 **"런 안에서
+줄지 않는다"** — 두 값은 라운드별 기록의 **최댓값**이다. 매 라운드 덮으면
+1회차에 셋이 돌아도 델타 라운드(1명)가 끝나는 순간 `1/1` 로 적혀, 보고서와
+승인 프롬프트가 리뷰 실적을 축소한다. 파생 수 하나로 덮지 않고 회차별 기록을
+`review05.rounds` 에 통째로 남긴다 — 정수로 덮는 것이 M31 의 손실이었다.
+
 ### 3.6 `06-pr` — 승인 · push · PR
 
 **입력**: 05의 확정 코드 + 지문
@@ -812,11 +822,17 @@ gap 은 effort 와 **따로 센다**:
   {"code":"CONCURRENCY","enforceable":"prose","status":"active"},
   {"code":"TEST_MISSING_FAILURE_PATH","enforceable":"prose","status":"active"},
   {"code":"CONTRACT_DEFECT","enforceable":"none","status":"escalate_only"},
-  {"code":"other/*","enforceable":"prose","status":"unpromotable"}]}
+  {"code":"DOC_CODE_DRIFT","enforceable":"prose","status":"active"},
+  {"code":"OTHER","enforceable":"prose","status":"unpromotable"},
+  {"code":"other/*","enforceable":"prose","status":"retired"}]}
 ```
 
 `status`: `active` / `proposed`(어휘만) / `retired` / `escalate_only` / `unpromotable`.
 **`active` + `enforceable != prose`인 것만** 05의 "검토 제외" 목록에 들어간다 — 이 파일 하나가 원장 어휘·승격 목적지·리뷰 범위 셋의 단일 출처다.
+
+**코드는 글롭이 아니다.** `categories()` 가 만드는 dict 의 **문자열 키**이고 `append()` 는 `code not in known` 으로만 본다 — `other/foo` 는 `other/*` 에 매칭되지 않고 어휘 밖으로 튕긴다. 그 오해가 P5 에서 제출 1회를 무르게 했다(M39). 이제 `validate_taxonomy` 가 코드 형태를 `^[A-Z][A-Z0-9_]*$` 로 잠근다. 옛 코드 `other/*` 는 **원장의 과거를 읽을 수 있게** `retired` 로 남긴다 — `retired` 는 이미 `NEVER_PROMOTE` 라 거동이 바뀌지 않고, `findings.jsonl` 은 한 줄도 고치지 않는다.
+
+**승격의 축은 제목이지 카테고리가 아니다.** 버킷 키가 `sha1(category|target_role|정규화 제목)` 이라, 카테고리가 아무리 잦아도 제목이 매번 다르면 임계에 **영원히** 닿지 않는다. 이것은 결함이 아니라 "승격의 산물이 규칙" 이라는 정의의 결과다. 그러나 그 사실이 어디에도 안 보이면 "승격 0건" 이 "지적이 없었다" 로 읽히므로, `stage_promotions` 이 **승격하지 않는 `by_category` 롤업**을 함께 낸다 (ADR-H026). `candidates` 와 `held` 는 그 롤업으로 한 비트도 달라지지 않는다.
 
 ### 5.2 `findings.jsonl` (append-only)
 
@@ -968,6 +984,7 @@ prose  → config.project.rules_dir  →  agent-memory/{role}  →  config.proje
 스프링업이 필요한 통합 테스트는 외부 의존이 있어야 돈다. 없으면 회귀 **전량**이 실패하고, 그 로그로 귀속을 시도하면 무의미한 수리 루프가 돈다.
 
 - **전체 회귀 직전에 `adapter.infra_preflight[]`의 프로브를 돈다**(`tcp` / `cmd` / `env`). 실패면 **infra → 카운터 미소모 → 즉시 에스컬레이션.**
+- **다만 프로브가 실패해도 회귀가 도는 경우가 있다.** 서비스가 키 부재에서 목업으로 떨어지고 그 목업이 스키마를 통과하면, 프로브의 전제("없으면 회귀 전량이 실패한다")가 성립하지 않는다. 그 프로브는 `on_missing: "warn"` 과 **그렇게 판단한 이유(`why`)** 를 함께 적는다 → exit 10 대신 `infra_skipped:{name}` gap 이고 등급이 `PASS_WITH_GAPS` 로 내려간다. **조용히 통과시키지 않는 것이 요점이다** — `why` 없는 `warn` 은 lint 가 거부한다 (M44).
 - **프로브가 실패해 스킵된 테스트가 있으면 그것은 통과가 아니라 미검증이다.**
   - 기본: **`PASS_WITH_GAPS` + PR 본문·보고서에 무엇이 미검증인지 명시.** 조용히 통과시키지 않는다.
   - `--strict-migration`: 마이그레이션 diff가 있는데 그 검증이 스킵되면 **중단.**

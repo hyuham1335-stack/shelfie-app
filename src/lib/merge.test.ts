@@ -94,13 +94,15 @@ describe("세션당 알라딘 호출 상한 (TRD 10번 — 문서에만 있는 �
 
 describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () => {
   it("confidence 0.29는 강등되고 0.30은 조회 대상이다 (경계값)", () => {
-    const { toLookup, unreadable } = reduceBeforeLookup([
+    const { toLookup, lowConfidence, capped } = reduceBeforeLookup([
       추출({ title: "아슬아슬", confidence: 0.29 }),
       추출({ title: "간신히", confidence: CONFIDENCE_FLOOR }),
     ]);
 
     expect(toLookup.map((c) => c.title)).toEqual(["간신히"]);
-    expect(unreadable.map((c) => c.title)).toEqual(["아슬아슬"]);
+    expect(lowConfidence.map((c) => c.title)).toEqual(["아슬아슬"]);
+    // 상한에 밀린 것이 아니다. 두 강등을 한 바구니에 뭉치면 이 구분이 사라진다.
+    expect(capped).toEqual([]);
   });
 
   it("CONFIDENCE_FLOOR는 0.3이다", () => {
@@ -114,9 +116,9 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
       추출({ title: "다", confidence: 0.0 }),
     ];
 
-    const { toLookup, unreadable } = reduceBeforeLookup(입력);
+    const { toLookup, lowConfidence, capped } = reduceBeforeLookup(입력);
 
-    expect(toLookup.length + unreadable.length).toBe(입력.length);
+    expect(toLookup.length + lowConfidence.length + capped.length).toBe(입력.length);
   });
 
   it("제목+저자가 정규화 후 같은 후보 3건이 1건으로 병합된다", () => {
@@ -151,14 +153,14 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
   });
 
   it("확신도 미달 후보는 병합 대상에서도 빠진다 — 강등이 먼저다", () => {
-    const { toLookup, unreadable } = reduceBeforeLookup([
+    const { toLookup, lowConfidence } = reduceBeforeLookup([
       추출({ title: "파친코", author: "이민진", confidence: 0.2 }),
       추출({ title: "파친코", author: "이민진", confidence: 0.9 }),
     ]);
 
     expect(toLookup).toHaveLength(1);
-    expect(unreadable).toHaveLength(1);
-    expect(unreadable[0].confidence).toBe(0.2);
+    expect(lowConfidence).toHaveLength(1);
+    expect(lowConfidence[0].confidence).toBe(0.2);
   });
 
   it("후보 300건을 넣어도 toLookup이 조회 상한을 넘지 않는다 (TR-005 성공 지표)", () => {
@@ -176,15 +178,18 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
     expect(MAX_CANDIDATES_FOR_LOOKUP).toBe(65);
   });
 
-  it("조회 상한으로 잘린 후보는 버려지지 않고 unreadable로 남는다", () => {
+  it("조회 상한으로 잘린 후보는 버려지지 않고 capped로 남는다", () => {
     const 후보들 = Array.from({ length: 300 }, (_, i) =>
       추출({ title: `책 ${i}`, confidence: 0.5, photoIndex: i % MAX_PHOTOS }),
     );
 
-    const { toLookup, unreadable } = reduceBeforeLookup(후보들);
+    const { toLookup, lowConfidence, capped } = reduceBeforeLookup(후보들);
 
-    expect(toLookup.length + unreadable.length).toBe(300);
-    expect(unreadable).toHaveLength(300 - MAX_CANDIDATES_FOR_LOOKUP);
+    expect(toLookup.length + lowConfidence.length + capped.length).toBe(300);
+    // 전부 하한 위이므로 강등은 오직 상한 때문이다. 이 둘이 한 바구니에 섞이면
+    // 조회 상한에 밀린 수를 따로 셀 수 없어져 가드레일 분자가 부풀어 오른다.
+    expect(lowConfidence).toEqual([]);
+    expect(capped).toHaveLength(300 - MAX_CANDIDATES_FOR_LOOKUP);
   });
 
   it("조회 대상은 확신도 내림차순으로 남는다", () => {
@@ -195,7 +200,7 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
     const { toLookup } = reduceBeforeLookup(후보들);
 
     const 최저 = Math.min(...toLookup.map((c) => c.confidence));
-    const 최고강등 = Math.max(...reduceBeforeLookup(후보들).unreadable.map((c) => c.confidence));
+    const 최고강등 = Math.max(...reduceBeforeLookup(후보들).capped.map((c) => c.confidence));
     expect(최저).toBeGreaterThanOrEqual(최고강등);
   });
 
@@ -225,7 +230,50 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
   });
 
   it("빈 입력은 빈 결과를 낸다", () => {
-    expect(reduceBeforeLookup([])).toEqual({ toLookup: [], unreadable: [] });
+    expect(reduceBeforeLookup([])).toEqual({ toLookup: [], lowConfidence: [], capped: [] });
+  });
+
+  it("세 바구니가 입력을 분할한다 — 각 후보가 정확히 한 바구니에만 든다", () => {
+    const 미달 = Array.from({ length: 4 }, (_, i) =>
+      추출({ title: `흐릿 ${i}`, confidence: 0.1 }),
+    );
+    const 또렷 = Array.from({ length: MAX_CANDIDATES_FOR_LOOKUP + 6 }, (_, i) =>
+      추출({ title: `또렷 ${i}`, confidence: 0.5 + (i % 40) / 100, photoIndex: i % MAX_PHOTOS }),
+    );
+    const 입력 = [...미달, ...또렷];
+
+    const { toLookup, lowConfidence, capped } = reduceBeforeLookup(입력);
+    const 전체 = [...toLookup, ...lowConfidence, ...capped];
+
+    expect(전체).toHaveLength(입력.length);
+    // 제목이 전부 달라 사전 병합이 일어나지 않으므로 원소 동일성으로 셀 수 있다.
+    // "정확히 하나"를 재는 것이 핵심이다 — 개수만 맞추면 한 후보가 두 바구니에
+    // 들어가고 다른 후보가 사라진 상태도 통과한다.
+    for (const 후보 of 입력) {
+      expect(전체.filter((c) => c === 후보)).toHaveLength(1);
+    }
+
+    expect(toLookup).toHaveLength(MAX_CANDIDATES_FOR_LOOKUP);
+    expect(lowConfidence).toHaveLength(미달.length);
+    expect(capped).toHaveLength(6);
+  });
+
+  it("두 강등 바구니는 서로 다른 기전으로 갈린다 — 확신도 하한과 조회 상한", () => {
+    const 입력 = [
+      ...Array.from({ length: 7 }, (_, i) => 추출({ title: `흐릿 ${i}`, confidence: 0.29 })),
+      ...Array.from({ length: MAX_CANDIDATES_FOR_LOOKUP + 3 }, (_, i) =>
+        추출({ title: `또렷 ${i}`, confidence: 0.9, photoIndex: i % MAX_PHOTOS }),
+      ),
+    ];
+
+    const { lowConfidence, capped } = reduceBeforeLookup(입력);
+
+    // 하한 미만은 조회조차 시도되지 않은 판독 실패이고, 상한에 밀린 것은 우리가
+    // 스스로 건 제한이다. 둘을 한 이름으로 부르면 후자가 판독 품질로 계상된다.
+    expect(lowConfidence.every((c) => c.confidence < CONFIDENCE_FLOOR)).toBe(true);
+    expect(capped.every((c) => c.confidence >= CONFIDENCE_FLOOR)).toBe(true);
+    expect(lowConfidence).toHaveLength(7);
+    expect(capped).toHaveLength(3);
   });
 });
 

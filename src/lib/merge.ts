@@ -46,27 +46,37 @@ export const CONFIDENCE_FLOOR = 0.3;
 /**
  * ① 알라딘 조회 전 축소.
  *
- * 반환하는 두 바구니의 합은 **항상 입력 건수와 같다.** 강등된 후보도 사용자에게
- * 미확인으로 보여야 하므로 조용히 버리지 않는다 (ADR-002 — 왜 빠졌는지 보여준다).
+ * 강등된 후보도 사용자에게 미확인으로 보여야 하므로 조용히 버리지 않는다
+ * (ADR-002 — 왜 빠졌는지 보여준다). 다만 **세 바구니의 합은 입력 건수와 같지
+ * 않다.** `mergeByNormalizedKey`가 사진 간 중복을 하나로 접으므로 합은 입력
+ * 건수 **이하**다. 접혀서 사라지는 것은 같은 책의 다른 판독본뿐이고 대표는
+ * 남으므로, 화면에서 통째로 사라지는 책은 없다 — 보존되는 것은 건수가 아니라
+ * **책**이다.
  *
- * `unreadable` 바구니에는 두 종류가 섞인다.
- * - 확신도가 하한에 못 미친 후보
- * - 65건 상한에 밀려 조회되지 못한 후보
- * 둘을 나누지 않는 이유는 사용자가 할 수 있는 일이 같기 때문이다 — 화면 문구
- * ("책등 글자를 읽지 못했어요")도 다음 행동(제목 직접 입력)도 동일하다. 그리고
- * 상한에 밀린 쪽은 **확신도 오름차순으로 가장 약하게 읽힌 후보들**이라 이 설명이
- * 사실과 어긋나지 않는다. `lookup_failed`로 표시하면 조회한 적도 없는 책에
- * "잠시 후 다시 시도해 주세요"라고 말하게 되어 ADR-005를 어긴다.
+ * ## 왜 `lowConfidence`와 `capped`를 나누는가
+ * 응답에서 둘은 같은 사유(`unreadable`)로 접힌다. 사용자가 할 수 있는 일이
+ * 같기 때문이다 — 화면 문구("책등 글자를 읽지 못했어요")도 다음 행동(제목 직접
+ * 입력)도 동일하고, 상한에 밀린 쪽은 **확신도 오름차순으로 가장 약하게 읽힌
+ * 후보들**이라 그 문구가 사실과 어긋나지도 않는다. (`lookup_failed`로 표시하면
+ * 조회한 적도 없는 책에 "잠시 후 다시 시도해 주세요"라고 말하게 되어 ADR-005를
+ * 어긴다.)
+ *
+ * 그런데 **지표에서는 갈라야 한다.** `capped`는 프롬프트 품질이 아니라 우리가 건
+ * 조회 상한 때문에 밀린 것이라, 미확인 비율 가드레일의 분자에 넣으면 "상한을
+ * 올려야 할 상황"을 "프롬프트가 나빠진 상황"으로 오독하게 된다. 접는 일은
+ * `lib/unidentified.ts`가 응답 직전에 하고, 여기서는 나눠 둔 채로 넘긴다 —
+ * 한 번 접힌 것은 다시 나눌 수 없기 때문이다.
  */
 export function reduceBeforeLookup(candidates: readonly ExtractedCandidate[]): {
   toLookup: ExtractedCandidate[];
-  unreadable: ExtractedCandidate[];
+  lowConfidence: ExtractedCandidate[];
+  capped: ExtractedCandidate[];
 } {
-  const unreadable: ExtractedCandidate[] = [];
+  const lowConfidence: ExtractedCandidate[] = [];
   const readable: ExtractedCandidate[] = [];
 
   for (const candidate of candidates) {
-    if (candidate.confidence < CONFIDENCE_FLOOR) unreadable.push(candidate);
+    if (candidate.confidence < CONFIDENCE_FLOOR) lowConfidence.push(candidate);
     else readable.push(candidate);
   }
 
@@ -75,7 +85,8 @@ export function reduceBeforeLookup(candidates: readonly ExtractedCandidate[]): {
 
   return {
     toLookup: ranked.slice(0, MAX_CANDIDATES_FOR_LOOKUP),
-    unreadable: [...unreadable, ...ranked.slice(MAX_CANDIDATES_FOR_LOOKUP)],
+    lowConfidence,
+    capped: ranked.slice(MAX_CANDIDATES_FOR_LOOKUP),
   };
 }
 
@@ -123,8 +134,18 @@ function mergeByNormalizedKey(candidates: readonly ExtractedCandidate[]): Extrac
  *
  * 구분자는 제목·저자 정규화 결과에 절대 나타나지 않는 문자여야 한다. 정규화가
  * 글자와 숫자만 남기므로(`match.ts`) 제어 문자를 쓴다.
+ *
+ * ## 왜 내보내는가
+ * 계측(`lib/unidentified.ts`)도 "같은 책인가"를 물어야 하는데, 그 판단이 병합과
+ * 다른 키를 쓰면 **한 요청 안에서 같은 책의 정의가 둘**이 된다 — 병합은 접었는데
+ * 계측은 둘로 세는(또는 그 반대의) 어긋남이고, 어느 쪽이 맞는지 로그만 보고는
+ * 알 수 없다. 그래서 키를 두 번 구현하지 않고 이 함수 하나를 함께 쓴다.
+ *
+ * 매개변수를 `ExtractedCandidate`가 아니라 제목·저자 두 필드로 좁힌 것은 알라딘
+ * 후보(`AladinCandidate`)에도 같은 키를 물을 수 있게 하기 위해서다. 키가 보는
+ * 것은 그 둘뿐이라 좁혀도 잃는 정보가 없다.
  */
-function mergeKey(candidate: ExtractedCandidate): string {
+export function mergeKey(candidate: { title: string; author: string | null }): string {
   const author = candidate.author === null ? "" : normalizeAuthor(candidate.author);
   return `${normalizeTitle(candidate.title)}\u0000${author}`;
 }

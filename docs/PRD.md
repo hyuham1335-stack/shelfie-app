@@ -64,7 +64,7 @@ PRD를 쓰기 전에 이 표부터 채운다. 여기가 비면 아래 전부가 
 | 지표 | 허용 한계 (Threshold) | 위반 시 조치 |
 |------|----------------------|--------------|
 | 존재하지 않는 책이 확인된 책으로 노출된 건수 | 0건 | 즉시 배포 중단. 알라딘 대조 로직을 최우선 수정 |
-| 미확인 비율 (미확인 ÷ 추출된 전체 후보) | 20% 이하 | 추출 프롬프트를 직전 버전으로 롤백 |
+| 미확인 비율 (`raw_unidentified_guardrail_count` ÷ `raw_guardrail_denominator`) | 20% 이하 | 추출 프롬프트를 직전 버전으로 롤백 |
 | 분석 응답 시간 p95 | 30초 이내 | 사진 장수 상한을 5장 → 3장으로 축소 |
 | 세션당 Anthropic API 비용 | 300원 이하 | `MODEL_EXTRACT`를 `claude-sonnet-5`로 강등 |
 | 분석 요청 에러율 (5xx) | 1% 미만 | 외부 API 폴백 경로 점검 후 기능 플래그 off |
@@ -268,7 +268,7 @@ flowchart LR
 | 이벤트명 | 수집 | 발생 시점 | 속성 (Properties) | 연결 지표 |
 |----------|------|-----------|-------------------|-----------|
 | `photo_uploaded` | 서버 | `/api/analyze` 요청 수신 | `session_id`, `photo_count` | 세션 완주율(분모), 소요 시간(시작점) |
-| `analyze_completed` | 서버 | 분석 응답 반환 직전 | `session_id`, `identified_count`, `unidentified_count`, `unidentified_by_reason`(4종 카운트), `overflow_count`, `failed_photo_count`, `duration_ms`, `input_tokens`, `output_tokens` | 책 인식률, 미확인 비율(가드레일), 세션당 비용(가드레일) |
+| `analyze_completed` | 서버 | 분석 응답 반환 직전 | `session_id`, `identified_count`, `unidentified_count`, `unidentified_by_reason`(응답 사유 4종 카운트), `overflow_count`, `failed_photo_count`, `duration_ms`, `input_tokens`, `output_tokens`, 그리고 가드레일용 절단 전 값 넷 — `raw_candidate_count`, `raw_guardrail_denominator`, `raw_unidentified_guardrail_count`, `raw_unidentified_by_measurement`(계측 사유 7종 카운트) | 책 인식률, 미확인 비율(가드레일), 세션당 비용(가드레일) |
 | `analyze_failed` | 서버 | 분석 중 처리 불가 오류 | `session_id`, `error_code`, `failed_photo_count` | 에러율(가드레일) |
 | `questions_generated` | 서버 | 문답 응답 반환 직전 | `session_id`, `question_count`(0이면 폴백), `input_tokens`, `output_tokens` | 세션 완주율, 세션당 비용(가드레일) |
 | `mood_submitted` | 서버 | 기분 텍스트 또는 문답 답변 제출 | `session_id`, `input_mode` (`free_text` 또는 `guided`), `retry_index`(다시 추천받기 횟수 — 요청의 `retryIndex`, `/docs/API_SPEC.md`) | 세션 완주율 |
@@ -280,7 +280,7 @@ flowchart LR
 - 지표에 연결되지 않는 이벤트는 만들지 않는다.
 - **FR-013·FR-014·FR-015는 이벤트를 만들지 않는다.** 알라딘 링크 클릭·이미지 저장·가이드 펼침은 위 표의 어느 지표에도 연결되지 않는다. 셀 수 있다는 것과 세어야 한다는 것은 다르고, 지표 없는 이벤트는 로그를 늘려 실제 신호를 묻는다. 이 셋이 수락률을 움직인다는 가설이 생기면 그때 지표부터 정의하고 이벤트를 만든다.
 - **Claude를 호출하는 모든 이벤트에 토큰 수를 싣는다.** 가드레일이 "세션당 비용 300원"인데 추출 토큰만 기록하면 추천·문답 비용이 집계에서 빠져 실제보다 낮게 보인다.
-- 미확인은 사유별로 나눠 센다. `lookup_failed`(알라딘 장애)는 미확인 비율 가드레일의 분자에서 제외한다 — 외부 장애를 프롬프트 품질 저하로 오독하면 엉뚱한 롤백을 하게 된다 (ADR-005).
+- 미확인은 사유별로 나눠 센다. **조회하지 않았거나 하지 못한 책은 분자에도 분모에도 넣지 않는다** — `lookup_failed`(알라딘 장애)와 조회 상한에 밀린 책 둘 다 프롬프트 품질 판정의 모집단 밖이다. 외부 장애를 프롬프트 품질 저하로 오독하면 엉뚱한 롤백을 하게 되고(ADR-005), 반대로 분모에만 남기면 알라딘 전면 장애 세션이 0%로 가장 좋은 성적을 낸다. 분자·분모의 정확한 정의와 **아직 못 고친 한계 넷**은 `/docs/TRD.md` 6.4 를 본다.
 - **추천 실패는 `recommend_viewed`를 올리지 않는다.** 추천 수락률의 **분모**가 실패 요청으로 부풀면 North Star가 실제보다 낮게 보인다. 그래서 실패 전용 이벤트를 따로 둔다 — `analyze_completed`/`analyze_failed`와 같은 짝이다. **태운 토큰은 실패해도 청구되므로** `recommend_failed`가 함께 싣는다. 싣지 않으면 세션당 비용 가드레일이 실패분을 보지 못한다.
 - **`book_resolved.matched`는 사용자가 고른 후보가 실제로 목록에 합류했는지다.** 재검색 후보를 골랐으나 재조회에서 `isbn13`이 일치하지 않아 승격하지 못하면 `false`다. 성공만 세면 **책 인식률이 재검색 실패를 보지 못한다** — 고른 책이 붙지 않는 것은 인식률의 문제이지 사용자의 문제가 아니다.
 

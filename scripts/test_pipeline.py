@@ -4133,6 +4133,76 @@ class TestReview05Failure:
         assert "제출" in env["render"]
 
 
+class TestReview05EnvelopeContract:
+    """M37·M38 — 봉투가 기계 검사를 다 말하지 않아 제출이 두 번 반려됐다.
+
+    둘 다 **페이즈 파일이 아니라 `cli.py` 가 조건부로 그리는 문장**이 원인이다.
+    페이즈 파일만 고치면 다음 런이 또 밟는다.
+    """
+
+    def _routed(self, mode, codes):
+        return {"phases": {"05-code-review": {
+            "mode": mode,
+            "routing": {"reviewers": [{"code": c, "skill": "%s-reviewer" % c,
+                                       "matched_count": 1} for c in codes],
+                        "dropped": [], "capped": False}}}}
+
+    def test_merged_봉투가_리뷰어별_제출을_말한다(self):
+        """M37 — `mode: merged` 가 "제출도 하나" 로 읽혔다."""
+        out = cli._review_render(self._routed("merged", ["data", "sec", "arch"]))
+        # 명령 줄에 `merged` 가 제출자로 등장하면 안 된다. 산문은 그 낱말을
+        # 쓰지만("`--reviewer merged` 를 받지 않는다") 명령은 쓰지 않는다.
+        cmds = [l for l in out.splitlines() if l.startswith("python ")]
+        assert cmds, out
+        assert not [l for l in cmds if "--reviewer merged" in l], out
+        for code in ("data", "sec", "arch"):
+            assert [l for l in cmds if "--reviewer %s" % code in l], out
+        assert "실행 방식" in out, out
+
+    def test_fanout_봉투는_그_문단을_넣지_않는다(self):
+        out = cli._review_render(self._routed("fanout", ["data", "sec"]))
+        assert "실행 방식" not in out, out
+
+    def test_merged_제출은_기계가_거부한다(self, repo, request_file, phases):
+        """성격 규정 — 지금도 통과한다. 봉투가 말하는 규칙이 기계와 같음을 잠근다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_05(repo, request_file, phases)
+        cli.run_next(repo, run_id)
+        cli.run_contract_trace(repo, run_id=run_id)
+        paths, s = st.load(repo, run_id)
+        node = s["phases"]["05-code-review"]
+        node["planned"] = ["arch"]
+        node["routing"] = {"reviewers": [{"code": "arch"}], "dropped": [],
+                           "capped": False}
+        node["mode"] = "merged"
+        st.save(paths, s)
+        f = _reviewer_files(paths, "merged", [])
+        env = cli.run_record(repo, "05", str(f), reviewer="merged", round_=1,
+                             run_id=run_id)
+        assert env["exit"] == 8, env["render"]
+
+    def test_델타_봉투가_minor_회계_의무를_말한다(self):
+        """M38 — 봉투는 "Minor 는 고치지 않는다" 만 적었다."""
+        blocking = [{"severity": "major", "target_role": "impl",
+                     "title": "경계가 새고 있다"}]
+        prev = [{"id": "F-9", "severity": "minor", "reviewer": "arch",
+                 "key": "k9", "title_norm": "주석이 낡았다"}]
+        out = cli._review_repair_render(blocking, 2, delta="arch",
+                                        previous_open=prev)
+        assert "resolved_from_previous" in out, out
+        assert "회계" in out, out
+        # 열린 목록을 봉투가 직접 준다 — 모델이 재구성하지 않게
+        assert "F-9" in out, out
+        assert "주석이 낡았다" in out, out
+
+    def test_열린_지적이_없으면_목록을_적지_않는다(self):
+        blocking = [{"severity": "major", "target_role": "impl", "title": "x"}]
+        out = cli._review_repair_render(blocking, 2, delta="arch",
+                                        previous_open=[])
+        assert "F-9" not in out
+        assert "회계" in out, "의무 자체는 목록 유무와 무관하다"
+
+
 class TestReview05DeltaRound:
     """델타 재리뷰는 1명이고(M27), 그 1명이 G-4 를 되돌리지 않는다."""
 

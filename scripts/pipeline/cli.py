@@ -1158,6 +1158,21 @@ def _review_render(s):
                     if node.get("mode") == "merged" else
                     "관점별 병렬 fan-out"))
     lines.append("")
+    if node.get("mode") == "merged":
+        # **M37.** 봉투가 `merged` 만 적으면 "제출도 하나" 로 읽힌다. 기계는
+        # 그렇지 않다 — `_planned_guard` 가 라우팅에 없는 제출자를 exit 8 로
+        # 되돌리고, `merged` 는 라우팅된 코드가 아니다. P5 가 제출 1회를
+        # 여기서 잃었다.
+        lines += ["**`merged` 는 실행 방식이지 제출 형태가 아니다.** 한 "
+                  "에이전트가 관점을 순차로 적용하되 **제출은 라우팅된 코드 "
+                  "수만큼 그대로 갈라진다** — `05_review_{code}.json` 과 "
+                  "`.raw.md` 한 쌍씩이다. `record` 는 `--reviewer merged` 를 "
+                  "받지 않는다:", ""]
+        lines += ["```"]
+        lines += ["python scripts/pipeline/cli.py record --phase 05 "
+                  "--file <...>/05_review_%s.json --reviewer %s --round 1"
+                  % (r["code"], r["code"]) for r in routed["reviewers"]]
+        lines += ["```", ""]
     for r in routed["reviewers"]:
         lines.append("- `%s` → `.claude/skills/%s/SKILL.md` (매칭 %d개)"
                      % (r["code"], r["skill"], r.get("matched_count", 0)))
@@ -2323,12 +2338,15 @@ def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
             return _escalation_envelope("record", paths, s)
         delta = _delta_reviewer(blocking, planned, slot)
         node.setdefault("rounds_planned", {})[str(round_ + 1)] = [delta]
+        # 다음 회차에 델타가 회계해야 할 목록이다. `record` 가 같은 인자로
+        # 부르는 함수이므로 봉투와 검사가 같은 것을 본다 (M38).
+        prev_open = _previous_open(node.get("rounds") or {}, round_ + 1, delta)
         st.save(paths, s)
         return st.envelope(
             "record", False, 4, s,
             {"blocking": len(blocking), "findings": blocking,
              "review05": s["review05"], "delta_reviewer": delta},
-            _review_repair_render(blocking, used + 1, delta),
+            _review_repair_render(blocking, used + 1, delta, prev_open),
             "python scripts/pipeline/cli.py gate --phase 04 --stage scoped "
             "--run-id %s" % s["run_id"])
 
@@ -2356,7 +2374,7 @@ def _delta_reviewer(blocking, planned, slot):
     return max(alive, key=lambda c: (scores.get(c, 0), -alive.index(c)))
 
 
-def _review_repair_render(blocking, round_no, delta=None):
+def _review_repair_render(blocking, round_no, delta=None, previous_open=None):
     lines = ["## 수리가 필요하다 (%d회차)" % round_no, "",
              "Critical/Major %d건. **Minor 는 고치지 않는다** — 원장에 쌓이고 "
              "보고서로 간다." % len(blocking), ""]
@@ -2364,6 +2382,24 @@ def _review_repair_render(blocking, round_no, delta=None):
         lines += ["수리 뒤 **델타 재리뷰는 `%s` 한 명**이다. 전원을 다시 "
                   "부르지 않는다 — 그리고 그 한 명이 깨끗해도 앞선 라운드의 "
                   "`degraded`·`failed` 는 지워지지 않는다." % delta, ""]
+    # **M38.** 수리 면제와 회계 면제는 다르다. `verdict.check_review` 는
+    # 심각도를 가리지 않고 열린 지적 전부를 회계하라 요구하고, 하나라도 빠지면
+    # "조용히 증발했다" 로 exit 8 을 낸다. 봉투가 그 의무를 안 적어 P5 가
+    # 제출 1회를 여기서 잃었다.
+    lines += ["**회계는 심각도와 무관하다.** 이전 회차에 열려 있던 지적은 "
+              "**Minor 를 포함해 전부** 이번 제출에서 회계된다 — 같은 지적을 "
+              "다시 내거나, `resolved_from_previous` 로 닫거나, "
+              "`reraised_from_previous` 로 다시 올린다. "
+              "**\"Minor 를 고치려 들지 마라\" 는 수리 금지이지 회계 면제가 "
+              "아니다.** 빠지면 exit 8 이다.", ""]
+    if previous_open:
+        # 목록을 봉투가 직접 준다 — 모델이 재구성하면 그 재구성이 곧 결함이다.
+        lines += ["열려 있는 이전 회차 지적 %d건:" % len(previous_open), ""]
+        lines += ["- `%s` (`%s`, `%s`) — %s"
+                  % (f.get("id"), f.get("severity"), f.get("reviewer"),
+                     f.get("title_norm") or f.get("title") or "제목 없음")
+                  for f in previous_open]
+        lines += [""]
     for f in blocking:
         raised = (" *(2인 합치로 %s → %s)*"
                   % (f["severity_raised_from"], f["severity"])

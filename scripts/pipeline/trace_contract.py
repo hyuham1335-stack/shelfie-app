@@ -138,6 +138,8 @@ def run(root, config, adapter, contract_path, no_contract=False, changed=None,
                      "distinct_runs": ledger.distinct_runs(root),
                      "baseline_runs": baseline_runs},
         "blocking": len(blocking),
+        # 04 의 `contract.scope.repo_files` 와 같아야 한다 (M50).
+        "repo_files": len(files),
         "contract": {"units": len(parsed.get("units") or []),
                      "entrypoints": len(parsed.get("entrypoints") or []),
                      "errors": len(parsed.get("errors") or []),
@@ -150,20 +152,11 @@ def run(root, config, adapter, contract_path, no_contract=False, changed=None,
 def repo_files(root):
     """추적 파일 **+ 아직 커밋되지 않은 새 파일.**
 
-    `harness.list_files` 는 `git ls-files` 라서 추적 파일만 낸다. 05 가 도는
-    시점은 03 이 방금 코드를 쓴 직후이고 **그 파일들은 아직 추적되지 않는다** —
-    추적분만 보면 새로 만든 유닛이 전부 `missing_impl` 로 잡히고, 이 검사가
-    가장 필요한 런에서 정확히 반대로 동작한다.
-
-    무시 목록(`--exclude-standard`)은 존중한다. `_workspace/` 의 계약 파일이
-    소스로 세어지면 안 된다.
+    정본은 `harness.list_files_with_untracked` 다. 04 게이트도 같은 함수를
+    쓴다 — 두 페이즈가 같은 계약을 두고 다른 파일 목록을 보면 04 는
+    `unmatched: 4` 를, 05 는 `dropped: []` 를 적는다 (M50).
     """
-    files = set(harness.list_files(root))
-    r = harness._git(root, "ls-files", "--others", "--exclude-standard")
-    if r is not None and r.returncode == 0:
-        files |= {line.strip().replace("\\", "/")
-                  for line in r.stdout.splitlines() if line.strip()}
-    return sorted(files)
+    return harness.list_files_with_untracked(root)
 
 
 def _baseline_runs(config):

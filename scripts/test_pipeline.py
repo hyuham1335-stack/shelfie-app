@@ -3342,6 +3342,78 @@ class TestScopeSelectorWidth:
         assert got["selected_ratio"] >= 0.9
 
 
+class TestScopeSeesUntrackedFiles:
+    """04 가 03 이 방금 만든 파일을 보는가 (M50).
+
+    `harness.list_files` 는 `git ls-files` 라 **추적 파일만** 낸다. 04 가 도는
+    시점은 03 이 방금 코드를 쓴 직후이고 그 파일들은 아직 추적되지 않는다.
+    P6 은 계약 유닛 8 중 **4가 `unmatched`** 였고 넷 다 그 런이 새로 만든
+    `src/lib/unidentified.ts` 의 것이었다 — `scoped` 가 그 런의 핵심 모듈
+    테스트(450줄)를 **수리 루프 내내 한 번도 안 돌았다.**
+
+    05 의 `contract-trace` 는 이미 미추적을 함께 본다(`trace_contract.repo_files`).
+    같은 계약을 두고 04 가 `unmatched: 4` 를, 05 가 `dropped: []` 를 적던 것이
+    이 결함의 표면이다.
+
+    **이 클래스 위의 `TestScopeSelectorWidth._select` 가 `git add -A` 를 하는
+    것 자체가 이 결함의 증거였다** — 테스트가 결함을 우회해서 통과했다.
+    """
+
+    CONTRACT = """# 계약: x
+
+## 유닛
+- `lib/fresh.ts · doFresh(x: string): void`
+"""
+
+    def _fresh(self, repo):
+        """03 이 방금 쓴 모양 — 파일은 있고 인덱스에는 없다."""
+        (repo / "src" / "lib").mkdir(parents=True, exist_ok=True)
+        (repo / "src" / "lib" / "fresh.ts").write_text(
+            "export function doFresh(x: string) {}\n", encoding="utf-8")
+        (repo / "src" / "lib" / "fresh.test.ts").write_text(
+            "import { doFresh } from './fresh';\n", encoding="utf-8")
+
+    def _select(self, repo):
+        config, adapter, _c = _load(repo)
+        return contract_mod.test_selectors(
+            repo, config, adapter, contract_mod.parse(self.CONTRACT, config))
+
+    def test_미커밋_새_파일이_스코프에_들어온다(self, repo):
+        self._fresh(repo)
+        got = self._select(repo)
+        assert any("fresh.test" in p for p in got["paths"]), got
+
+    def test_미커밋_새_파일이_unmatched_로_떨어지지_않는다(self, repo):
+        self._fresh(repo)
+        got = self._select(repo)
+        assert got["unmatched"] == [], got["unmatched"]
+
+    def test_무시된_경로는_소스로_세지_않는다(self, repo):
+        """`_workspace/` 의 계약 파일이 소스로 세어지면 안 된다."""
+        self._fresh(repo)
+        p = repo / "_workspace" / "contract_x.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(self.CONTRACT, encoding="utf-8")
+        got = self._select(repo)
+        assert not any("_workspace" in x for x in got["paths"]), got["paths"]
+
+    def test_04_와_05_가_같은_파일_목록을_본다(self, repo):
+        """두 페이즈가 같은 계약을 두고 다른 말을 하면 초록불의 뜻이 갈린다."""
+        self._fresh(repo)
+        assert (sorted(harness.list_files_with_untracked(repo))
+                == sorted(tr.repo_files(repo)))
+
+    def test_두_페이즈가_센_파일_수가_영수증에_남는다(self, repo):
+        """같으니까 안 적는 것이 아니라, 갈라지면 보이게 적는다."""
+        self._fresh(repo)
+        got = self._select(repo)
+        config, adapter, _c = _load(repo)
+        contract_path = _write_contract(repo, self.CONTRACT)
+        trace = tr.run(repo, config, adapter, contract_path, changed=[])
+        assert got["repo_files"] == trace["repo_files"], (got, trace["repo_files"])
+        assert got["repo_files"] > 0
+
+
 class TestContractTraceBaseline:
     """오탐이 잦은 둘은 첫 3런 동안 warn_only 다 (§E6)."""
 

@@ -314,6 +314,29 @@ def list_files(root):
     return sorted(found)
 
 
+def list_files_with_untracked(root):
+    """추적 파일 **+ 아직 커밋되지 않은 새 파일.**
+
+    `list_files` 는 `git ls-files` 라 추적 파일만 낸다. 04 게이트와 05 의 계약
+    대조가 도는 시점은 03 이 방금 코드를 쓴 직후이고 **그 파일들은 아직
+    추적되지 않는다** — 추적분만 보면 새로 만든 유닛이 컨테이너를 못 찾아
+    `unmatched` 로 떨어지고, 그 유닛의 테스트가 `scoped` 선택에서 통째로 빠진다.
+    **이 검사가 가장 필요한 런에서 정확히 반대로 동작한다** (M50).
+
+    무시 목록(`--exclude-standard`)은 존중한다. `_workspace/` 의 계약 파일이
+    소스로 세어지면 안 된다.
+
+    git 이 없으면 `list_files` 의 파일 시스템 탐색이 이미 미추적을 포함하므로
+    그대로 돌려준다.
+    """
+    files = set(list_files(root))
+    r = _git(root, "ls-files", "--others", "--exclude-standard")
+    if r is not None and r.returncode == 0:
+        files |= {line.strip().replace("\\", "/")
+                  for line in r.stdout.splitlines() if line.strip()}
+    return sorted(files)
+
+
 def _json_pointer(data, pointer):
     node = data
     for part in pointer.split("."):

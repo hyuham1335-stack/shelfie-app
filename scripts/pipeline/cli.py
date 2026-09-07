@@ -159,6 +159,30 @@ def warn(text):
 
 # ------------------------------------------------------------- 페이즈 파서
 
+def _headings(lines):
+    """(index, line) — **펜스 밖의** `## ` 헤딩만.
+
+    페이즈 파일의 역할 프롬프트 템플릿·제출 형식은 코드 블록 안에 `## 네 소유
+    경계` 같은 줄을 담는다. 그것을 헤딩으로 세면 두 곳이 동시에 망가진다 (M45):
+
+    - `_section` 이 **여는 펜스 직후에서 절을 자른다.** 봉투가 소유권 표도
+      제출 규약도 없이, 게다가 **닫히지 않은 펜스**를 실어 보낸다. 비는 것보다
+      나쁘다 — 뒤따르는 절의 렌더가 그 안으로 빨려 들어간다.
+    - `parse_phase_file` 의 `sections` 에 유령 절이 들어가, `lint-phases` 의
+      "필수 절이 있는가" 가 **코드 블록 안의 글자로 통과할 수 있다.**
+
+    한 곳에서 판정해 둘이 갈라지지 않게 한다.
+    """
+    out, in_fence = [], False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line.startswith("## "):
+            out.append((i, line))
+    return out
+
+
 def parse_phase_file(path):
     """(front, body, sections). 프론트매터는 `---` 로 감싼 **JSON** 이다.
 
@@ -179,8 +203,7 @@ def parse_phase_file(path):
         raise ValueError("프론트매터 JSON 파싱 실패: %s" % exc)
     if not isinstance(front, dict):
         raise ValueError("프론트매터가 객체가 아니다")
-    sections = [line.strip() for line in body.splitlines()
-                if line.startswith("## ")]
+    sections = [line.strip() for _i, line in _headings(body.splitlines())]
     return front, body.lstrip("\r\n"), sections
 
 
@@ -689,6 +712,13 @@ def lint_phases(root, phases_dir=None):
             missing.append(ROLE_TEMPLATE_SECTION)
         if missing:
             add(name, "sections", "FAIL", "필수 절이 없다: %s" % ", ".join(missing))
+
+        # 펜스가 안 닫히면 `_headings` 가 그 뒤의 헤딩을 못 보고, 절 하나가
+        # 파일 끝까지 삼킨다. 봉투에서 알게 되면 이미 그 페이즈의 지시가
+        # 틀린 채로 나간 뒤다 — 런 전에 잡는 것이 싸다 (M45).
+        if item["body"].count("```") % 2:
+            add(name, "fences", "FAIL",
+                "코드 펜스(```)가 홀수다 — 안 닫힌 블록이 절 경계를 삼킨다")
 
         # ── 게이트
         gate = front.get("gate") or {}
@@ -1345,17 +1375,14 @@ def render_header(config, s):
 
 
 def _section(body, heading):
+    """절 하나를 통째로. **경계 판정은 `_headings` 하나뿐이다** (M45)."""
     lines = body.splitlines()
-    try:
-        start = next(i for i, l in enumerate(lines) if l.strip() == heading)
-    except StopIteration:
+    heads = _headings(lines)
+    start = next((i for i, l in heads if l.strip() == heading), None)
+    if start is None:
         return ""
-    out = [lines[start]]
-    for line in lines[start + 1:]:
-        if line.startswith("## "):
-            break
-        out.append(line)
-    return "\n".join(out).rstrip()
+    end = next((i for i, _l in heads if i > start), len(lines))
+    return "\n".join(lines[start:end]).rstrip()
 
 
 def _prescan(root, loaded, ctx, s):

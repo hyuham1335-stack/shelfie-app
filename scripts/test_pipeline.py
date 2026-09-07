@@ -642,6 +642,13 @@ class TestLintPhases:
                      encoding="utf-8")
         assert _fails(_lint(repo), "sections")
 
+    def test_unbalanced_code_fence_is_rejected(self, repo, phases):
+        """안 닫힌 펜스는 절 하나가 파일 끝까지 삼키게 한다 (M45)."""
+        p = phases / "03-implement.md"
+        tail = "\n```\n열고 안 닫는다\n"
+        p.write_text(p.read_text(encoding="utf-8") + tail, encoding="utf-8")
+        assert _fails(_lint(repo), "fences")
+
     def test_role_template_required_when_agents_allowed(self, repo, phases):
         p = phases / "03-implement.md"
         p.write_text(p.read_text(encoding="utf-8")
@@ -776,6 +783,75 @@ class TestContractUnits:
         bad = [c for c in cli._pipeline_checks(repo) if c["status"] == "FAIL"]
         assert bad, "템플릿이 자기 파서를 속이는데 doctor 가 통과시켰다"
         assert any("템플릿" in c["name"] for c in bad), [c["name"] for c in bad]
+
+
+class TestFencedHeadingsAreNotSectionBoundaries:
+    """코드 블록 안의 `## ` 가 절을 자르지 않는가 (M45).
+
+    페이즈 파일의 역할 프롬프트 템플릿은 ` ``` ` 블록 안에 `## 네 소유 경계`
+    같은 줄을 담는다. `_section` 이 그것을 다음 절의 시작으로 보고 **여는 펜스
+    직후에서 잘랐다** — 봉투가 소유권 표도 계약도 제출 지시도 없이, 게다가
+    **닫히지 않은 펜스**를 실어 보냈다.
+
+    같은 원인이 `parse_phase_file` 의 `sections` 에도 있었다. 유령 절이 목록에
+    들어가 `lint-phases` 의 "필수 절이 있는가" 검사가 **코드 블록 안의 글자로
+    통과할 수 있었다.**
+
+    실측(수정 전): 05 「제출 형식」 78줄 중 22줄 · 01 「제출 형식」 60줄 중
+    16줄이 잘렸다. 「제출 형식」은 리뷰어에게 제출 규약을 알려 주는 절이고,
+    M20·M37·M38 이 전부 "봉투가 기계 검사를 다 말하지 않아 제출이 반려됐다"는
+    같은 계열이었다.
+    """
+
+    SAMPLE = """## 첫째
+
+본문.
+
+```
+## 펜스 안 — 절이 아니다
+| a | b |
+```
+
+꼬리 문장.
+
+## 둘째
+
+다음 절.
+"""
+
+    def test_펜스_안의_헤딩에서_자르지_않는다(self):
+        got = cli._section(self.SAMPLE, "## 첫째")
+        assert "| a | b |" in got, got
+        assert "꼬리 문장." in got, got
+        assert "## 둘째" not in got, got
+
+    def test_잘린_절은_펜스가_짝수로_닫힌다(self):
+        got = cli._section(self.SAMPLE, "## 첫째")
+        assert got.count("```") % 2 == 0, got
+
+    def test_펜스_안의_헤딩은_절_목록에_안_들어간다(self, repo, phases):
+        _f, _b, sections = cli.parse_phase_file(phases / "03-implement.md")
+        assert "## 네 소유 경계" not in sections, sections
+        assert "## 역할 프롬프트 템플릿" in sections
+
+    def test_모든_페이즈_절이_펜스를_닫은_채_나온다(self, repo, phases):
+        """봉투에 실리는 모든 절이 온전해야 한다 — 하나라도 홀수면 렌더가 샌다."""
+        bad = []
+        for p in sorted(phases.glob("*.md")):
+            _f, body, sections = cli.parse_phase_file(p)
+            for h in sections:
+                s = cli._section(body, h)
+                if s.count("```") % 2:
+                    bad.append((p.name, h))
+        assert bad == [], bad
+
+    def test_역할_템플릿_봉투가_소유권_표를_싣는다(self, repo, phases):
+        """비는 것보다 나쁜 것은 역할이 문서와 다른 지시를 받는 것이다."""
+        for name in ("03-implement.md", "04-gate.md", "05-code-review.md"):
+            _f, body, _s = cli.parse_phase_file(phases / name)
+            got = cli._section(body, "## 역할 프롬프트 템플릿")
+            assert got.count("```") % 2 == 0, (name, got)
+            assert len(got.splitlines()) > 7, (name, got)
 
 
 class TestPhaseParser:

@@ -18,8 +18,16 @@
 import { useState } from "react";
 import type { ClientErrorCode } from "@/types/api";
 
-/** 에러 코드별로 사용자 언어의 정해진 문구를 쓴다. 필드 경로·zod 원문은 노출하지 않는다 */
-const MESSAGE: Record<ClientErrorCode, string> = {
+/**
+ * 에러 코드별로 사용자 언어의 정해진 문구를 쓴다. 필드 경로·zod 원문은 노출하지 않는다.
+ *
+ * `export`인 이유는 이 표가 코드→문구의 단일 출처이기 때문이다. 배너 밖의 화면이
+ * 같은 코드에 다른 문장을 손으로 적으면, 같은 상황에서 자리에 따라 다른 말을
+ * 하게 된다 — 실제로 재검색 패널이 `OFFLINE`에 상류 장애 문구를 쓰고 있었다.
+ * 다만 이 표를 통째로 다른 화면에 걸지는 않는다. `TIMEOUT`의 "사진 장수를 줄여"
+ * 같은 문장은 배너가 서는 자리(분석 실패)에서만 뜻이 맞는다.
+ */
+export const MESSAGE: Record<ClientErrorCode, string> = {
   INVALID_REQUEST: "요청을 처리할 수 없어요. 입력을 확인하고 다시 시도해 주세요",
   TOO_MANY_PHOTOS: "사진은 최대 5장까지 올릴 수 있어요",
   UNSUPPORTED_IMAGE_TYPE: "JPG·PNG·WEBP 사진만 올릴 수 있어요",

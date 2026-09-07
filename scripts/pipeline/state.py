@@ -78,6 +78,13 @@ EVENT_KINDS = (
     # 06~08. 승인·PR·승격은 "일어났다"가 사후에 확인 가능해야 하는 사건이고,
     # 그 셋 다 외부 상태를 건드린다 — 이벤트가 없으면 되돌아볼 기록이 없다.
     "approved", "approval_revoked", "pr_pushed", "pr_opened", "promoted",
+    # `counter_inc` 은 "예산을 썼다", `counter_grant` 는 "예산을 더 줬다" 다.
+    # 뭉치면 원장에서 다섯 라운드를 쓴 런과 세 라운드를 쓰고 둘을 더 받은 런이
+    # 같아 보인다 (M32).
+    "counter_grant",
+    # 계약이 바뀌어 프로파일이 다시 정해졌다. 리뷰어 상한이 그 값에서 나오므로
+    # 언제 무엇에서 무엇으로 바뀌었는지가 사후에 필요하다 (M34).
+    "profile_reconfirmed",
 )
 
 GRADES = ("PASS", "PASS_WITH_GAPS", "INCOMPLETE")
@@ -195,7 +202,7 @@ def create_run(root, slug, request_path, profile=None, seed_bytes=None, now=None
         "counters": {},
         "escalated": False,
         "contract": {"mode": "contract", "present": False},
-        "cross_verify": {"mode": _cross_verify_mode(config)},
+        "cross_verify": _cross_verify_init(config),
         "grade": None,
         "gaps": [],
         "budget": {"model_calls": {
@@ -248,6 +255,23 @@ def _calibration_summary(calibration):
             "adapter_verified": bool(calibration.get("adapter_verified"))}
 
 
+def _cross_verify_init(config):
+    """런 시작 시의 교차검증 요약.
+
+    **`configured` 와 `mode` 는 다른 것을 말한다.** `configured` 는 config 가
+    무엇을 선언했는가이고 `mode` 는 **실제로 무엇이 관측했는가**다. 예전에는
+    하나뿐이라 config 가 `primary` 를 선언하면 라운드가 전부 폴백으로 돌아도
+    상태는 `primary` 라고 적었다 — P3 가 다섯 라운드 내내 그랬고, 그 사실이
+    상태에도 보고서에도 남지 않았다.
+
+    `mode` 는 라운드가 제출될 때마다 `note_cross_verify_round` 가 내린다.
+    올리지는 않는다 — 한 번 약해진 관측은 뒤 라운드가 좋아도 그 런의 사실이다.
+    """
+    return {"mode": _cross_verify_mode(config),
+            "configured": _cross_verify_mode(config),
+            "rounds": {}, "degraded_rounds": 0, "last_primary_error": None}
+
+
 def _cross_verify_mode(config):
     """primary 도 fallback 도 없으면 skipped — 02 가 등급에 드러낸다."""
     cv = config.get("cross_verify") or {}
@@ -256,6 +280,28 @@ def _cross_verify_mode(config):
     if cv.get("fallback"):
         return "fallback"
     return "skipped"
+
+
+def note_cross_verify_round(s, round_, mode, primary_error=None):
+    """한 회차의 교차검증이 무엇으로 돌았는지 런 요약에 접는다.
+
+    **부재와 일시 실패를 가른다** — `primary_error` 가 있으면 primary 를
+    시도했다가 실패한 것이고(일시), 없으면 primary 가 애초에 없던 것이다(구조).
+    앱 코드에 `lookup_failed` ≠ `no_match` 를 요구하면서(ADR-005) 하네스가
+    그 둘을 한 어휘로 뭉개고 있었다.
+
+    `mode` 는 **내려가기만 한다.** 3회차가 primary 로 회복돼도 1·2회차가
+    폴백이었다는 것은 그 런의 사실이고, 등급이 그것을 말해야 한다.
+    """
+    node = s.setdefault("cross_verify", {})
+    node.setdefault("rounds", {})[str(round_)] = mode
+    if primary_error:
+        node["last_primary_error"] = primary_error
+    node["degraded_rounds"] = sum(
+        1 for v in node["rounds"].values() if v == "fallback")
+    if mode == "fallback":
+        node["mode"] = "fallback"
+    return node
 
 
 def _vcs_baseline(root):
@@ -350,6 +396,28 @@ def counter_inc(s, name, max_):
     node["max"] = max_
     node["used"] = node.get("used", 0) + 1
     return node["used"], max_, node["used"] >= max_ if max_ is not None else False
+
+
+def counter_grant(s, name, extra, reason, now=None):
+    """예산을 **추가 지급**한다. 반환: (used, max).
+
+    **리셋이 아니다.** `used` 를 되돌리면 "이 런이 라운드를 몇 번 돌았는가"가
+    사라지고, 그것이 M31 이 낸 손실의 모양이다. 상한만 올리고 지급 사실을
+    `grants` 에 남긴다 — 보고서가 "왕복 뒤 몇 라운드를 더 줬는가"를 말할 수
+    있는 것이 여기서 나온다.
+
+    지급은 무한 연장이 아니다. 부르는 쪽이 자기 왕복 예산(`xverify_return`
+    상한 1)에 묶여 있어 런당 한 번뿐이다 (M32 · ADR-H024).
+    """
+    if name not in COUNTERS:
+        raise ValueError("알 수 없는 카운터: %r (%s)" % (name, ", ".join(COUNTERS)))
+    if not extra or extra < 0:
+        raise ValueError("지급량은 양수여야 한다: %r" % (extra,))
+    node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": extra})
+    node["max"] = (node.get("max") or 0) + extra
+    node.setdefault("grants", []).append(
+        {"at": stamp(now), "extra": extra, "reason": reason})
+    return node.get("used", 0), node["max"]
 
 
 def demote(s, grade, gap=None):

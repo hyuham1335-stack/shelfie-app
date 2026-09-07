@@ -160,7 +160,7 @@ sequenceDiagram
     end
     Note over R: 예산 초과분은 failedPhotoIndexes에 기록
 
-    R->>R: lib/merge — confidence 0.3 미만 강등 · 사전 병합 · 상위 80건으로 절단
+    R->>R: lib/merge — confidence 0.3 미만 강등 · 사전 병합 · 상위 65건으로 절단
 
     loop 후보마다 (동시성 12, 예산 12s)
         R->>SL: 제목·저자로 ItemSearch

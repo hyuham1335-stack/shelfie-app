@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { STAGE_BUDGET_MS, TOTAL_BUDGET_MS } from "@/lib/budget";
 import {
+  ALADIN_CALLS_PER_LOOKUP,
+  MAX_ALADIN_CALLS_PER_SESSION,
+  MAX_CANDIDATES_FOR_LOOKUP,
   MAX_IDENTIFIED_BOOKS,
   MAX_OUTPUT_BYTES_PER_IMAGE,
   MAX_OUTPUT_BYTES_TOTAL,
@@ -690,6 +693,73 @@ describe("상한과 중복 제거", () => {
     expect(lookupFactsManyMock.mock.calls[0][0]).toEqual([isbnOf(1)]);
     expect(body.identified).toHaveLength(1);
     expect(body.identified[0].photoIndex).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 알라딘 호출량 — 선언이 아니라 실행 경로에서 잰다 (TR-005, TRD 10번)
+ *
+ * `merge.test.ts`는 상수들의 관계를 잠그고, 여기서는 **라우트가 실제로 두 서비스에
+ * 넘긴 배열의 길이**를 잰다. 그 둘이 갈리면 선언은 260을 통과하는 동안 실행 경로가
+ * 320을 내는 상태가 되고, 상한은 검증되지 않은 상한으로 돌아간다.
+ *
+ * `fetchImpl` 호출 횟수는 세지 않는다 — 이 파일은 `searchMany`·`lookupFactsMany`를
+ * 통째로 모킹하고 `route.ts`는 fetch 구현을 넘기지 않으므로 셀 수 있는 값이 아니다.
+ * 셀 수 있는 것은 두 단계가 받은 배열의 길이이고, 호출 수는 거기서 유도된다.
+ * ------------------------------------------------------------------ */
+
+describe("알라딘 호출 상한 (TR-005 — 검색한 것이 전부 조회된다)", () => {
+  /** 상한보다 확실히 많은 후보. 상한을 올려도 이 픽스처가 함께 커져 여전히 넘친다 */
+  const OVER_CAP = MAX_CANDIDATES_FOR_LOOKUP * 3;
+
+  function titlesOver(count: number): string[] {
+    return Array.from({ length: count }, (_, index) => `책${String(index + 1).padStart(3, "0")}`);
+  }
+
+  it("ItemSearch와 ItemLookUp이 같은 수를 받고 둘 다 조회 상한 이하다", async () => {
+    const titles = titlesOver(OVER_CAP);
+    setExtract([titles.map((title) => extractedOf(title))]);
+    // 검색한 후보가 **전부** 승격되는 최악의 경우다. 조회 단계가 가장 많이 받는다.
+    searchByExactTitle(titles);
+    factsForAll();
+
+    await POST(analyzeRequest());
+
+    const searched = searchManyMock.mock.calls[0][0] as unknown[];
+    const looked = lookupFactsManyMock.mock.calls[0][0] as unknown[];
+
+    expect(searched).toHaveLength(MAX_CANDIDATES_FOR_LOOKUP);
+    // 승격은 검색을 통과한 것에서만 나온다. 조회가 검색보다 많아지는 경로는 없다.
+    expect(looked.length).toBeLessThanOrEqual(searched.length);
+    expect(looked.length).toBeLessThanOrEqual(MAX_CANDIDATES_FOR_LOOKUP);
+    // 전량 승격이므로 두 단계가 정확히 같은 수를 태운다 — 이것이 유도식의 `× 2단계`다.
+    expect(looked).toHaveLength(MAX_CANDIDATES_FOR_LOOKUP);
+    // 실측한 두 단계의 합이 세션 상한 안이다. 선언이 아니라 실행 경로에서 잰 값이다.
+    expect((searched.length + looked.length) * ALADIN_CALLS_PER_LOOKUP).toBeLessThanOrEqual(
+      MAX_ALADIN_CALLS_PER_SESSION,
+    );
+  });
+
+  it("상한에 밀린 후보는 조용히 사라지지 않고 unreadable로 응답에 남는다 (FR-012)", async () => {
+    // 밀린 수를 미확인 상한보다 훨씬 작게 잡는다 — 여기서 보려는 것은 조회 상한의
+    // 절단이지 미확인 절단이 아니다.
+    const PUSHED_OUT = 10;
+    const titles = titlesOver(MAX_CANDIDATES_FOR_LOOKUP + PUSHED_OUT);
+    setExtract([titles.map((title) => extractedOf(title))]);
+    searchByExactTitle(titles);
+    factsForAll();
+
+    const body = await (await POST(analyzeRequest())).json();
+
+    expect(searchManyMock.mock.calls[0][0]).toHaveLength(MAX_CANDIDATES_FOR_LOOKUP);
+    // 밀린 것은 "알라딘에 없다"가 아니다. 조회조차 하지 않았으므로 unreadable이다.
+    expect(body.unidentified).toHaveLength(PUSHED_OUT);
+    expect(
+      body.unidentified.every((book: { reason: string }) => book.reason === "unreadable"),
+    ).toBe(true);
+    // 미확인 상한에는 닿지 않았으므로 넘친 개수도 0이다 — 두 절단이 섞이지 않았다.
+    expect(body.unidentifiedOverflowCount).toBe(0);
+    expect(MAX_UNIDENTIFIED_BOOKS).toBeGreaterThan(PUSHED_OUT);
   });
 });
 

@@ -13,9 +13,14 @@
  *    파생값을 재사용하면 EXIF·품질·짧은 변 판정을 되돌릴 근거가 사라진다.
  */
 import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ApiResult } from "@/lib/api-client";
-import type { AnalyzeResponse, MoodQuestionsResponse, RecommendResponse } from "@/types/api";
+import type {
+  AnalyzeResponse,
+  ClientErrorCode,
+  MoodQuestionsResponse,
+  RecommendResponse,
+} from "@/types/api";
 import type { IdentifiedBook, ResolvedCandidate, UnidentifiedBook } from "@/types/book";
 
 vi.mock("@/lib/api-client", () => ({
@@ -346,6 +351,114 @@ describe("세션 셸", () => {
     );
     // 모델에 사진을 다시 태우지 않는다 — 이 배선이 이 항목이 보고된 이유였다.
     expect(analyzeMock.mock.calls.length).toBe(analyzeCallsBefore);
+  });
+
+  /* ---------------------------------------------------------------- *
+   * 재검색 패널의 실패 문구 (ADR-005)
+   *
+   * 패널은 `errorCode`를 이미 저장하고 있었지만 읽지 않았다 — 저장만 하는 필드는
+   * 채워져 있어도 없는 것과 같다. 여기서 잠그는 것은 그 **읽는 자리가 실재하는가**다.
+   * 분기를 지우면 `OFFLINE`이 상류 장애 문구로 떨어지고 아래 첫 검사가 붉어진다.
+   *
+   * 단절은 사용자가 지금 고칠 수 있는 실패고 상류 장애는 아니다. 같은 문장으로
+   * 뭉치면 연결이 끊긴 사람에게 서버를 기다리라고 말하게 된다.
+   *
+   * **재는 자리는 패널 안이다.** 이 갈래가 쓰는 문구 중 둘은 화면의 다른 자리에도
+   * 산다 — `PANEL_NOT_FOUND`는 `no_match` 미확인 카드의 설명문과 같은 문장이고
+   * (`booklist/UnidentifiedBookCard.tsx`), `PANEL_OFFLINE`은 `ErrorBanner`의 표에서
+   * 온다. 아래 픽스처는 패널을 열기 위해 `no_match` 카드로 시작하므로, 화면 전체를
+   * 뒤지면 재검색이 실패하기도 전에 이미 서 있던 그 카드를 집는다. 그러면 검사가
+   * 재려던 것("패널이 무엇을 쓰는가")과 실제로 재는 것이 어긋난다.
+   * ---------------------------------------------------------------- */
+
+  const PANEL_OFFLINE = "인터넷 연결을 확인해 주세요";
+  const PANEL_UPSTREAM = "지금 확인할 수 없었어요. 잠시 후 다시 시도해 주세요";
+  const PANEL_NOT_FOUND = "알라딘에서 찾을 수 없는 책이에요 (원서·절판일 수 있어요)";
+
+  /** 재검색 패널의 뿌리. 제목 대신 이 자리를 잡아야 카드와 섞이지 않는다 */
+  function resolvePanel(): HTMLElement {
+    const heading = screen.getByRole("heading", { name: "제목을 고쳐 다시 찾기" });
+    const section = heading.closest("section");
+    if (section === null) throw new Error("재검색 패널을 찾지 못했다");
+    return section;
+  }
+
+  /** 패널 **안에서만** 찾는다. 없으면 null — 화면 다른 곳의 같은 문장은 세지 않는다 */
+  function queryInPanel(text: string): HTMLElement | null {
+    return within(resolvePanel()).queryByText(text);
+  }
+
+  /** 패널 안에 그 문구가 설 때까지 기다린다 (재렌더마다 패널을 다시 잡는다) */
+  async function findInPanel(text: string): Promise<HTMLElement> {
+    return await waitFor(() => {
+      const node = queryInPanel(text);
+      expect(node).not.toBeNull();
+      return node as HTMLElement;
+    });
+  }
+
+  /** no_match 한 건에서 재검색을 걸고, 그 재검색이 주어진 코드로 실패하게 만든다 */
+  async function resolveFailsWith(code: ClientErrorCode, status: number) {
+    await analyzeInto(
+      makeAnalyze({
+        identified: [],
+        unidentified: [{ rawText: "데미ㅇ", reason: "no_match", candidates: [] }],
+      }),
+    );
+    resolveMock.mockResolvedValue({ ok: false, code, requestId: null, status });
+
+    fireEvent.click(screen.getByRole("button", { name: "제목 고쳐 재검색" }));
+    fireEvent.change(screen.getByLabelText("책 제목"), { target: { value: "데미안" } });
+    fireEvent.click(screen.getByRole("button", { name: "재검색" }));
+  }
+
+  it("재검색이 OFFLINE으로 실패하면 연결을 확인하라고 말한다 (읽는 자리를 지우면 깨진다)", async () => {
+    await resolveFailsWith("OFFLINE", 0);
+
+    // 패널이 `errorCode`를 읽지 않으면 여기서 붉어진다 — 상류 장애 문구로 떨어진다.
+    await findInPanel(PANEL_OFFLINE);
+    // 분기가 사라지면 이 문장으로 떨어진다. 둘이 함께 서는 상태는 없다.
+    expect(queryInPanel(PANEL_UPSTREAM)).toBeNull();
+    // 조회 실패를 데이터 문제로 설명하지 않는다 (ADR-005). 패널 안에서만 센다 —
+    // 같은 문장이 픽스처가 세운 `no_match` 카드에도 있고 그건 이 검사의 몫이 아니다.
+    expect(queryInPanel(PANEL_NOT_FOUND)).toBeNull();
+  });
+
+  it("OFFLINE이 아닌 실패는 기존 상류 장애 문구 그대로다", async () => {
+    await resolveFailsWith("UPSTREAM_UNAVAILABLE", 502);
+
+    await findInPanel(PANEL_UPSTREAM);
+    // 단절이 아닌 실패에 단절 문구를 쓰면 사용자가 자기 회선을 고치려 든다.
+    expect(queryInPanel(PANEL_OFFLINE)).toBeNull();
+  });
+
+  it("NOT_FOUND_IN_ALADIN은 failed가 아니라 notFound다 — 실패 문구가 절판 안내를 덮지 않는다", async () => {
+    await resolveFailsWith("NOT_FOUND_IN_ALADIN", 404);
+
+    // 카드와 패널이 같은 문장을 쓰는 경로다. 자리를 좁히지 않으면 어느 쪽을 봤는지
+    // 알 수 없고, 화면 전체 조회는 "found multiple elements"로 던진다.
+    await findInPanel(PANEL_NOT_FOUND);
+    expect(queryInPanel(PANEL_OFFLINE)).toBeNull();
+    expect(queryInPanel(PANEL_UPSTREAM)).toBeNull();
+  });
+
+  it("검색 결과가 0건인 성공 응답은 errorCode 없이 notFound로 간다 (errorCode: null 조합)", async () => {
+    await analyzeInto(
+      makeAnalyze({
+        identified: [],
+        unidentified: [{ rawText: "데미ㅇ", reason: "no_match", candidates: [] }],
+      }),
+    );
+    // 호출은 성공했고 알라딘에 정말 없다. 실패 문구가 나올 자리가 아니다.
+    resolveMock.mockResolvedValue(ok({ candidates: [] }));
+
+    fireEvent.click(screen.getByRole("button", { name: "제목 고쳐 재검색" }));
+    fireEvent.change(screen.getByLabelText("책 제목"), { target: { value: "데미안" } });
+    fireEvent.click(screen.getByRole("button", { name: "재검색" }));
+
+    await findInPanel(PANEL_NOT_FOUND);
+    expect(queryInPanel(PANEL_OFFLINE)).toBeNull();
+    expect(queryInPanel(PANEL_UPSTREAM)).toBeNull();
   });
 
   it("추천 요청에 proof를 실어 보내고, 수락은 recommend_accepted만 보낸다 (회귀 — 삭제하지 마라)", async () => {

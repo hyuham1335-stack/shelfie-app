@@ -791,7 +791,15 @@ class TestPhaseParser:
         ctx = cli.build_context(repo, paths, s)
         assert cli.resolve("${config.project.name}", ctx) == "shelfie"
         assert cli.resolve("${run.dir}/x.md", ctx).endswith("x.md")
-        assert cli.resolve("${calibration.derived.tests_ran_floor}", ctx) == 1179
+
+        # 기대값을 리터럴로 박지 않는다 — 이 칸은 `calibrate` 가 다시 잴 때마다
+        # 바뀌는 **실측값**이고, 숫자를 여기 적으면 재측정이 이 테스트를 깬다.
+        # 이 검사가 묻는 것은 값이 얼마인가가 아니라 `calibration` 네임스페이스가
+        # 파일까지 도달하는가다.
+        floor = json.loads(
+            (repo / "harness" / "calibration.json").read_text(encoding="utf-8")
+        )["derived"]["tests_ran_floor"]
+        assert cli.resolve("${calibration.derived.tests_ran_floor}", ctx) == floor
 
     def test_unresolved_placeholder_raises(self, repo, phases, request_file):
         paths, s = st.create_run(repo, "demo", request_file)
@@ -1213,6 +1221,31 @@ class TestReviewConvergence:
         assert env["exit"] == 0, env["render"]
 
 
+    def test_convergence_keeps_the_round_record(self, run01):
+        """수렴이 라운드 기록을 지우지 않는다 — 02 가 01 로 되돌릴 수 있다.
+
+        예전에는 수렴 경로가 `phases["01-plan"]["rounds"]` 에 **수렴 회차(정수)**
+        를 대입해 회차별 제출 기록을 통째로 날렸다. 01 이 다시 돌지 않으면
+        무해했지만, 02 의 Critical 이 01 로 되돌리는 경로가 처음 돌자
+        `_previous_open` 이 정수를 순회하려다 죽었다. 그리고 그 기록은
+        **단조성 검사가 근거로 삼는 것**이라, 죽지 않았더라도 이전 회차 지적이
+        조용히 사라지는 것을 더는 잡지 못했을 것이다.
+
+        그 정수를 읽는 소비자는 어디에도 없었다 — 순수한 손실이었다 (P3).
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        assert _submit_review(repo, paths, _review("plan"))["exit"] == 0
+        assert _submit_review(repo, paths, _review("xv"))["exit"] == 0
+
+        _, after = st.load(repo, paths.run_id)
+        node = after["phases"]["01-plan"]
+        assert st.phase_status(after, "01-plan") == "passed"
+        assert isinstance(node["rounds"], dict), node["rounds"]
+        assert set(node["rounds"]["1"]) == {"plan", "xv"}
+        assert node["converged_at_round"] == 1
+
+
 class TestCrossVerifySource:
     """폴백이 섞이면 1라운드 수렴이 막힌다 — 이 리포의 모든 런이 그랬다."""
 
@@ -1269,6 +1302,406 @@ class TestCrossVerifySource:
         (repo / ".claude" / "agents" / "plan-reviewer.md").unlink(missing_ok=True)
         bad = [c for c in cli._pipeline_checks(repo) if c["status"] == "FAIL"]
         assert any("plan-reviewer" in (c.get("message") or "") for c in bad), bad
+
+
+class TestCrossVerifyTransientFailure:
+    """primary 가 **있는데 지금 응답을 못 하는 것**은 부재가 아니다.
+
+    P3 는 상류가 503 을 내자 폴백으로 갈아탔고 **다섯 라운드 내내 폴백이
+    굳었다.** 같은 도구가 02 에서는 성공했다. 그런데 그 사실이 상태에도
+    보고서에도 남지 않았고, 폴백 xv 가 민 설계를 02 의 primary 가 Critical 로
+    반려하면서 왕복 예산 1회와 라운드 예산 다섯을 다 썼다.
+
+    앱 코드에 `lookup_failed` != `no_match` 를 요구하면서(ADR-005) 하네스가
+    "지금 못 함" 과 "없음" 을 한 어휘로 뭉개고 있었다.
+    """
+
+    def _fallback(self, round_=1, err=None):
+        r = _review("xv", round_=round_, mode="fallback")
+        if err:
+            r["primary_error"] = err
+        return r
+
+    def test_a_fallback_round_lands_in_the_run_summary(self, run01):
+        """라운드 제출이 런 요약에 접힌다 — 예전에는 slot 에만 들어갔다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+
+        _, after = st.load(repo, paths.run_id)
+        cv = after["cross_verify"]
+        assert cv["rounds"]["1"] == "fallback", cv
+        assert cv["degraded_rounds"] == 1, cv
+        # config 가 선언한 것과 실제로 관측한 것은 다른 값이다
+        assert cv["configured"] == "primary", cv
+        assert cv["mode"] == "fallback", cv
+
+    def test_a_transient_failure_is_not_an_absence(self, run01):
+        """`primary_error` 의 유무가 일시 실패와 부재를 가른다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback(err="HTTP 503 high demand"))
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["cross_verify"]["last_primary_error"] == "HTTP 503 high demand"
+
+    def test_an_absence_leaves_no_error(self, run01):
+        """primary 가 애초에 없던 런은 `last_primary_error` 가 비어 있다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["cross_verify"]["last_primary_error"] is None
+
+    def test_the_next_round_packet_asks_to_retry_primary(self, run01):
+        """봉투가 라운드마다 교차검증기를 다시 말한다.
+
+        예전에는 `## 교차검증` 절이 `render_packet` 에서만 나왔고 그건 `next`
+        에서만 불렸다. 01 의 루프는 `record -> record` 라 그 말을 다시 할
+        경로가 **물리적으로 없었다.**
+        """
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        finding = {"id": "F-1", "severity": "major", "title": "범위",
+                   "quote": "범위가 넓다"}
+        _submit_review(repo, paths, _review("plan", findings=[finding]))
+        env = _submit_review(repo, paths,
+                             self._fallback(err="HTTP 503 high demand"))
+
+        assert env["exit"] == 0, env["render"]
+        assert "## 교차검증" in env["render"], env["render"]
+        assert "다시 시도" in env["render"], env["render"]
+        # 도구 이름은 config 에서 온다 — 코어에 박지 않는다
+        primary = json.loads(
+            (repo / "harness" / "config.json").read_text(encoding="utf-8")
+        )["cross_verify"]["primary"]
+        assert primary in env["render"], env["render"]
+
+    def test_a_fallback_round_degrades_the_grade(self, run01):
+        """폴백은 통과가 아니다 — `external:disabled` 와 같은 형태다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback())
+        # 폴백이 섞이면 1라운드 수렴이 막히므로 2라운드를 돌려 수렴시킨다
+        _submit_review(repo, paths, _review("plan", round_=2), round_=2)
+        _submit_review(repo, paths, _review("xv", round_=2), round_=2)
+
+        _, after = st.load(repo, paths.run_id)
+        assert "cross_verify:fallback" in (after.get("gaps") or []), after.get("gaps")
+        assert after["grade"] == "PASS_WITH_GAPS", after["grade"]
+
+    def test_02_does_not_erase_the_round_history(self, run01):
+        """02 가 primary 로 돌았다고 01 의 폴백이 없던 일이 되지 않는다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, self._fallback(err="HTTP 503 high demand"))
+        _submit_review(repo, paths, _review("plan", round_=2), round_=2)
+        _submit_review(repo, paths, _review("xv", round_=2), round_=2)
+
+        v = paths.run_dir / "02_verdict.json"
+        v.write_text(json.dumps({"reviewer": "xv", "mode": "primary",
+                                 "status": "ok", "findings": [],
+                                 "adopted": [], "resolved_from_previous": []},
+                                ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "02_verdict.raw.md").write_text("# 판정\n", encoding="utf-8")
+        cli.run_record(repo, phase="02", file=str(v), reviewer=None, round_=None)
+
+        _, after = st.load(repo, paths.run_id)
+        cv = after["cross_verify"]
+        assert cv["rounds"]["1"] == "fallback", cv
+        assert cv["degraded_rounds"] >= 1, cv
+        assert cv["mode"] == "fallback", cv
+
+    def test_mode_vocabulary_is_locked(self, run01):
+        """`mode` 어휘를 늘리지 않는다 — `converged` 가 새 값을 놓치면
+        조용히 1라운드 수렴이 열린다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        env = _submit_review(repo, paths,
+                             _review("xv", mode="fallback_after_failure"))
+        assert env["exit"] == 8, env["render"]
+        assert "mode" in env["render"]
+
+    def test_primary_error_on_a_primary_submission_is_rejected(self, run01):
+        """그 필드는 **폴백으로 갈아탄 이유**이지 성공한 런의 기록이 아니다."""
+        repo, paths, s = run01
+        _submit_plan(repo, paths, _plan())
+        payload = _review("xv", mode="primary")
+        payload["primary_error"] = "HTTP 503"
+        env = _submit_review(repo, paths, payload)
+        assert env["exit"] == 8, env["render"]
+
+
+FIVE_UNIT_CONTRACT = """# 계약: 제목 유사도
+
+## 스키마·데이터 변경
+
+없음.
+
+## 외부 경계
+
+없음.
+
+## 유닛
+
+- `lib/match.ts · matchTitle(a: string, b: string): number`
+  - 정상: 0~1 유사도 / 예외: 빈 문자열 → `0`
+- `lib/match.ts · normalizeTitle(a: string): string`
+- `lib/match.ts · stripPunctuation(a: string): string`
+- `lib/match.ts · tokenize(a: string): string[]`
+- `lib/match.ts · scorePair(a: string, b: string): number`
+
+## 진입점
+
+없음.
+
+## 오류 어휘
+
+- `MATCH_EMPTY` (400)
+"""
+
+
+class TestProfileReconfirmation:
+    """M34 — 계약이 바뀌면 프로파일을 다시 센다.
+
+    P3 의 계약 델타 D-2 는 04 게이트 수리 중에 적용됐고, 유닛이 2 → 5 가 됐는데
+    프로파일은 `small` 로 남아 05 의 리뷰어가 1명이 됐다. `_confirm_profile` 을
+    부르는 자리가 `_record_03` 하나뿐이었고, `run_record` 의 멱등 가드가 통과한
+    03 의 재제출을 막으므로 그 뒤에는 재판정 경로가 없었다.
+
+    변화를 감지할 재료(`contract.sha256`)는 이미 상태에 있었고 읽는 쪽이 없었다.
+    """
+
+    def _at_05(self, repo, paths, s, profile):
+        s["profile"] = dict(profile)
+        st.set_phase_status(s, "04-gate", "passed")
+        s["phase"] = "05-code-review"
+        st.save(paths, s)
+
+    def test_a_contract_delta_reconfirms_the_profile(self, gated, phases):
+        repo, paths, s = gated
+        # 03 이 세었을 때의 계약(유닛 1개) — small
+        s["contract"]["sha256"] = hashlib.sha256(
+            (repo / "_workspace" / "contract_sim.md").read_bytes()).hexdigest()
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+
+        # 04 수리 중 메인이 델타를 적용한다 — 유닛이 1 → 5 가 된다
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert after["profile"]["name"] == "normal", after["profile"]
+        assert after["profile"]["units"] == 5, after["profile"]
+        assert after["profile"]["previous"]["name"] == "small", after["profile"]
+        assert after["profile"].get("reconfirmed_at"), after["profile"]
+
+    def test_the_reviewer_cap_follows_the_new_profile(self, gated, phases):
+        """재판정이 값을 내는 자리는 05 의 리뷰어 수다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = hashlib.sha256(
+            (repo / "_workspace" / "contract_sim.md").read_bytes()).hexdigest()
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        routed = after["phases"]["05-code-review"]["routing"]
+        assert routed["profile"] == "normal", routed
+        assert routed["cap"] > 1, routed
+
+    def test_an_unchanged_contract_reconfirms_nothing(self, gated, phases):
+        """sha 가 같으면 재판정하지 않는다 — 매번 다시 세면 판정이 흔들린다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = hashlib.sha256(
+            (repo / "_workspace" / "contract_sim.md").read_bytes()).hexdigest()
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert after["profile"]["name"] == "small", after["profile"]
+        assert "previous" not in after["profile"], after["profile"]
+
+    def test_a_user_profile_survives_the_refresh(self, gated, phases):
+        """`--profile` 로 준 값은 사람이 정한 것이다 — 자동 판정이 못 이긴다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = "낡은값"
+        self._at_05(repo, paths, s, {"name": "small", "source": "user"})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert after["profile"]["name"] == "small", after["profile"]
+        assert after["profile"]["source"] == "user", after["profile"]
+
+    def test_dropped_units_are_named_not_silent(self, gated, phases):
+        """D-2 의 침묵. 계약이 `경로` — 서술 형태로 쓴 줄은 유닛으로 안 세어졌고
+        `dropped` 를 읽는 곳이 doctor 의 **템플릿** 검사뿐이라 아무도 말하지
+        않았다. 유닛이 5 가 아니라 2 로 세어져 프로파일과 스코프가 함께 빗나갔다.
+        """
+        repo, paths, s = gated
+        s["contract"]["sha256"] = "낡은값"
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            CONTRACT_MD.replace(
+                "- `lib/match.ts · matchTitle(a: string, b: string): number`",
+                "- `lib/match.ts · matchTitle(a: string, b: string): number`\n"
+                "- `lib/normalize.ts` — 제목을 정규화한다"),
+            encoding="utf-8")
+
+        env = cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        dropped = after["contract"]["dropped"]
+        assert dropped, after["contract"]
+        assert "lib/normalize.ts" in json.dumps(dropped, ensure_ascii=False)
+        assert "유닛으로 세어지지 않" in env["render"], env["render"]
+
+    def test_the_report_names_the_profile_and_its_source(self, gated, phases):
+        """`리뷰어 1/1` 이 계획인지 결함인지는 프로파일이 갈라 준다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = "낡은값"
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+        cli.run_next(repo, run_id=paths.run_id)
+
+        _, after = st.load(repo, paths.run_id)
+        text, _missing = rep_mod.build(after, {}, {}, [])
+        line = next(l for l in text.splitlines() if l.startswith("| 프로파일"))
+        assert "normal" in line and "small" in line, line
+        assert "유닛 5" in line, line
+
+    def test_replanning_05_does_not_shrink_the_planned_reviewers(self, gated,
+                                                                 phases):
+        """재판정을 넣으면 이 자리를 더 자주 지난다. 변경 집합이 줄었다고
+        계획된 리뷰어가 조용히 줄면 `escaped_05` 를 세는 것이 뜻을 잃는다.
+        """
+        repo, paths, s = gated
+        (repo / "src" / "lib" / "match.ts").write_text("// 고침\n",
+                                                       encoding="utf-8")
+        self._at_05(repo, paths, s,
+                    {"name": "normal", "source": "auto", "units": 5,
+                     "entrypoints": 0})
+        cli.run_next(repo, run_id=paths.run_id)
+        _, mid = st.load(repo, paths.run_id)
+        first = mid["phases"]["05-code-review"]["planned"]
+        assert first, mid["phases"]["05-code-review"]
+
+        # 변경 집합이 사라진다 (커밋됐다고 치자)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "wip", "--no-verify")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert set(after["phases"]["05-code-review"]["planned"]) >= set(first), \
+            "계획된 리뷰어는 줄지 않는다"
+
+
+class TestRoundBudgetAfterRoundTrip:
+    """M32 — 바뀐 설계는 새 설계다. 한 라운드로 수렴할 이유가 없다.
+
+    P3 에서 1~4회차가 수렴한 뒤 02 의 Critical 이 설계를 뒤집었는데, 되돌아간
+    01 에 남은 라운드가 **한 번**이었다. 그 한 번이 진짜 결함 셋을 찾았다.
+    왕복을 "최대 1회" 로 제한하면서 **그 뒤에 필요한 리뷰 라운드를 예산에 넣지
+    않았다** — `phase` 만 되돌리고 `round` 카운터는 그대로였다.
+    """
+
+    CRITICAL = {"id": "F-1", "severity": "critical", "title": "설계를 뒤집는다",
+                "quote": "빈 문자열을 먼저 거른다."}
+
+    def _converge_01(self, repo, paths):
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        return _submit_review(repo, paths, _review("xv"))
+
+    def _verdict(self, repo, paths, findings):
+        v = paths.run_dir / "02_verdict.json"
+        v.write_text(json.dumps(
+            {"reviewer": "xv", "mode": "primary", "status": "ok",
+             "findings": findings,
+             "adopted": [{"id": f["id"], "verdict": "accept"} for f in findings],
+             "resolved_from_previous": []}, ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "02_verdict.raw.md").write_text("# 판정\n", encoding="utf-8")
+        return cli.run_record(repo, phase="02", file=str(v), reviewer=None,
+                              round_=None)
+
+    def test_a_round_trip_grants_round_budget(self, run01):
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        _, mid = st.load(repo, paths.run_id)
+        before = mid["counters"]["round"]["max"]
+
+        env = self._verdict(repo, paths, [dict(self.CRITICAL)])
+        assert env["exit"] == 4, env["render"]
+
+        _, after = st.load(repo, paths.run_id)
+        node = after["counters"]["round"]
+        assert node["max"] > before, node
+        assert node["grants"], "지급 사실이 남아야 한다"
+        assert node["grants"][0]["reason"], node["grants"][0]
+
+    def test_a_grant_does_not_rewind_used(self, run01):
+        """리셋이 아니라 지급이다 — M31 이 회차 기록을 지운 손실이었다."""
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        _, mid = st.load(repo, paths.run_id)
+        used = mid["counters"]["round"]["used"]
+        assert used > 0
+
+        self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["round"]["used"] == used, \
+            "몇 라운드를 썼는가는 지워지지 않는다"
+
+    def test_the_envelope_names_the_grant(self, run01):
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        env = self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, after = st.load(repo, paths.run_id)
+        extra = after["counters"]["round"]["grants"][0]["extra"]
+        assert extra > 0
+        # 문구가 아니라 **실제 지급량**을 말해야 한다
+        assert "**%d 를 새로 지급했다**" % extra in env["render"], env["render"]
+        assert env["data"]["granted_rounds"] == extra, env["data"]
+
+    def test_a_clean_verdict_grants_nothing(self, run01):
+        """되돌리지 않는 판정은 예산을 늘리지 않는다."""
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        _, mid = st.load(repo, paths.run_id)
+        before = mid["counters"]["round"]["max"]
+        self._verdict(repo, paths, [])
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["round"]["max"] == before
+        assert not (after["counters"]["round"].get("grants") or [])
+
+    def test_the_report_names_the_granted_rounds(self, run01):
+        """보고서의 `라운드` 행이 `used` 만 적으면 지급이 안 드러난다."""
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, after = st.load(repo, paths.run_id)
+        text, _missing = rep_mod.build(after, {}, {}, [])
+        line = next(l for l in text.splitlines() if l.startswith("| 라운드"))
+        assert "지급" in line, line
 
 
 class TestInitAndNext:
@@ -1530,8 +1963,68 @@ class TestAttribution:
 
     def test_same_signature_twice_is_stuck(self, repo, config):
         failures = [{"id": "F-1", "owner": "impl", "sig": "a", "frames": []}]
-        got = attr.dispatch(failures, config, prev_sigs=["a"], flip_state={})
+        got = attr.dispatch(failures, config, prev_sigs=["impl|a"], flip_state={})
         assert got["stuck"] is True, "예산이 남아도 즉시 에스컬레이션이다"
+
+    # --- M33. 정체 감지는 시그니처가 아니라 (소유자, 시그니처) 를 센다 -------
+
+    def test_a_flip_gets_its_turn_before_stuck(self, repo, config):
+        """**P3 가 밟은 경로다.** flip 이 다음 역할을 배정한 바로 그 라운드에
+        정체 감지가 먼저 멈추면, 그 배정은 지시로 나가지 못하고 버려진다.
+        ambiguous 실패는 구조적으로 두 역할 중 한쪽만 시도해 보게 된다.
+        """
+        failure = {"id": "F-1", "owner": "ambiguous", "sig": "a", "frames": []}
+        flip, chain = {}, []
+
+        # 예전 코드가 체인에 쌓던 것은 **순수 시그니처**였고, ambiguous 실패의
+        # 그 값은 라운드를 넘어 안 바뀌므로 2회차를 반드시 멈춰 세웠다.
+        assert attr.dispatch([dict(failure)], config, ["a"], {})["stuck"] is False, \
+            "시그니처만으로 정체를 세면 flip 이 값을 낼 기회가 없다"
+
+        first = attr.dispatch([dict(failure)], config, chain, flip)
+        assert first["owner"] == "impl"
+        assert first["stuck"] is False
+        chain.extend(first["pairs"])
+
+        second = attr.dispatch([dict(failure)], config, chain, flip)
+        assert second["owner"] == "test", "flip 이 다음 역할로 넘겼다"
+        assert second["stuck"] is False, "그 배정은 지시로 나가야 한다"
+        chain.extend(second["pairs"])
+
+        third = attr.dispatch([dict(failure)], config, chain, flip)
+        assert third["owner"] == "contract", "역할을 다 돌면 계약 결함이다"
+        assert third["stuck"] is False
+
+    def test_the_same_owner_twice_is_still_stuck(self, repo, config):
+        """경로에서 소유자가 정해진 실패는 쌍이 1회차부터 고정이다."""
+        failure = {"id": "F-1", "owner": "impl", "sig": "a", "frames": []}
+        chain = []
+        first = attr.dispatch([dict(failure)], config, chain, {})
+        assert first["stuck"] is False
+        chain.extend(first["pairs"])
+        second = attr.dispatch([dict(failure)], config, chain, {})
+        assert second["stuck"] is True, "같은 소유자에게 같은 실패를 두 번 보냈다"
+
+    def test_stuck_after_identical_is_read_not_hardcoded(self, repo, config):
+        """`stuck_after_identical` 은 프론트매터에만 있고 코드가 안 읽었다 —
+        값을 3 으로 바꿔도 2회차에 멈췄다.
+        """
+        failure = {"id": "F-1", "owner": "impl", "sig": "a", "frames": []}
+        chain = ["impl|a"]
+        got = attr.dispatch([dict(failure)], config, chain, {}, stuck_after=3)
+        assert got["stuck"] is False, "3회 설정이면 2회차에 안 멈춘다"
+        chain.extend(got["pairs"])
+        again = attr.dispatch([dict(failure)], config, chain, {}, stuck_after=3)
+        assert again["stuck"] is True, "3회차에 멈춘다"
+
+    def test_dispatch_reports_pairs_and_sigs_separately(self, repo, config):
+        """`sigs` 는 `attribution.json` 기록용으로 남는다 — 쌍이 그것을 대체하지
+        않는다. 무엇으로 셌는지와 무엇이 실패했는지는 다른 사실이다.
+        """
+        failure = {"id": "F-1", "owner": "ambiguous", "sig": "a", "frames": []}
+        got = attr.dispatch([dict(failure)], config, [], {})
+        assert got["sigs"] == ["a"]
+        assert got["pairs"] == ["impl|a"], "쌍은 배정된 소유자를 담는다"
 
 
 # ---------------------------------------------------------------------------
@@ -1766,6 +2259,17 @@ class TestGateReplay:
         assert first["exit"] == 4
         second = _gate(repo, fx)
         assert second["exit"] == 10, "동일 시그니처 2회면 예산이 남아도 멈춘다"
+
+    def test_the_sig_chain_carries_the_owner(self, gated, fxdir):
+        """M33 — 원장에 쌓이는 것이 시그니처가 아니라 `owner|sig` 쌍이다."""
+        repo, paths, s = gated
+        stages = dict(ALL_PASS, compile={"exit": 2})
+        log = "src/lib/match.ts(9,3): error TS2322: Type mismatch.\n"
+        fx = make_fixture(fxdir, "chain-owner", stages, stdouts={"compile": log})
+        _gate(repo, fx)
+        _, after = st.load(repo, paths.run_id)
+        chain = after.get("sig_chain") or []
+        assert chain and all(c.startswith("impl|") for c in chain), chain
 
     def test_single_stage_run_spends_no_counter_and_keeps_the_report(self, gated, fxdir):
         repo, paths, s = gated
@@ -2697,6 +3201,61 @@ class TestContractTraceBaseline:
             "export function 아주오래된함수(): void {}\n", encoding="utf-8")
         got = _trace(repo, _write_contract(repo), changed=[])
         assert [f for f in got["findings"] if f["code"] == "out_of_contract"] == []
+
+    # --- 변경된 파일이 아니라 **추가된 줄**을 본다 ----------------------------
+
+    def _ooc(self, got):
+        return sorted(f["symbol"] for f in got["findings"]
+                      if f["code"] == "out_of_contract")
+
+    def test_an_untouched_export_in_a_changed_file_is_not_new(self, repo):
+        """**P3 의 24/32 가 이 자리다.**
+
+        docstring 은 "신규 public 심볼" 이라 적는데 구현은 변경된 파일의 계약에
+        없는 **모든** public 심볼을 셌다 — 새것인지 묻지 않았다. P2 46 + P3 32
+        = 78/78 이 구조적 오탐이었고, 그중 24건이 `env.ts` 의 상수처럼 그 런이
+        손도 안 댄 이름이었다.
+        """
+        f = repo / "src" / "lib" / "match.ts"
+        f.write_text(f.read_text(encoding="utf-8")
+                     + "export function 새로생긴함수(): void {}\n",
+                     encoding="utf-8")
+        # 같은 변경 집합에 계약 밖 심볼이 하나 더 있다 — 다만 **원래 있던 것**이다
+        old = repo / "src" / "lib" / "오래된.ts"
+        old.write_text("export const 오래된상수 = 1\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "기존 심볼을 커밋한다")
+        old.write_text("export const 오래된상수 = 1\n// 주석만 더한다\n",
+                       encoding="utf-8")
+
+        got = _trace(repo, _write_contract(repo),
+                     changed=["src/lib/match.ts", "src/lib/오래된.ts"])
+        assert self._ooc(got) == ["새로생긴함수"], got["findings"]
+
+    def test_a_brand_new_file_is_all_new(self, repo):
+        """추적되지 않는 파일은 본문 전체가 추가분이다 — 03 이 방금 쓴 코드다.
+
+        diff 만 보고 폴백을 안 두면 03 이 만든 심볼이 통째로 안 보인다.
+        """
+        (repo / "src" / "lib" / "새파일.ts").write_text(
+            "export function 갓태어난함수(): void {}\n", encoding="utf-8")
+        got = _trace(repo, _write_contract(repo), changed=["src/lib/새파일.ts"])
+        assert self._ooc(got) == ["갓태어난함수"], got["findings"]
+
+    def test_a_removed_export_is_not_a_new_symbol(self, repo):
+        """심볼을 **지우는 것**이 지적이 되면 안 된다."""
+        f = repo / "src" / "lib" / "match.ts"
+        f.write_text(f.read_text(encoding="utf-8")
+                     + "export function 곧지울함수(): void {}\n",
+                     encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "지울 함수를 커밋한다")
+        f.write_text(f.read_text(encoding="utf-8")
+                     .replace("export function 곧지울함수(): void {}\n", ""),
+                     encoding="utf-8")
+
+        got = _trace(repo, _write_contract(repo), changed=["src/lib/match.ts"])
+        assert self._ooc(got) == [], got["findings"]
 
 
 class TestContractTraceNoContract:

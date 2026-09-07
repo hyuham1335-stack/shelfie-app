@@ -66,8 +66,21 @@ export const MAX_UNIDENTIFIED_BOOKS = 100;
  */
 export const MAX_CANDIDATES_PER_PHOTO = 60;
 
-/** 알라딘 조회 전 후보 총량 상한. confidence 내림차순으로 자른다 (TR-005) */
-export const MAX_CANDIDATES_FOR_LOOKUP = 80;
+/**
+ * 알라딘 조회 전 후보 총량 상한. confidence 내림차순으로 자른다 (TR-005).
+ *
+ * 이 값이 세션당 알라딘 호출 수를 혼자 정한다. 실행 경로에서 축소는 조회
+ * **전**에 한 번만 일어나고, 그렇게 남은 후보는 ItemSearch와 ItemLookUp
+ * **두 단계**를 그대로 통과한다 — 검색한 것이 전부 조회된다. 그래서 유도식은
+ *
+ *   MAX_CANDIDATES_FOR_LOOKUP × 2단계 × ALADIN_CALLS_PER_LOOKUP
+ *     = 65 × 2 × 2 = 260 ≤ MAX_ALADIN_CALLS_PER_SESSION
+ *
+ * 이고, 여기에 `MAX_IDENTIFIED_BOOKS`(50)는 들어가지 않는다. 표시 상한 절단은
+ * 조회가 **끝난 뒤**에 걸리므로 호출 수를 줄이지 못한다. 두 단계가 같은 수를
+ * 받는다는 것이 이 값의 근거이고, 이 값을 올리면 선언(260)이 조용히 깨진다.
+ */
+export const MAX_CANDIDATES_FOR_LOOKUP = 65;
 
 /**
  * 한 요청(세션 1회 분석)이 알라딘에 낼 수 있는 호출 수의 **상한** (TRD 10번).

@@ -32,6 +32,8 @@ GAP_REASONS = {
     "stage_not_touched": "그 스테이지가 볼 변경이 없었다",
     "adapter_unverified": "어댑터가 `verified: false` 다 — 실물로 완주한 적이 없다",
     "cross_verify_unavailable": "교차검증 primary·fallback 이 둘 다 불가였다",
+    "cross_verify:fallback": ("01 의 교차검증이 폴백으로 돈 회차가 있다 — "
+                              "독립 관측 둘이라는 전제가 그만큼 약해졌다"),
     "review05": "05 의 리뷰어가 전부 또는 일부 실패했다",
     "external": "외부 PR 리뷰를 받지 못했다",
     "infra_skipped": "인프라 프로브 실패로 건너뛴 검증이 있다",
@@ -51,6 +53,38 @@ def explain_gap(gap):
     if known:
         return "`%s` — %s" % (gap, known)
     return "`%s` — 어휘에 없는 사유다 (보고서가 설명하지 못한다)" % gap
+
+
+def _profile_cell(node):
+    """`이름 (출처 · 유닛 n)`. 재판정이 있었으면 `무엇에서 무엇으로` 까지."""
+    if not node:
+        return None
+    cell = "%s (%s · 유닛 %s)" % (node.get("name"), node.get("source"),
+                                  node.get("units"))
+    prev = node.get("previous")
+    if prev:
+        cell = "%s — 계약이 바뀌어 다시 셌다: %s(유닛 %s) → %s(유닛 %s)" % (
+            cell, prev.get("name"), prev.get("units"),
+            node.get("name"), node.get("units"))
+    return cell
+
+
+def _counter_cell(node):
+    """`used / max` 와, 지급이 있었으면 그 사실까지.
+
+    지급(`counter_grant`)은 상한만 올리고 `used` 는 안 건드린다. 그래서 `used`
+    만 적으면 왕복 뒤 예산을 더 받았다는 것이 보고서에서 사라진다 (M32).
+    """
+    if not node:
+        return None
+    used, max_ = node.get("used"), node.get("max")
+    cell = "%s / %s" % (used, max_) if max_ is not None else used
+    grants = node.get("grants") or []
+    if grants:
+        cell = "%s (왕복 뒤 %d 지급: %s)" % (
+            cell, sum(g.get("extra") or 0 for g in grants),
+            "; ".join(g.get("reason") or "" for g in grants))
+    return cell
 
 
 def _tbl(rows):
@@ -75,6 +109,7 @@ def build(state, data, calibration, promotions):
     r05 = state.get("review05") or {}
     r07 = state.get("review07") or {}
     audit = state.get("audit") or {}
+    cv = state.get("cross_verify") or {}
 
     lines = ["# 런 보고서 — %s" % state.get("run_id"), ""]
     lines += ["> 요청 슬러그: `%s`" % (state.get("slug") or "?"), ""]
@@ -119,8 +154,10 @@ def build(state, data, calibration, promotions):
                 "\n".join("  - %s" % b
                           for b in budget.get("blind_spots") or [])))
             if budget.get("basis") else "")),
-        ("라운드", (state.get("counters") or {}).get("round", {}).get("used")),
-        ("수리", (state.get("counters") or {}).get("repair", {}).get("used")),
+        # **지급이 드러나야 한다.** `used` 만 적으면 다섯 라운드를 쓴 런과 세
+        # 라운드를 쓰고 둘을 더 받은 런이 같아 보인다 (M32).
+        ("라운드", _counter_cell((state.get("counters") or {}).get("round"))),
+        ("수리", _counter_cell((state.get("counters") or {}).get("repair"))),
         ("테스트 실행 수", tests.get("ran")),
         ("테스트 상태", tests.get("status")),
     ])
@@ -140,7 +177,18 @@ def build(state, data, calibration, promotions):
         ("내장 리뷰", r07.get("code_review")),
         ("escaped_05", r07.get("escaped_05")),
         ("감사 런", audit.get("is_audit_run")),
+        # **01 의 관측 품질이 이 표에 없었다.** 05·07 만 적어서, 교차검증이
+        # 다섯 라운드 내내 폴백이어도 보고서는 아무 말도 하지 않았다 (P3).
+        # **프로파일이 리뷰어 상한을 정한다.** 그 값이 어디서 나왔는지가
+        # 보고서에 없으면 "리뷰어 1명" 이 계획인지 결함인지 갈리지 않는다 (M34).
+        ("프로파일", _profile_cell(state.get("profile"))),
+        ("01 교차검증", cv.get("mode")),
+        ("폴백 회차", "%s / %s" % (cv.get("degraded_rounds") or 0,
+                                   len(cv.get("rounds") or {}))),
     ])
+    if cv.get("last_primary_error"):
+        lines += ["", "- **교차검증 primary 가 실패한 적이 있다** — `%s`. "
+                  "부재가 아니라 일시 실패다." % cv["last_primary_error"]]
     lines.append("")
 
     lines += ["## 캘리브레이션 상태", ""]

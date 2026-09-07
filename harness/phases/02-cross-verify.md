@@ -57,12 +57,25 @@
 ## 제출 형식
 
 ```json
-{"reviewer":"xv","mode":"primary|fallback","status":"ok",
+{"reviewer":"xv","mode":"primary|fallback","primary_error":null,"status":"ok",
  "findings":[{"id":"F-1","severity":"critical|major|minor","category":"…",
               "title":"…","quote":"…","evidence":"…","suggestion":"…"}],
  "adopted":[{"id":"F-1","verdict":"accept|reject","reason":"…"}],
  "resolved_from_previous":[]}
 ```
+**`mode` 는 둘뿐이다. 부재와 일시 실패는 `primary_error` 로 가른다.**
+
+- `primary_error` 가 **있으면** — primary 를 시도했는데 실패했다(일시). 다음 회차의
+  봉투가 **다시 시도하라**고 말한다. 상류 과부하는 대개 한 라운드보다 먼저 끝난다
+- `primary_error` 가 **없으면** — primary 가 애초에 없다(구조). 재시도할 것이 없다
+
+셋째 `mode` 값을 만들지 않는 이유는 `converged` 의 `mode == "fallback"` 검사가 새 값을
+놓치면 **조용히 1라운드 수렴이 열리기** 때문이다. 07 의 `external` 이 "상태 + 사유" 로
+쓰는 것과 같은 형태다.
+
+> **이것은 자진 신고다.** 실행기는 어느 도구가 실제로 불렸는지 볼 수 없다. 다만 유인이
+> 안전한 방향이다 — 과잉 신고는 재시도 지시 한 번이고, 과소 신고는 지금과 같다.
+
 
 재제기(`reraised_from_previous`, finding 안에 적는다)와 해소의 규칙은
 `01-plan.md` 와 같다 — 같은 판정기를 지난다.

@@ -130,6 +130,16 @@ def finding_key(f):
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+# 리뷰어가 무엇으로 관측했는가. **둘뿐이다.**
+#
+# 셋째 값(`fallback_after_failure` 같은)을 만들고 싶어지는 자리인데 만들지
+# 않는다 — `converged` 의 `mode == "fallback"` 검사가 새 값을 놓치면 **조용히
+# 1라운드 수렴이 열린다.** 부재와 일시 실패는 `mode` 가 아니라
+# `primary_error` 의 유무로 가른다(07 의 `external` 이 "상태 + 사유" 로 쓰는
+# 것과 같은 형태다).
+MODES = ("primary", "fallback")
+
+
 def check_review(payload, raw_text, previous_open):
     """리뷰어 제출의 판정. 반환: {"ok","exit","errors","keys","blocking"}"""
     errors = []
@@ -139,6 +149,18 @@ def check_review(payload, raw_text, previous_open):
     elif reviewer == "main":
         errors.append("reviewer 가 main 이다 — 작성자가 자기 글을 리뷰한 것은 "
                       "독립 관측이 아니다")
+
+    mode = payload.get("mode") or "primary"
+    if mode not in MODES:
+        errors.append("mode 가 어휘 밖이다: %r — %s"
+                      % (mode, " · ".join(MODES)))
+    err = payload.get("primary_error")
+    if err is not None and not isinstance(err, str):
+        errors.append("primary_error 는 문자열이다 (받은 값: %r)" % type(err).__name__)
+    if err and mode != "fallback":
+        errors.append("primary_error 가 실렸는데 mode 가 %r 이다 — 그 필드는 "
+                      "**폴백으로 갈아탄 이유**이지 primary 가 성공한 런의 "
+                      "기록이 아니다" % mode)
 
     findings = payload.get("findings") or []
     for f in findings:

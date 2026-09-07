@@ -39,6 +39,12 @@ CHECKS = ("missing_impl", "missing_error_symbol", "missing_entrypoint",
 
 # 오탐이 잦은 둘. 상위 계층 테스트로만 커버되거나 테스트가 심볼명을 직접 쓰지
 # 않는 스타일일 수 있고, 생성 코드가 `out_of_contract` 오탐을 만든다.
+#
+# **§E6 이 재려던 값이 나왔다** — P2 46 + P3 32 = 78/78 이 `out_of_contract` 의
+# 구조적 오탐이었고 `untested_contract_item` 도 6/6 이었다. 그중 `out_of_contract`
+# 는 원인이 규명돼 고쳤다(변경 파일 전체 → 추가된 줄). 다만 **고친 구현의
+# 오탐률은 아직 0런이다** — 78/78 은 고치기 전 값이고, 그것을 근거로 승격하면
+# 재지 않은 것을 잰 것처럼 쓰는 셈이다. 여기 남겨 두고 P4·P5 가 새 값을 만든다.
 BASELINE_CHECKS = ("untested_contract_item", "out_of_contract")
 
 DEFAULT_BASELINE_RUNS = 3
@@ -366,11 +372,18 @@ def _concat(root, rels):
 # ------------------------------------------------------------ out_of_contract
 
 def _out_of_contract(root, adapter, parsed, changed, primary):
-    """계약에 없는 신규 public 심볼.
+    """계약에 없는 **신규** public 심볼.
 
-    **변경된 파일만 본다.** 안 건드린 파일의 기존 심볼을 신규로 세면 리포 전체가
-    지적이 되고, 그러면 이 검사는 첫 런에 꺼진다. `changed` 가 `None` 이면
-    VCS 에 묻는다.
+    변경된 파일만 보고, 그 안에서도 **추가된 줄만** 본다. 예전에는 변경된 파일의
+    본문 전체를 정규식에 태워 "계약에 없는 모든 public 심볼" 을 셌고 — 새것인지
+    묻는 줄이 없었다. docstring 은 처음부터 "신규" 라 적고 있었다.
+
+    그 어긋남의 값이 실측됐다: P2 46 + P3 32 = **78/78 이 구조적 오탐**이었고,
+    P3 의 32건 중 24건은 `env.ts` 의 `MAX_PHOTOS`·`DEFAULT_MODEL` 처럼 그 런이
+    손도 안 댄 상수였다. 산문이 기계 사실을 참칭하는 이 리포의 반복 결함이
+    검사 자신에게서 났다.
+
+    `changed` 가 `None` 이면 VCS 에 묻는다.
     """
     if changed is None:
         changed = _changed_files(root)
@@ -386,9 +399,8 @@ def _out_of_contract(root, adapter, parsed, changed, primary):
     for rel in changed:
         if harness.glob_any(globs, rel):
             continue              # 테스트의 헬퍼는 계약의 대상이 아니다
-        try:
-            text = (Path(root) / rel).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        text = _added_lines(root, rel)
+        if text is None:
             continue
         for m in rx.finditer(text):
             name = m.group("name")
@@ -403,11 +415,40 @@ def _out_of_contract(root, adapter, parsed, changed, primary):
     return out
 
 
+def _added_lines(root, rel):
+    """이 파일에서 **추가된 줄**만. 읽지 못하면 `None`.
+
+    추적분은 `git diff -U0 HEAD` 의 `+` 줄이고, 추적되지 않는 새 파일은 본문
+    전체가 추가분이다 — 03 이 방금 쓴 코드가 정확히 그 상태다.
+
+    지운 줄(`-`)은 들어오지 않는다. 삭제를 신규로 세면 심볼을 지우는 것이
+    지적이 된다.
+
+    `+` 를 뗀 줄을 그대로 잇는다. `public_symbol_regex` 가 `^\\s*export …` 라
+    줄 단위로 물기 때문에 이어 붙여도 뜻이 안 바뀐다.
+    """
+    p = Path(root) / rel
+    r = harness._git(root, "diff", "-U0", "HEAD", "--", rel)
+    if r is not None and r.returncode == 0 and r.stdout.strip():
+        return "\n".join(line[1:] for line in r.stdout.splitlines()
+                         if line.startswith("+") and not line.startswith("+++"))
+    # diff 가 비었다 = 추적되지 않는 새 파일이거나, git 이 답하지 못했다.
+    # 둘 다 본문 전체를 추가분으로 본다 — 신규 파일을 놓치면 03 이 만든 심볼이
+    # 통째로 안 보인다.
+    try:
+        return p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _changed_files(root):
-    """base 대비 변경 + 미커밋. git 이 답하지 못하면 빈 목록이다.
+    """미커밋 변경 + 새 파일. git 이 답하지 못하면 빈 목록이다.
 
     빈 목록은 "변경이 없다"가 아니라 **"모른다"** 이고, 그래서 이 검사가 조용히
     아무것도 못 잡는다. 호출부가 `changed` 를 명시적으로 주는 쪽이 정확하다.
+
+    **base 대비 변경은 안 본다.** 예전 docstring 이 "base 대비 변경 + 미커밋"
+    이라 적었지만 `git status` 는 미커밋만 답한다 — 산문을 구현에 맞춘다.
     """
     out = []
     # `-uall` — 새 디렉터리를 한 줄로 뭉치면 그 안의 새 심볼을 통째로 놓친다.

@@ -892,12 +892,23 @@ def _plan_05_review(root, paths, s, ctx):
     import precheck as pc
     import review as review_mod
 
+    # **라우팅 전에 프로파일을 다시 센다.** 04 수리 중 계약 델타가 적용됐으면
+    # 여기 오는 `profile` 이 낡은 값이고, 그 값이 곧 리뷰어 상한이다 (M34).
+    refreshed = _refresh_profile(root, paths, s, ctx)
     changed = pc.changed_files(root)
     profile = (s.get("profile") or {}).get("name") or "normal"
     routed = review_mod.route(ctx["config"], changed, profile)
     node = s.setdefault("phases", {}).setdefault("05-code-review", {})
-    node["planned"] = [r["code"] for r in routed["reviewers"]]
+    # **계획된 리뷰어는 줄지 않는다.** `next --phase 05` 는 여러 번 불릴 수
+    # 있고 그때마다 변경 집합을 다시 읽는다. 줄어든 집합으로 덮으면 계획이
+    # 조용히 작아지고 `escaped_05` 를 세는 것이 뜻을 잃는다 — `review05` 가
+    # "런 안에서 좋아지지 않는다" 를 지키는 것과 같은 규율이다.
+    kept = [c for c in (node.get("planned") or [])
+            if c not in [r["code"] for r in routed["reviewers"]]]
+    node["planned"] = [r["code"] for r in routed["reviewers"]] + kept
     node["routing"] = routed
+    node["profile_reconfirmed"] = refreshed if refreshed.get("changed") else None
+    node["contract_dropped"] = refreshed.get("dropped") or []
     node["mode"] = review_mod.mode(ctx["config"],
                                    pc._changed_lines(root, changed))
     if not node["planned"]:
@@ -963,6 +974,32 @@ def _excluded_render(root):
             + "\n".join("- `%s`" % c for c in codes))
 
 
+def _contract_drift_lines(node, s):
+    """계약이 바뀌어 프로파일이 다시 정해졌다는 것과, 파서가 흘린 줄.
+
+    둘 다 **조용하면 안 되는 사실**이다. 프로파일은 리뷰어 상한을 정하고,
+    흘린 줄은 그 프로파일과 스코프 선택을 동시에 빗나가게 한다 (M34 · D-2).
+    """
+    out = []
+    re_ = node.get("profile_reconfirmed")
+    if re_:
+        prev = re_.get("previous") or {}
+        prof = s.get("profile") or {}
+        out += ["**계약이 바뀌어 프로파일을 다시 셌다** — `%s`(유닛 %s) → "
+                "`%s`(유닛 %s). 리뷰어 상한이 그만큼 달라진다."
+                % (prev.get("name"), prev.get("units"),
+                   prof.get("name"), prof.get("units")), ""]
+    dropped = node.get("contract_dropped") or []
+    if dropped:
+        out += ["**계약의 %d줄이 유닛으로 세어지지 않았다** — 파서는 "
+                "`컨테이너 · 심볼` 쌍을 요구한다. 이 줄들은 프로파일 판정에도 "
+                "스코프 선택에도 들어가지 않는다:" % len(dropped), ""]
+        out += ["- `%s` — %s" % (d.get("raw"), d.get("reason"))
+                for d in dropped[:5]]
+        out += [""]
+    return out
+
+
 def _review_render(s):
     """봉투가 **누가 리뷰하는지와 무엇이 빠졌는지**를 말한다."""
     node = (s.get("phases") or {}).get("05-code-review") or {}
@@ -970,6 +1007,7 @@ def _review_render(s):
     if not routed:
         return ""
     lines = ["## 리뷰어 라우팅 (결정론 — 네가 정하지 않는다)", ""]
+    lines += _contract_drift_lines(node, s)
     if not routed["reviewers"]:
         lines += ["**매칭된 리뷰어가 0개다.** 그러면 `review05.status` 는 "
                   "`failed` 이고 등급이 `PASS_WITH_GAPS` 로 떨어진다 — "
@@ -1032,6 +1070,22 @@ def render_packet(root, phase, ctx, s, checks=None):
     return "\n\n".join(p for p in parts if p), cmd
 
 
+def _cross_verify_reviewer(front):
+    """페이즈의 리뷰어 중 교차검증기의 `code`. 없으면 None.
+
+    "누가 교차검증기인가" 를 판정하는 자리는 **여기 하나**다. 두 곳에서 따로
+    판정하면 갈라지는 날이 오고, 그날 폴백 기록이 조용히 빠진다.
+    """
+    for r in ((front.get("review") or {}).get("reviewers") or []):
+        if r.get("kind") == "cross_verify":
+            return r.get("code")
+    return None
+
+
+def _is_cross_verifier(phase_item, reviewer):
+    return _cross_verify_reviewer(phase_item["front"]) == reviewer
+
+
 def _cross_verify_render(config, s, front):
     """교차검증기가 누구인지 봉투가 말한다.
 
@@ -1039,13 +1093,26 @@ def _cross_verify_render(config, s, front):
     싣는다) 이 이름은 여기서만 나올 수 있다. **코어에 도구 이름을 박지 않는다** —
     config 를 읽을 뿐이고, 그래서 스택·도구를 바꿔도 코어는 그대로다.
     """
-    if not (front.get("review") or {}).get("reviewers"):
-        return ""
-    if not any(r.get("kind") == "cross_verify"
-               for r in front["review"]["reviewers"]):
+    if _cross_verify_reviewer(front) is None:
         return ""
     cv = config.get("cross_verify") or {}
-    mode = ((s.get("cross_verify") or {}).get("mode")) or "skipped"
+    node = s.get("cross_verify") or {}
+    mode = node.get("mode") or "skipped"
+
+    # **일시 실패는 부재가 아니다.** primary 가 선언돼 있는데 직전 회차가
+    # 실패로 폴백했다면 이번 회차는 다시 시도한다 — 상류 과부하는 대개 한
+    # 라운드보다 먼저 끝난다. 예전에는 이 분기가 없어 한 번 폴백하면 그 런
+    # 내내 폴백이 굳었다 (P3 의 다섯 라운드).
+    if node.get("last_primary_error") and cv.get("primary"):
+        return ("## 교차검증\n\n직전 회차는 외부 관측기 `%s` 가 **실패**해 "
+                "폴백 `%s` 로 돌았다 — %s\n\n**이번 회차는 primary 를 다시 "
+                "시도한다.** 일시 실패는 부재가 아니고, 상류 과부하는 대개 한 "
+                "라운드보다 먼저 끝난다. 또 실패하면 폴백으로 가되 제출에 "
+                "`primary_error` 를 다시 싣는다 — 그래야 다음 회차가 같은 "
+                "판단을 할 수 있다."
+                % (cv.get("primary"), cv.get("fallback"),
+                   node["last_primary_error"]))
+
     if mode == "primary":
         return ("## 교차검증\n\n외부 관측기 `%s` 를 쓴다. 이것이 있으면 "
                 "**1라운드 수렴이 열린다** — 둘 다 폴백이 아니고 Major 이상이 "
@@ -1469,6 +1536,13 @@ def _record_01_review(root, paths, s, phase_item, ctx, file, reviewer, round_):
     slot[reviewer] = {"mode": payload.get("mode") or "primary",
                       "keys": got["keys"], "blocking": got["blocking"],
                       "closed": got["closed"]}
+    # **교차검증기의 회차 기록은 런 요약에도 접힌다.** 예전에는 여기 slot 에만
+    # 들어가 `state.cross_verify` 는 config 가 찍은 값을 그대로 들고 있었다 —
+    # 다섯 라운드가 전부 폴백인데 상태는 `primary` 라고 적었고, 보고서는 그
+    # 사실을 한 글자도 말하지 않았다 (P3).
+    if _is_cross_verifier(phase_item, reviewer):
+        st.note_cross_verify_round(s, round_, slot[reviewer]["mode"],
+                                   payload.get("primary_error"))
     st.save(paths, s)
 
     expected = [r["code"] for r in
@@ -1511,6 +1585,21 @@ def _previous_open(rounds, round_, reviewer=None):
     return out
 
 
+def _note_cross_verify_gap(s):
+    """폴백으로 돈 회차가 있으면 등급이 그것을 말한다.
+
+    **`external:disabled` 와 같은 형태다** — 리뷰가 약해진 것은 통과가 아니고,
+    gap 에 이름이 박혀야 보고서가 그것을 적을 수 있다. 예전에는 폴백이 gap 이
+    아니라 `PASS` 로 끝났고, P3 는 다섯 라운드가 전부 폴백인데 보고서에 그
+    낱말이 한 번도 안 나왔다.
+
+    등급은 `demote` 가 나쁜 쪽으로만 움직이므로 여기서 되돌아가지 않는다.
+    """
+    node = s.get("cross_verify") or {}
+    if node.get("degraded_rounds"):
+        st.demote(s, "PASS_WITH_GAPS", gap="cross_verify:fallback")
+
+
 def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
     subs = [dict(v, code=k) for k, v in slot.items()]
     prev_keys = {k["key"] for r in rounds for sub in rounds[r].values()
@@ -1523,8 +1612,15 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
     max_rounds = (conv.get("max_by_profile") or {}).get(profile) or 5
 
     if ok:
-        s["phases"]["01-plan"]["rounds"] = round_
+        # **`rounds` 를 덮지 않는다.** 예전에는 여기서 수렴 회차(정수)를
+        # 그 자리에 대입해 라운드별 제출 기록을 통째로 날렸다. 01 이 다시
+        # 돌지 않으면 무해했지만, 02 의 Critical 이 01 로 되돌리는 경로가
+        # 처음 돌자 `_previous_open` 이 정수를 순회하려다 죽었고 단조성
+        # 검사가 근거로 삼는 이전 회차 지적이 사라졌다. 정수를 읽는
+        # 소비자는 어디에도 없었다 — 순수한 손실이다 (P3).
+        s["phases"]["01-plan"]["converged_at_round"] = round_
         st.counter_inc(s, "round", max_rounds)
+        _note_cross_verify_gap(s)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 
     used, _max, exceeded = st.counter_inc(s, "round", max_rounds)
@@ -1538,11 +1634,18 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
 
     st.save(paths, s)
     focus = conv.get("focus_round_2") or ""
+    cv_note = _cross_verify_render(ctx["config"], s, phase_item["front"])
     return st.envelope(
         "record", True, 0, s, {"round": used + 1, "reason": reason},
         "## %d라운드가 필요하다\n\n%s\n\n다음 회차의 강제 초점: %s\n\n"
-        "플랜은 **부분 편집**으로 고친다 — 전체를 다시 쓰면 접두부가 라운드마다 쌓인다."
-        % (used + 1, reason, focus or "(없음)"),
+        "플랜은 **부분 편집**으로 고친다 — 전체를 다시 쓰면 접두부가 라운드마다 "
+        "쌓인다.%s"
+        # **라운드마다 교차검증기를 다시 말한다.** 이 절은 `render_packet`
+        # 에서만 나왔고 그건 `next` 에서만 불리는데, 01 의 루프는
+        # `record → record` 라 봉투가 그 말을 다시 할 경로가 물리적으로
+        # 없었다 — 그래서 한 번 폴백하면 그 런 내내 굳었다 (P3).
+        % (used + 1, reason, focus or "(없음)",
+           ("\n\n" + cv_note) if cv_note else ""),
         "python scripts/pipeline/cli.py record --phase 01 --file <리뷰 json> "
         "--reviewer <code> --round %d --run-id %s" % (used + 1, s["run_id"]))
 
@@ -1593,8 +1696,11 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
 
     critical = [f for f in payload.get("findings") or []
                 if f.get("severity") == "critical" and _accepted(payload, f)]
-    s["cross_verify"] = dict(s.get("cross_verify") or {},
-                             mode=payload.get("mode") or "primary")
+    # **병합이지 덮어쓰기가 아니다.** 예전에는 02 의 `mode` 로 통째로 덮어
+    # 01 의 회차 기록이 사라졌다. 02 가 primary 로 돌았다고 해서 01 이 폴백
+    # 이었다는 사실이 없던 일이 되지 않는다.
+    st.note_cross_verify_round(s, "02", payload.get("mode") or "primary",
+                               payload.get("primary_error"))
     if critical:
         used, max_, exceeded = st.counter_inc(s, "xverify_return", 1)
         if exceeded and used > 1:
@@ -1605,15 +1711,45 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
         st.set_phase_status(s, "01-plan", "failed")
         st.set_phase_status(s, "02-cross-verify", "failed")
         s["phase"] = "01-plan"
+        # **바뀐 설계는 새 설계다.** 예전에는 `phase` 만 되돌리고 `round` 카운터를
+        # 그대로 뒀다. P3 에서 1~4회차가 수렴한 뒤 02 가 설계를 뒤집었는데 남은
+        # 라운드가 한 번이었고, 그 한 번이 진짜 결함 셋을 찾았다 (M32).
+        granted = _grant_rounds(root, s, critical)
+        st.append_event(paths, "counter_grant", cmd="record",
+                        phase="02-cross-verify", counter="round", extra=granted)
         st.save(paths, s)
         return st.envelope(
-            "record", False, 4, s, {"critical": len(critical)},
-            "## Critical 이 남았다 — 01 로 되돌린다\n\n%s\n\n왕복은 1회다."
-            % "\n".join("- %s: %s" % (f.get("id"), f.get("title"))
-                        for f in critical),
+            "record", False, 4, s,
+            {"critical": len(critical), "granted_rounds": granted},
+            "## Critical 이 남았다 — 01 로 되돌린다\n\n%s\n\n"
+            "왕복은 1회다. 바뀐 설계에 리뷰 라운드 **%d 를 새로 지급했다** — "
+            "새 설계가 한 라운드로 수렴할 이유가 없다.\n"
+            "쓴 회차는 지워지지 않는다: %d / %d."
+            % ("\n".join("- %s: %s" % (f.get("id"), f.get("title"))
+                         for f in critical),
+               granted, s["counters"]["round"]["used"],
+               s["counters"]["round"]["max"]),
             "python scripts/pipeline/cli.py next --run-id %s" % s["run_id"])
 
     return _advance_to_next(root, paths, s, phase_item, ctx)
+
+
+def _grant_rounds(root, s, critical):
+    """왕복 뒤 01 에 줄 라운드 수. 프로파일 기준 예산 한 벌이다.
+
+    01 의 라운드 상한과 **같은 출처**(`01-plan.md` 의 `converge.max_by_profile`)
+    에서 읽는다. 두 곳이 갈라지면 "왕복 뒤 예산" 이 상한과 다른 뜻을 갖는다.
+    `_judge_round` 의 `or 5` 폴백도 그대로 따라간다.
+    """
+    loaded, _broken = load_phases(root)
+    conv = ((loaded.get("01-plan") or {}).get("front") or {}).get("converge") or {}
+    profile = (s.get("profile") or {}).get("name") or "normal"
+    extra = (conv.get("max_by_profile") or {}).get(profile) or 5
+    st.counter_grant(
+        s, "round", extra,
+        "02 의 Critical %d건이 설계를 뒤집었다 — 새 설계에 리뷰 라운드를 준다"
+        % len(critical))
+    return extra
 
 
 def _has_adoption(payload, finding):
@@ -1641,14 +1777,7 @@ def _record_03(root, paths, s, phase_item, ctx, file, reviewer, round_):
     except (OSError, ValueError) as exc:
         return st.envelope("record", False, 8, s, {}, "JSON 을 읽지 못했다: %s" % exc, None)
 
-    contract_path = resolve("${run.contract_file}", ctx)
-    full = root / contract_path
-    if full.exists():
-        s["contract"] = dict(s.get("contract") or {}, present=True,
-                             path=contract_path,
-                             sha256=_sha256(full))
-        parsed = contract_mod.parse(full.read_text(encoding="utf-8"), ctx["config"])
-        s["profile"] = _confirm_profile(s, ctx["config"], parsed)
+    _refresh_profile(root, paths, s, ctx)
 
     got = attribution.clean_ownership(root, ctx["config"], claims)
     if not got["ok"]:
@@ -1684,6 +1813,58 @@ def _record_03(root, paths, s, phase_item, ctx, file, reviewer, round_):
     st.set_phase_status(s, "03-implement", "passed",
                         claims=file.name)
     return _advance_to_next(root, paths, s, phase_item, ctx)
+
+
+def _refresh_profile(root, paths, s, ctx):
+    """계약이 바뀌었으면 프로파일을 **다시** 센다. 반환: 바뀐 내용 dict.
+
+    예전에는 `_confirm_profile` 을 부르는 자리가 `_record_03` 하나뿐이었다.
+    `run_record` 의 멱등 가드가 통과한 03 의 재제출을 막으므로, 04 수리 중
+    메인이 계약 델타를 적용해도 프로파일은 그대로 굳었다 — P3 에서 유닛이
+    2 → 5 가 됐는데 `small` 이 남아 05 의 리뷰어가 1명이 됐다 (M34).
+
+    변화를 감지할 재료는 이미 있었다. `contract.sha256` 을 적어 두고 **읽는
+    쪽이 없었다.** 여기서 그것을 읽는다.
+
+    `dropped` 도 함께 드러낸다. 계약 파서가 `컨테이너 · 심볼` 쌍이 아닌 줄을
+    유닛으로 안 세는데, 그 사실을 읽는 곳이 doctor 의 **템플릿** 검사뿐이라
+    실제 계약이 유닛 셋을 흘렸을 때 아무도 말하지 않았다 (P3 의 델타 D-2).
+    """
+    import contract as contract_mod
+
+    contract_path = resolve("${run.contract_file}", ctx)
+    full = root / contract_path
+    if not full.exists():
+        return {"changed": False, "dropped": []}
+
+    sha = _sha256(full)
+    node = dict(s.get("contract") or {}, present=True, path=contract_path)
+    same = node.get("sha256") == sha
+    node["sha256"] = sha
+
+    parsed = contract_mod.parse(full.read_text(encoding="utf-8"), ctx["config"])
+    node["dropped"] = parsed.get("dropped") or []
+    s["contract"] = node
+    if same:
+        # **매번 다시 세지 않는다.** 같은 계약을 재판정하면 판정이 흔들리고
+        # `previous` 가 뜻 없는 값으로 채워진다.
+        return {"changed": False, "dropped": node["dropped"]}
+
+    before = dict(s.get("profile") or {})
+    after = _confirm_profile(s, ctx["config"], parsed)
+    changed = after.get("name") != before.get("name")
+    if changed:
+        after = dict(after, previous={k: v for k, v in before.items()
+                                      if k != "previous"},
+                     reconfirmed_at=st.stamp())
+        if paths is not None:
+            # `now` 는 `append_event` 의 타임스탬프 인자다 — 겹치면 안 된다.
+            st.append_event(paths, "profile_reconfirmed", cmd="next",
+                            was=before.get("name"), became=after.get("name"),
+                            units=after.get("units"))
+    s["profile"] = after
+    return {"changed": changed, "previous": before if changed else None,
+            "dropped": node["dropped"]}
 
 
 def _confirm_profile(s, config, parsed):
@@ -2268,6 +2449,11 @@ def run_gate_cmd(root, phase="04", only_stage=None, replay=None, run_id=None):
                                "\n".join("- %s" % c["message"] for c in failed), None)
 
     config, adapter, calibration = adapters.load(root)
+    # **수리 라운드마다 계약을 다시 읽는다.** 메인이 여기서 계약 델타를 적용하고,
+    # 그 델타가 스코프 선택과 프로파일을 함께 바꾼다. 예전에는 스코프만 새 계약을
+    # 보고 프로파일은 03 이 정한 값으로 굳어 있었다 (M34).
+    if not only_stage:
+        _refresh_profile(root, paths, s, ctx)
     round_no = ((s.get("counters") or {}).get("repair") or {}).get("used", 0) + 1
     log_path = paths.gates / ("gr-%d.stdout.log" % round_no)
 
@@ -2293,8 +2479,10 @@ def run_gate_cmd(root, phase="04", only_stage=None, replay=None, run_id=None):
     log_text = ""
     if log_path.exists():
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    dispatch = gate_mod.attribute(root, config, adapter, report, s,
-                                  replay=replay, log_text=log_text)
+    dispatch = gate_mod.attribute(
+        root, config, adapter, report, s, replay=replay, log_text=log_text,
+        stuck_after=((phase_item["front"].get("loop") or {})
+                     .get("stuck_after_identical") or 2))
 
     if report.get("tests"):
         s["tests"] = report["tests"]
@@ -2342,8 +2530,14 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
         return _escalation_envelope("gate", paths, s)
 
     if dispatch.get("stuck"):
+        # **소유자를 이름으로 적는다.** "같은 실패가 두 번" 만으로는 누구에게
+        # 두 번 보냈는지가 안 보이고, 그것이 다음 판단(계약을 고칠 것인가
+        # 범위를 줄일 것인가)에 필요한 사실이다.
         st.escalate(paths, s,
-                    "동일 실패 시그니처가 연속 2회다 — 예산이 남아도 멈춘다",
+                    "같은 실패를 같은 소유자(%s)에게 되풀이해 보냈다 — "
+                    "예산이 남아도 멈춘다 (%s)"
+                    % (dispatch.get("owner") or "?",
+                       ", ".join(dispatch.get("pairs") or [])[:200]),
                     ["계약을 고쳐 다시 돌린다", "범위를 줄인다", "중단한다"],
                     phase="04-gate")
         return _escalation_envelope("gate", paths, s)
@@ -2351,7 +2545,9 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
     loop = phase_item["front"].get("loop") or {}
     used, max_, exceeded = st.counter_inc(s, loop.get("counter") or "repair",
                                           loop.get("max") or 3)
-    s.setdefault("sig_chain", []).extend(dispatch.get("sigs") or [])
+    # **쌍을 쌓는다** — `owner|sig`. 시그니처만 쌓으면 flip 이 배정한 다음 역할이
+    # 지시를 받기 전에 정체 감지가 먼저 멈춘다 (M33).
+    s.setdefault("sig_chain", []).extend(dispatch.get("pairs") or [])
     st.set_phase_status(s, "04-gate", "failed")
     st.save(paths, s)
 

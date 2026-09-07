@@ -3202,6 +3202,61 @@ class TestContractTraceBaseline:
         got = _trace(repo, _write_contract(repo), changed=[])
         assert [f for f in got["findings"] if f["code"] == "out_of_contract"] == []
 
+    # --- 변경된 파일이 아니라 **추가된 줄**을 본다 ----------------------------
+
+    def _ooc(self, got):
+        return sorted(f["symbol"] for f in got["findings"]
+                      if f["code"] == "out_of_contract")
+
+    def test_an_untouched_export_in_a_changed_file_is_not_new(self, repo):
+        """**P3 의 24/32 가 이 자리다.**
+
+        docstring 은 "신규 public 심볼" 이라 적는데 구현은 변경된 파일의 계약에
+        없는 **모든** public 심볼을 셌다 — 새것인지 묻지 않았다. P2 46 + P3 32
+        = 78/78 이 구조적 오탐이었고, 그중 24건이 `env.ts` 의 상수처럼 그 런이
+        손도 안 댄 이름이었다.
+        """
+        f = repo / "src" / "lib" / "match.ts"
+        f.write_text(f.read_text(encoding="utf-8")
+                     + "export function 새로생긴함수(): void {}\n",
+                     encoding="utf-8")
+        # 같은 변경 집합에 계약 밖 심볼이 하나 더 있다 — 다만 **원래 있던 것**이다
+        old = repo / "src" / "lib" / "오래된.ts"
+        old.write_text("export const 오래된상수 = 1\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "기존 심볼을 커밋한다")
+        old.write_text("export const 오래된상수 = 1\n// 주석만 더한다\n",
+                       encoding="utf-8")
+
+        got = _trace(repo, _write_contract(repo),
+                     changed=["src/lib/match.ts", "src/lib/오래된.ts"])
+        assert self._ooc(got) == ["새로생긴함수"], got["findings"]
+
+    def test_a_brand_new_file_is_all_new(self, repo):
+        """추적되지 않는 파일은 본문 전체가 추가분이다 — 03 이 방금 쓴 코드다.
+
+        diff 만 보고 폴백을 안 두면 03 이 만든 심볼이 통째로 안 보인다.
+        """
+        (repo / "src" / "lib" / "새파일.ts").write_text(
+            "export function 갓태어난함수(): void {}\n", encoding="utf-8")
+        got = _trace(repo, _write_contract(repo), changed=["src/lib/새파일.ts"])
+        assert self._ooc(got) == ["갓태어난함수"], got["findings"]
+
+    def test_a_removed_export_is_not_a_new_symbol(self, repo):
+        """심볼을 **지우는 것**이 지적이 되면 안 된다."""
+        f = repo / "src" / "lib" / "match.ts"
+        f.write_text(f.read_text(encoding="utf-8")
+                     + "export function 곧지울함수(): void {}\n",
+                     encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "지울 함수를 커밋한다")
+        f.write_text(f.read_text(encoding="utf-8")
+                     .replace("export function 곧지울함수(): void {}\n", ""),
+                     encoding="utf-8")
+
+        got = _trace(repo, _write_contract(repo), changed=["src/lib/match.ts"])
+        assert self._ooc(got) == [], got["findings"]
+
 
 class TestContractTraceNoContract:
 

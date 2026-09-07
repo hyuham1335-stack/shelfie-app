@@ -2628,6 +2628,11 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
     # 가리킨 대상이 실재해야 선언이 대조 가능한 사실이 된다 (M48).
     errors += rv7.check_reraise(findings, _open_from_05(s))
 
+    # "고쳤다" 는 git 으로 확인 가능하므로 확인한다 (M49 · 불변식 8).
+    head_sha = (s.get("pr") or {}).get("head_sha")
+    res_errors, res_unverified = rv7.check_resolution(root, findings, head_sha)
+    errors += res_errors
+
     if payload.get("change_requested") and not findings:
         errors.append("`change_requested` 가 참인데 findings 가 비었다 — "
                       "무엇을 고치라는 것인지 없이 차단만 하는 제출이다.")
@@ -2641,8 +2646,21 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
     got = rv7.escaped(root, findings, s["run_id"], previous_open=open05)
     # **dedup 은 버리는 것이 아니라 세는 것이다** — 여기서 처음 잡힌
     # Critical/Major 가 05 라우팅이 놓친 것이다.
-    ledger.append(root, s["run_id"], "07",
-                  [dict(f, resolution="deferred") for f in got["findings"]])
+    # **하드코딩된 `deferred` 를 걷었다** (M49). 고쳐진 지적이 `deferred` 로
+    # 굳으면 `EXCLUDED_FROM_COUNT` 밖이라 "반복되는 미해결" 로 승격 집계에
+    # 학습된다. 다만 대조가 불가능하면 주장을 받지 않고 갭으로 드러낸다 —
+    # 확인할 수 없는 것을 확인한 것처럼 적지 않는다.
+    if res_unverified:
+        gap = "repair_unverified"
+        if gap not in s.setdefault("gaps", []):
+            s["gaps"].append(gap)
+    rows = []
+    for f in got["findings"]:
+        res = f.get("resolution") or "deferred"
+        if res == "repaired" and res_unverified:
+            res = "deferred"
+        rows.append(dict(f, resolution=res))
+    ledger.append(root, s["run_id"], "07", rows)
 
     s.setdefault("review07", {}).update(
         {"external": dict(decided),
@@ -3688,9 +3706,17 @@ def run_pr(root, run_id=None):
     removed = _drop_contract(root, paths, s, build_context(root, paths, s))
     data["contract_removed"] = removed
 
+    # **07 이 대조할 기준점이다** (M49). 07 에서 메인이 "고쳤다"고 신고하면
+    # 그 주장은 `<head_sha>..HEAD` 에 그 파일을 건드린 변경이 실재해야 사실이
+    # 된다. 기준점이 없으면 확인할 수 없고, 확인할 수 없는 것을 확인한 것처럼
+    # 적지 않는다.
+    head_sha = harness._git(root, "rev-parse", "HEAD")
     s.setdefault("pr", {}).update({
         "head": branch, "pushed": True, "pushed_at": st.stamp(),
         "remote": rs["remote"],
+        "head_sha": (head_sha.stdout.strip()
+                     if head_sha is not None and head_sha.returncode == 0
+                     else None),
     })
     req = pr_mod.build_request(s, config, branch, paths.rel(body_path),
                               rs["remote"])

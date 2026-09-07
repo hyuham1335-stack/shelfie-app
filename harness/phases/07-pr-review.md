@@ -164,6 +164,16 @@ finding 은 **05 와 같은 스키마**를 쓴다.
 - `quote` 는 외부 리뷰 **원문의 부분문자열**이어야 한다. 05 와 같은 검사다
 - `change_requested: true` 인데 findings 가 비면 exit 8 — 무엇을 고치라는
   것인지 없이 차단만 하는 제출이다
+- **네가 그 자리에서 고쳤으면 `"resolution": "repaired"` 와
+  `"repaired_by": "main"` 을 적어라.** 안 적으면 `deferred` 이고, 그것이
+  기본값이다 — **안 적은 것은 안 고친 것이다.** 07 에서 수리하는 주체는
+  메인뿐이라 다른 값은 exit 8 이다.
+  - **이 주장은 대조된다.** `repaired` 는 그 finding 의 `path` 를 건드린 변경이
+    **PR push 이후에 실재할 때만** 받는다(커밋과 워킹트리 둘 다 본다). 없으면
+    exit 8 — 자진 신고 중 기계로 확인 가능한 것은 기계로 확인한다(불변식 8).
+    `path` 없이 `repaired` 를 주장할 수도 없다
+  - 고쳐진 지적을 `deferred` 로 두면 **`EXCLUDED_FROM_COUNT` 밖이라 "반복되는
+    미해결" 로 승격 집계에 학습된다** (M49)
 - **05 가 이미 낸 것과 같은 결함이면 `reraised_from_previous` 로 가리켜라.**
   `escaped_05` 의 대조는 `sha1(category|target_role|title)` 이라 **네가 같은
   결함에 다른 이름을 붙이면 새 것으로 센다** — 그러면 05 라우팅 품질의 유일한

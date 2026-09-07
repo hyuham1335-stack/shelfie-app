@@ -6452,6 +6452,135 @@ def _r07(paths, **kw):
     return p
 
 
+class TestRecord07Resolution:
+    """07 의 원장 줄이 스스로 모순되지 않는가 (M49).
+
+    `_record_07` 이 `resolution="deferred"` 를 **하드코딩**해서, 메인이 실제로
+    고친 지적도 `deferred` 로 굳었다. P6 의 `R7-2` 는 `07_pr_review.json` 이
+    `resolution: "repaired"` · `repaired_by: "main"` 으로 적고 실제로
+    `7f94226` 이 고쳤는데, 원장 줄은 `deferred` + `repaired_by: "main"` 이다 —
+    `dict(f, ...)` 가 `repaired_by` 는 남기고 `resolution` 만 덮었다.
+    **한 줄이 스스로 모순된다.**
+
+    `deferred` 는 `EXCLUDED_FROM_COUNT` 에 없으므로 **고쳐진 결함이 "반복되는
+    미해결"로 승격 집계에 학습된다.** P2 의 G-6 이 07 경로에서 재발한 것이다.
+
+    다만 자진 신고를 그대로 받지 않는다 — 불변식 8. "고쳤다"는 `git` 으로
+    확인 가능하므로 확인한다.
+    """
+
+    def _f(self, **kw):
+        d = {"id": "R7-2", "category": "DOC_CODE_DRIFT", "severity": "major",
+             "target_role": "main", "title": "문서와 코드가 어긋난다",
+             "path": "docs/TRD.md", "quote": "x", "source": "code-review",
+             "evidence": "같은 자리다"}
+        d.update(kw)
+        return d
+
+    def _push_base(self, repo, run_id):
+        """06 이 push 한 시점을 상태에 박는다."""
+        _p, s = st.load(repo, run_id)
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        s.setdefault("pr", {})["head_sha"] = head
+        st.save(_p, s)
+        return head
+
+    def _repair(self, repo, rel, text="바뀐다\n"):
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "repair")
+
+    def test_기본값은_deferred_다(self, repo, request_file, phases):
+        """안 적은 것은 안 고친 것이다 — 여기서는 폴백이 맞다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._push_base(repo, run_id)
+        cli.run_record(repo, "07", str(_r07(paths, findings=[self._f()])),
+                       run_id=run_id)
+        rows = [r for r in ldg.read_all(repo) if r.get("phase") == "07"]
+        assert rows and rows[-1]["resolution"] == "deferred", rows
+
+    def test_고친_것이_repaired_로_남는다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._push_base(repo, run_id)
+        self._repair(repo, "docs/TRD.md")
+        env = cli.run_record(repo, "07", str(_r07(paths, findings=[
+            self._f(resolution="repaired", repaired_by="main")])), run_id=run_id)
+        assert env["exit"] in (0, 11), env["render"]
+        rows = [r for r in ldg.read_all(repo) if r.get("phase") == "07"]
+        assert rows[-1]["resolution"] == "repaired", rows[-1]
+        assert rows[-1]["repaired_by"] == "main", rows[-1]
+
+    def test_안_고쳐_놓고_repaired_라_하면_exit_8(self, repo, request_file, phases):
+        """자진 신고 중 기계로 확인 가능한 것은 기계로 확인한다 (불변식 8)."""
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._push_base(repo, run_id)
+        env = cli.run_record(repo, "07", str(_r07(paths, findings=[
+            self._f(resolution="repaired", repaired_by="main")])), run_id=run_id)
+        assert env["exit"] == 8, env["render"]
+        assert "repaired" in env["render"], env["render"]
+
+    def test_path_없이_repaired_를_주장할_수_없다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._push_base(repo, run_id)
+        f = self._f(resolution="repaired", repaired_by="main")
+        f.pop("path")
+        env = cli.run_record(repo, "07", str(_r07(paths, findings=[f])),
+                             run_id=run_id)
+        assert env["exit"] == 8, env["render"]
+
+    def test_07_에서는_main_만_수리한다(self, repo, request_file, phases):
+        """07 절차에 역할 호출이 없다 — 다른 주체를 적으면 그것은 사실이 아니다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._push_base(repo, run_id)
+        self._repair(repo, "docs/TRD.md")
+        env = cli.run_record(repo, "07", str(_r07(paths, findings=[
+            self._f(resolution="repaired", repaired_by="impl")])), run_id=run_id)
+        assert env["exit"] == 8, env["render"]
+
+    def test_어휘_밖_resolution_은_거부된다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._push_base(repo, run_id)
+        env = cli.run_record(repo, "07", str(_r07(paths, findings=[
+            self._f(resolution="고쳤음")])), run_id=run_id)
+        assert env["exit"] == 8, env["render"]
+
+    def test_기준점이_없으면_주장을_받지_않고_갭으로_적는다(self, repo, request_file,
+                                                          phases):
+        """확인할 수 없는 것을 확인한 것처럼 적지 않는다 — 조용히 통과도 아니다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        # push 시점 커밋을 박지 않는다 — 옛 런의 모양이다.
+        self._repair(repo, "docs/TRD.md")
+        env = cli.run_record(repo, "07", str(_r07(paths, findings=[
+            self._f(resolution="repaired", repaired_by="main")])), run_id=run_id)
+        assert env["exit"] in (0, 11), env["render"]
+        rows = [r for r in ldg.read_all(repo) if r.get("phase") == "07"]
+        assert rows[-1]["resolution"] == "deferred", rows[-1]
+        _p, s = st.load(repo, run_id)
+        assert any("repair_unverified" in g for g in s.get("gaps") or []), s["gaps"]
+
+    def test_06_이_push_시점_커밋을_남긴다(self, repo, request_file, phases,
+                                            tmp_path):
+        """기계 확인의 기준점이 없으면 07 이 아무것도 대조하지 못한다."""
+        _branch(repo, "feat-x")
+        run_id, _paths = _enter_06(repo, request_file, phases)
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 0, env["render"]
+        _p, s = st.load(repo, run_id)
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        assert s["pr"]["head_sha"] == head, s["pr"]
+
+
 class TestEscaped05Reraise:
     """07 이 05 의 지적을 **가리킬 수 있는가** (M48).
 

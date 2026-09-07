@@ -1673,15 +1673,45 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
         st.set_phase_status(s, "01-plan", "failed")
         st.set_phase_status(s, "02-cross-verify", "failed")
         s["phase"] = "01-plan"
+        # **바뀐 설계는 새 설계다.** 예전에는 `phase` 만 되돌리고 `round` 카운터를
+        # 그대로 뒀다. P3 에서 1~4회차가 수렴한 뒤 02 가 설계를 뒤집었는데 남은
+        # 라운드가 한 번이었고, 그 한 번이 진짜 결함 셋을 찾았다 (M32).
+        granted = _grant_rounds(root, s, critical)
+        st.append_event(paths, "counter_grant", cmd="record",
+                        phase="02-cross-verify", counter="round", extra=granted)
         st.save(paths, s)
         return st.envelope(
-            "record", False, 4, s, {"critical": len(critical)},
-            "## Critical 이 남았다 — 01 로 되돌린다\n\n%s\n\n왕복은 1회다."
-            % "\n".join("- %s: %s" % (f.get("id"), f.get("title"))
-                        for f in critical),
+            "record", False, 4, s,
+            {"critical": len(critical), "granted_rounds": granted},
+            "## Critical 이 남았다 — 01 로 되돌린다\n\n%s\n\n"
+            "왕복은 1회다. 바뀐 설계에 리뷰 라운드 **%d 를 새로 지급했다** — "
+            "새 설계가 한 라운드로 수렴할 이유가 없다.\n"
+            "쓴 회차는 지워지지 않는다: %d / %d."
+            % ("\n".join("- %s: %s" % (f.get("id"), f.get("title"))
+                         for f in critical),
+               granted, s["counters"]["round"]["used"],
+               s["counters"]["round"]["max"]),
             "python scripts/pipeline/cli.py next --run-id %s" % s["run_id"])
 
     return _advance_to_next(root, paths, s, phase_item, ctx)
+
+
+def _grant_rounds(root, s, critical):
+    """왕복 뒤 01 에 줄 라운드 수. 프로파일 기준 예산 한 벌이다.
+
+    01 의 라운드 상한과 **같은 출처**(`01-plan.md` 의 `converge.max_by_profile`)
+    에서 읽는다. 두 곳이 갈라지면 "왕복 뒤 예산" 이 상한과 다른 뜻을 갖는다.
+    `_judge_round` 의 `or 5` 폴백도 그대로 따라간다.
+    """
+    loaded, _broken = load_phases(root)
+    conv = ((loaded.get("01-plan") or {}).get("front") or {}).get("converge") or {}
+    profile = (s.get("profile") or {}).get("name") or "normal"
+    extra = (conv.get("max_by_profile") or {}).get(profile) or 5
+    st.counter_grant(
+        s, "round", extra,
+        "02 의 Critical %d건이 설계를 뒤집었다 — 새 설계에 리뷰 라운드를 준다"
+        % len(critical))
+    return extra
 
 
 def _has_adoption(payload, finding):

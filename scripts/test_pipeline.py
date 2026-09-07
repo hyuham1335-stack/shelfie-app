@@ -1438,6 +1438,95 @@ class TestCrossVerifyTransientFailure:
         assert env["exit"] == 8, env["render"]
 
 
+class TestRoundBudgetAfterRoundTrip:
+    """M32 — 바뀐 설계는 새 설계다. 한 라운드로 수렴할 이유가 없다.
+
+    P3 에서 1~4회차가 수렴한 뒤 02 의 Critical 이 설계를 뒤집었는데, 되돌아간
+    01 에 남은 라운드가 **한 번**이었다. 그 한 번이 진짜 결함 셋을 찾았다.
+    왕복을 "최대 1회" 로 제한하면서 **그 뒤에 필요한 리뷰 라운드를 예산에 넣지
+    않았다** — `phase` 만 되돌리고 `round` 카운터는 그대로였다.
+    """
+
+    CRITICAL = {"id": "F-1", "severity": "critical", "title": "설계를 뒤집는다",
+                "quote": "빈 문자열을 먼저 거른다."}
+
+    def _converge_01(self, repo, paths):
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        return _submit_review(repo, paths, _review("xv"))
+
+    def _verdict(self, repo, paths, findings):
+        v = paths.run_dir / "02_verdict.json"
+        v.write_text(json.dumps(
+            {"reviewer": "xv", "mode": "primary", "status": "ok",
+             "findings": findings,
+             "adopted": [{"id": f["id"], "verdict": "accept"} for f in findings],
+             "resolved_from_previous": []}, ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "02_verdict.raw.md").write_text("# 판정\n", encoding="utf-8")
+        return cli.run_record(repo, phase="02", file=str(v), reviewer=None,
+                              round_=None)
+
+    def test_a_round_trip_grants_round_budget(self, run01):
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        _, mid = st.load(repo, paths.run_id)
+        before = mid["counters"]["round"]["max"]
+
+        env = self._verdict(repo, paths, [dict(self.CRITICAL)])
+        assert env["exit"] == 4, env["render"]
+
+        _, after = st.load(repo, paths.run_id)
+        node = after["counters"]["round"]
+        assert node["max"] > before, node
+        assert node["grants"], "지급 사실이 남아야 한다"
+        assert node["grants"][0]["reason"], node["grants"][0]
+
+    def test_a_grant_does_not_rewind_used(self, run01):
+        """리셋이 아니라 지급이다 — M31 이 회차 기록을 지운 손실이었다."""
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        _, mid = st.load(repo, paths.run_id)
+        used = mid["counters"]["round"]["used"]
+        assert used > 0
+
+        self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["round"]["used"] == used, \
+            "몇 라운드를 썼는가는 지워지지 않는다"
+
+    def test_the_envelope_names_the_grant(self, run01):
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        env = self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, after = st.load(repo, paths.run_id)
+        extra = after["counters"]["round"]["grants"][0]["extra"]
+        assert extra > 0
+        # 문구가 아니라 **실제 지급량**을 말해야 한다
+        assert "**%d 를 새로 지급했다**" % extra in env["render"], env["render"]
+        assert env["data"]["granted_rounds"] == extra, env["data"]
+
+    def test_a_clean_verdict_grants_nothing(self, run01):
+        """되돌리지 않는 판정은 예산을 늘리지 않는다."""
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        _, mid = st.load(repo, paths.run_id)
+        before = mid["counters"]["round"]["max"]
+        self._verdict(repo, paths, [])
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["round"]["max"] == before
+        assert not (after["counters"]["round"].get("grants") or [])
+
+    def test_the_report_names_the_granted_rounds(self, run01):
+        """보고서의 `라운드` 행이 `used` 만 적으면 지급이 안 드러난다."""
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, after = st.load(repo, paths.run_id)
+        text, _missing = rep_mod.build(after, {}, {}, [])
+        line = next(l for l in text.splitlines() if l.startswith("| 라운드"))
+        assert "지급" in line, line
+
+
 class TestInitAndNext:
 
     def test_init_creates_a_run_and_next_renders_the_first_packet(self, repo, phases):

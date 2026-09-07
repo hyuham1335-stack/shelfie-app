@@ -78,6 +78,10 @@ EVENT_KINDS = (
     # 06~08. 승인·PR·승격은 "일어났다"가 사후에 확인 가능해야 하는 사건이고,
     # 그 셋 다 외부 상태를 건드린다 — 이벤트가 없으면 되돌아볼 기록이 없다.
     "approved", "approval_revoked", "pr_pushed", "pr_opened", "promoted",
+    # `counter_inc` 은 "예산을 썼다", `counter_grant` 는 "예산을 더 줬다" 다.
+    # 뭉치면 원장에서 다섯 라운드를 쓴 런과 세 라운드를 쓰고 둘을 더 받은 런이
+    # 같아 보인다 (M32).
+    "counter_grant",
 )
 
 GRADES = ("PASS", "PASS_WITH_GAPS", "INCOMPLETE")
@@ -389,6 +393,28 @@ def counter_inc(s, name, max_):
     node["max"] = max_
     node["used"] = node.get("used", 0) + 1
     return node["used"], max_, node["used"] >= max_ if max_ is not None else False
+
+
+def counter_grant(s, name, extra, reason, now=None):
+    """예산을 **추가 지급**한다. 반환: (used, max).
+
+    **리셋이 아니다.** `used` 를 되돌리면 "이 런이 라운드를 몇 번 돌았는가"가
+    사라지고, 그것이 M31 이 낸 손실의 모양이다. 상한만 올리고 지급 사실을
+    `grants` 에 남긴다 — 보고서가 "왕복 뒤 몇 라운드를 더 줬는가"를 말할 수
+    있는 것이 여기서 나온다.
+
+    지급은 무한 연장이 아니다. 부르는 쪽이 자기 왕복 예산(`xverify_return`
+    상한 1)에 묶여 있어 런당 한 번뿐이다 (M32 · ADR-H024).
+    """
+    if name not in COUNTERS:
+        raise ValueError("알 수 없는 카운터: %r (%s)" % (name, ", ".join(COUNTERS)))
+    if not extra or extra < 0:
+        raise ValueError("지급량은 양수여야 한다: %r" % (extra,))
+    node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": extra})
+    node["max"] = (node.get("max") or 0) + extra
+    node.setdefault("grants", []).append(
+        {"at": stamp(now), "extra": extra, "reason": reason})
+    return node.get("used", 0), node["max"]
 
 
 def demote(s, grade, gap=None):

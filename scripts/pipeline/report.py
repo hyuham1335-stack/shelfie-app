@@ -55,6 +55,24 @@ def explain_gap(gap):
     return "`%s` — 어휘에 없는 사유다 (보고서가 설명하지 못한다)" % gap
 
 
+def _counter_cell(node):
+    """`used / max` 와, 지급이 있었으면 그 사실까지.
+
+    지급(`counter_grant`)은 상한만 올리고 `used` 는 안 건드린다. 그래서 `used`
+    만 적으면 왕복 뒤 예산을 더 받았다는 것이 보고서에서 사라진다 (M32).
+    """
+    if not node:
+        return None
+    used, max_ = node.get("used"), node.get("max")
+    cell = "%s / %s" % (used, max_) if max_ is not None else used
+    grants = node.get("grants") or []
+    if grants:
+        cell = "%s (왕복 뒤 %d 지급: %s)" % (
+            cell, sum(g.get("extra") or 0 for g in grants),
+            "; ".join(g.get("reason") or "" for g in grants))
+    return cell
+
+
 def _tbl(rows):
     """2열 표. 값이 없으면 **`미측정` 이라고 적는다** — 빈칸은 거짓말이다."""
     out = ["| 항목 | 값 |", "|---|---|"]
@@ -122,8 +140,10 @@ def build(state, data, calibration, promotions):
                 "\n".join("  - %s" % b
                           for b in budget.get("blind_spots") or [])))
             if budget.get("basis") else "")),
-        ("라운드", (state.get("counters") or {}).get("round", {}).get("used")),
-        ("수리", (state.get("counters") or {}).get("repair", {}).get("used")),
+        # **지급이 드러나야 한다.** `used` 만 적으면 다섯 라운드를 쓴 런과 세
+        # 라운드를 쓰고 둘을 더 받은 런이 같아 보인다 (M32).
+        ("라운드", _counter_cell((state.get("counters") or {}).get("round"))),
+        ("수리", _counter_cell((state.get("counters") or {}).get("repair"))),
         ("테스트 실행 수", tests.get("ran")),
         ("테스트 상태", tests.get("status")),
     ])

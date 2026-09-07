@@ -367,6 +367,11 @@ interface LookupSummary {
  * 미만 강등 + 사전 병합 + 65건 절단)를 그대로 쓰고, 판정은 `judge`가 한다. 여기서
  * 다른 규칙을 쓰면 골든이 통과해도 실제 판정은 다르게 난다.
  *
+ * 축소가 돌려주는 강등 바구니는 `lowConfidence`(하한 미달)와 `capped`(조회 상한에
+ * 밀림) 둘이다. 골든이 재는 것은 **응답 어휘**이므로 둘을 합쳐 `unreadable` 한 칸에
+ * 넣는다 — 프로덕션 응답이 둘을 같은 사유로 내보내기 때문이다. 갈라 세야 하는 곳은
+ * 응답이 아니라 이벤트 로그의 가드레일 계측이다.
+ *
  * 조회는 **직렬**이다. 알라딘 일일 한도가 5,000회이고(TRD 6.1) 20장을 한꺼번에
  * 밀어 넣으면 한도와 레이트 리밋에 동시에 부딪히는데, 그 실패가 인식률 숫자로
  * 둔갑한다. 브레이커는 프로덕션과 같이 **요청(= 사진 1장) 스코프**로 만든다
@@ -375,11 +380,15 @@ interface LookupSummary {
 async function matchAgainstAladin(
   candidates: readonly ExtractedCandidate[],
 ): Promise<LookupSummary> {
-  const { toLookup, unreadable } = reduceBeforeLookup(candidates);
+  const { toLookup, lowConfidence, capped } = reduceBeforeLookup(candidates);
 
   const identified: IdentifiedBook[] = [];
   const byReason: Record<UnidentifiedReason, number> = {
-    unreadable: unreadable.length,
+    // 조회 전 축소가 내는 강등 바구니는 둘이고 **둘 다** unreadable 로 보고된다
+    // (RESPONSE_REASON 의 접힘과 같은 규칙). 한쪽만 세면 조회 상한에 밀린 책이
+    // 어느 칸에도 잡히지 않아 재현율이 실제보다 좋아 보인다 — 골든이 스스로를
+    // 속이는 경로다 (ADR-010).
+    unreadable: lowConfidence.length + capped.length,
     no_match: 0,
     ambiguous: 0,
     lookup_failed: 0,

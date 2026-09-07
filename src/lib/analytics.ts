@@ -28,6 +28,7 @@ import type {
   recommendationSchema,
   unidentifiedReasonSchema,
 } from "./schemas";
+import type { MeasurementReason } from "./unidentified";
 
 /**
  * 미확인 사유별 카운트. 4종을 여기 다시 적지 않고 스키마에서 파생한다 —
@@ -43,6 +44,16 @@ export type UnidentifiedReasonCounts = Record<
 >;
 
 /**
+ * 계측 사유별 카운트 일곱. 응답 사유 4종(`UnidentifiedReasonCounts`)과 **다른
+ * 어휘**이며, 화면에 나가지 않고 로그에만 남는다.
+ *
+ * 어느 사유가 가드레일 분자에 드는지는 여기서 정하지 않는다 — 그 규칙은
+ * `lib/unidentified.ts`의 `COUNTS_TOWARD_GUARDRAIL`이 소유하고 컴파일로
+ * 강제한다. 이 타입은 일곱 칸을 빠짐없이 싣는 일만 한다.
+ */
+export type UnidentifiedMeasurementCounts = Record<MeasurementReason, number>;
+
+/**
  * PRD 7번 표의 이벤트 9종.
  *
  * `input_tokens`·`output_tokens`는 Claude를 호출하는 이벤트에서 **옵셔널이
@@ -52,13 +63,64 @@ export type UnidentifiedReasonCounts = Record<
 export type AnalyticsEvent =
   /** `/api/analyze` 요청 수신 — 세션 완주율의 분모이자 소요 시간의 시작점 */
   | { event: "photo_uploaded"; session_id: string; photo_count: number }
-  /** 분석 응답 반환 직전 — 책 인식률·미확인 비율·세션당 비용 */
+  /**
+   * 분석 응답 반환 직전 — 책 인식률·미확인 비율·세션당 비용.
+   *
+   * ## `raw_` 접두사의 뜻과 규칙
+   * `raw_`는 **표시 상한 절단 전**의 값을 뜻한다. 접두사 없는
+   * `identified_count`·`unidentified_count`는 `capIdentified`·`capUnidentified`가
+   * 자른 **뒤**의 수, 즉 사용자가 실제로 본 목록의 길이다.
+   *
+   * **`raw_`끼리만 나눈다.** 절단 뒤의 분자를 절단 전의 분모로 나누면 상한에
+   * 걸린 요청에서만 비율이 낮게 나와, 후보가 쏟아진 요청일수록 지표가 좋아 보이는
+   * 뒤집힌 값이 된다.
+   *
+   * 다만 `raw_`가 붙었다고 아무 둘이나 나눠도 되는 것은 아니다. 미확인 비율
+   * 가드레일의 유일한 짝은
+   * `raw_unidentified_guardrail_count / raw_guardrail_denominator`이고,
+   * `raw_candidate_count`는 **분모가 아니다**(아래 설명).
+   */
   | {
       event: "analyze_completed";
       session_id: string;
       identified_count: number;
       unidentified_count: number;
       unidentified_by_reason: UnidentifiedReasonCounts;
+      /**
+       * 절단 전 확인 + 미확인 총 건수 — 세션의 **규모**를 보는 관측값이다.
+       *
+       * **가드레일 분모가 아니다.** 이 값으로 나누지 마라. 분자는 일곱 사유 중
+       * 넷만 세는데 이 값은 일곱을 다 담고 있어 비율이 희석된다 — 후보 200건에
+       * 조회 상한 65건이면 실제 판정 실패율 30.8%가 10%로 보이고, 알라딘이 전면
+       * 장애라 아무것도 판정하지 못한 세션이 0%로 가장 좋은 성적을 낸다.
+       * 나눌 짝은 아래 `raw_guardrail_denominator` 하나뿐이다.
+       */
+      raw_candidate_count: number;
+      /**
+       * 미확인 비율 가드레일의 **분모** — 확인된 책 + 분자 대상 미확인.
+       *
+       * 분자와 같은 모집단만 센다. 조회하지 않았거나 하지 못한 책은 판독 품질을
+       * 증언하지 못하므로 분자에서 빼는 것과 **같은 이유로** 분모에서도 뺀다
+       * (`lib/unidentified.ts`의 `COUNTS_TOWARD_GUARDRAIL`).
+       */
+      raw_guardrail_denominator: number;
+      /**
+       * 가드레일의 **분자**. `raw_guardrail_denominator`와 짝이다.
+       *
+       * `unidentified_count`로 대신할 수 없다 — 그 값은 절단 뒤인 데다 모집단
+       * 밖의 사유까지 뭉쳐 담아, 상한을 올릴 일과 프롬프트를 고칠 일을
+       * 구분하지 못한다 (ADR-005).
+       */
+      raw_unidentified_guardrail_count: number;
+      /**
+       * 절단 전 미확인의 **계측 사유별 분해** 일곱 칸.
+       *
+       * 집계 둘만 싣고 이것을 빼면 일곱으로 가른 구분이 어떤 출력에도 도달하지
+       * 않는다 — 사유를 서로 바꿔 배정해도 지표가 똑같아 보이고, 그러면 어휘를
+       * 가른 일이 검증되지 않는 장식이 된다. 지표를 읽는 사람이 "상한을 올릴
+       * 일인가, 알라딘 문제인가, 프롬프트 문제인가"를 여기서 가른다.
+       */
+      raw_unidentified_by_measurement: UnidentifiedMeasurementCounts;
       overflow_count: number;
       failed_photo_count: number;
       duration_ms: number;
@@ -143,6 +205,10 @@ const PROPERTY_KEYS: {
     "identified_count",
     "unidentified_count",
     "unidentified_by_reason",
+    "raw_candidate_count",
+    "raw_guardrail_denominator",
+    "raw_unidentified_guardrail_count",
+    "raw_unidentified_by_measurement",
     "overflow_count",
     "failed_photo_count",
     "duration_ms",

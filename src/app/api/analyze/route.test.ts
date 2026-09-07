@@ -11,7 +11,8 @@ import {
   MAX_UNIDENTIFIED_BOOKS,
 } from "@/lib/env";
 import { verifyProof } from "@/lib/proof";
-import { analyzeResponseSchema } from "@/lib/schemas";
+import { RESPONSE_REASON } from "@/lib/unidentified";
+import { analyzeResponseSchema, unidentifiedReasonSchema } from "@/lib/schemas";
 import type { LookupOutcome } from "@/lib/match";
 import type { FactsOutcome } from "@/services/aladin";
 import type { ExtractOutcome } from "@/services/anthropic";
@@ -853,5 +854,414 @@ describe("이벤트 로그", () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).identified).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 가드레일 계측 — 응답과 갈라 센다 (ADR-005 · 05 델타)
+ *
+ * 이 런이 가르는 것은 **계측뿐**이다. 응답 `reason`은 여전히 4종이고 화면 매핑도
+ * 그대로다. 그래서 여기서 재야 하는 것이 셋이다.
+ * 1. `analyze_completed`의 raw_ 넷이 표시 상한 절단 **전**의 수를 담는가
+ * 2. 그 계측이 생겼는데도 응답의 사유 분포가 **한 칸도 움직이지 않았는가**
+ * 3. 분자와 분모가 **같은 모집단**을 세는가 (05 델타 ①)
+ *
+ * 2번을 직접 단언하는 이유: 라우트가 `"unreadable"` 리터럴을 지우고
+ * `RESPONSE_REASON[measured]` 유도로 바꾸는 것이 이 런의 변경이다. 유도가 한
+ * 군데라도 어긋나면 화면 문구가 소리 없이 바뀌는데, 응답 스키마는 4종 안의
+ * 값이기만 하면 통과시키므로 스키마가 그것을 잡지 못한다.
+ *
+ * 3번이 여기 있는 이유: `analytics.test.ts`는 `logEvent`의 투영만 볼 수 있어
+ * 픽스처가 스스로 적은 숫자를 되읽을 뿐이다. 분자와 분모의 관계는 파이프라인을
+ * 실제로 돌리는 이 파일에서만 재진다.
+ * ------------------------------------------------------------------ */
+
+describe("미확인 계측을 응답과 갈라 센다 (raw_ 넷)", () => {
+  function 유일한_완료이벤트(): Record<string, unknown> {
+    const events = eventsOf("analyze_completed");
+    expect(events).toHaveLength(1);
+    return events[0];
+  }
+
+  function 사유별_계측(event: Record<string, unknown>): Record<string, number> {
+    return event.raw_unidentified_by_measurement as Record<string, number>;
+  }
+
+  /** 응답에 실제로 실린 사유 분포. 응답 어휘가 움직이면 여기서 곧바로 드러난다 */
+  function 응답_사유_분포(unidentified: { reason: string }[]): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const book of unidentified) counts[book.reason] = (counts[book.reason] ?? 0) + 1;
+    return counts;
+  }
+
+  /** 계측에만 있고 응답에는 없어야 하는 이름들. 하나라도 새면 화면 매핑이 못 읽는다 */
+  const 계측_전용_어휘 = [
+    "low_confidence",
+    "lookup_capped",
+    "blank_title",
+    "search_failed",
+    "facts_failed",
+  ];
+
+  const 상한_초과분 = 10;
+
+  /** 조회 상한에 밀린 것 말고는 미확인이 하나도 나오지 않는 세션 */
+  function 밀린_후보만(): void {
+    const titles = Array.from(
+      { length: MAX_CANDIDATES_FOR_LOOKUP + 상한_초과분 },
+      (_, index) => `책${String(index + 1).padStart(3, "0")}`,
+    );
+    setExtract([titles.map((title) => extractedOf(title))]);
+    searchByExactTitle(titles);
+    factsForAll();
+  }
+
+  it("밀린 후보만 있으면 가드레일 분자가 0이고 상한 강등분이 그 수와 같다", async () => {
+    밀린_후보만();
+
+    const body = await (await POST(analyzeRequest())).json();
+
+    // 화면에는 전부 unreadable로 보인다 — 상한은 우리가 건 것이지 알라딘의 답이 아니다.
+    expect(응답_사유_분포(body.unidentified)).toEqual({ unreadable: 상한_초과분 });
+    // 그런데 가드레일 분자는 0이다. 여기에 상한 강등분이 들어가면 사진을 많이
+    // 올릴수록 프롬프트 품질이 떨어진 것처럼 보여 엉뚱한 롤백을 부른다.
+    expect(유일한_완료이벤트()).toMatchObject({ raw_unidentified_guardrail_count: 0 });
+    expect(사유별_계측(유일한_완료이벤트()).lookup_capped).toBe(상한_초과분);
+  });
+
+  it("분모가 밀린 후보를 세지 않는다 — 확인된 책 수와 같다 (05 델타 ①)", async () => {
+    밀린_후보만();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    // 조회한 65건이 전부 확인됐고 밀린 10건은 판정된 적이 없다. 그 10건이 분모에
+    // 남으면 비율이 희석돼, 사진을 많이 올릴수록 성적이 좋아진다.
+    expect(event.raw_guardrail_denominator).toBe(MAX_CANDIDATES_FOR_LOOKUP);
+    expect(event.raw_candidate_count).toBe(MAX_CANDIDATES_FOR_LOOKUP + 상한_초과분);
+    // 두 값은 서로 다르다 — 관측용 총수를 분모로 쓰면 안 된다는 것이 델타의 요지다.
+    expect(event.raw_guardrail_denominator).not.toBe(event.raw_candidate_count);
+    // 절단 전 수다. 표시된 확인 50권보다 크다.
+    expect(event.raw_guardrail_denominator as number).toBeGreaterThan(body.identified.length);
+  });
+
+  it("표시 상한 절단이 일어나도 raw_candidate_count가 줄지 않는다", async () => {
+    밀린_후보만();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    // 절단이 실제로 발생한 세션이다 — 이것이 전제되지 않으면 아래가 공허하다.
+    expect(body.identified).toHaveLength(MAX_IDENTIFIED_BOOKS);
+    expect(body.overflowCount).toBeGreaterThan(0);
+
+    const 표시된_합 = body.identified.length + body.unidentified.length;
+    expect(event.raw_candidate_count).toBe(MAX_CANDIDATES_FOR_LOOKUP + 상한_초과분);
+    expect(event.raw_candidate_count as number).toBeGreaterThan(표시된_합);
+    expect(event.identified_count).toBe(MAX_IDENTIFIED_BOOKS);
+    expect(event.unidentified_count).toBe(body.unidentified.length);
+  });
+
+  it("raw_candidate_count는 추출 총수가 아니다 — 조회 전 병합이 먼저 건수를 줄인다", async () => {
+    // 같은 책이 사진 둘에 찍혔다. 조회 전 사전 병합이 이 둘을 한 건으로 만들므로
+    // **절단 전 관측 총수조차 추출 후보 수보다 작다.** 이 값을 "추출 후보 전량"
+    // 이라 부르면 거짓이고, 그렇게 이름 붙인 채 분모로 쓰면 "몇 권을 다뤘는가"와
+    // "몇 판정을 했는가"를 뒤섞게 된다.
+    setExtract([
+      [extractedOf("소년이 온다", 0, { author: "한강" }), extractedOf("흰", 0)],
+      [extractedOf("소년이온다", 1, { author: "한강 (지은이)" })],
+    ]);
+    searchByExactTitle(["소년이 온다", "흰"]);
+    factsForAll();
+
+    const 추출_총수 = 3;
+    const body = await (await POST(analyzeRequest([IMAGE, IMAGE]))).json();
+    const event = 유일한_완료이벤트();
+
+    // 병합이 실제로 일어났다는 것을 조회에 태운 수로 확인한다.
+    expect(searchManyMock.mock.calls[0][0]).toHaveLength(2);
+    expect(body.identified).toHaveLength(2);
+    expect(body.unidentified).toEqual([]);
+    expect(event.raw_candidate_count).toBe(2);
+    expect(event.raw_candidate_count as number).toBeLessThan(추출_총수);
+  });
+
+  /* --- 분모의 존재 이유 — 리뷰어의 반례 (05 델타 ①) ----------------- */
+
+  it("알라딘 전면 장애 세션은 분모가 0이라 비율을 내지 않는다 — 0%가 아니다", async () => {
+    setExtract([[extractedOf("소년이 온다"), extractedOf("흰"), extractedOf("데미안")]]);
+    setSearch(() => ({ status: "failed" }));
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    expect(body.identified).toEqual([]);
+    expect(응답_사유_분포(body.unidentified)).toEqual({ lookup_failed: 3 });
+
+    const 분자 = event.raw_unidentified_guardrail_count as number;
+    // 옛 분모(관측용 총수)로 나누면 0/3 = 0% — 알라딘이 통째로 죽은 세션이
+    // **가장 좋은 성적**을 낸다. 이것이 리뷰어가 든 반례다.
+    expect(event.raw_candidate_count).toBe(3);
+    expect(분자 / (event.raw_candidate_count as number)).toBe(0);
+    // 새 분모는 0이다. 판정을 하나도 받지 못한 세션은 좋은 성적을 받는 것이
+    // 아니라 **모집단에서 빠진다** — 비율 자체가 계산되지 않는다.
+    expect(event.raw_guardrail_denominator).toBe(0);
+    expect(Number.isNaN(분자 / (event.raw_guardrail_denominator as number))).toBe(true);
+  });
+
+  it("조회하지 못한 책이 분모를 희석하지 않는다 — 판정 실패율이 그대로 나온다", async () => {
+    const 장애 = Array.from({ length: 8 }, (_, index) => `장애${index}`);
+    const 없는책 = ["없는책1", "없는책2"];
+    setExtract([[...장애, ...없는책].map((title) => extractedOf(title))]);
+    setSearch((query) =>
+      장애.includes(query.title) ? { status: "failed" } : { status: "ok", candidates: [] },
+    );
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+    const 분자 = event.raw_unidentified_guardrail_count as number;
+
+    expect(body.identified).toEqual([]);
+    expect(응답_사유_분포(body.unidentified)).toEqual({ lookup_failed: 8, no_match: 2 });
+
+    // 실제로 판정을 받은 것은 둘뿐이고 둘 다 실패했다 — 판정 실패율 100%다.
+    expect(분자).toBe(2);
+    expect(event.raw_guardrail_denominator).toBe(2);
+    expect(분자 / (event.raw_guardrail_denominator as number)).toBe(1);
+    // 옛 분모로는 20%였다. 조회조차 못 한 여덟 건이 실패율을 5분의 1로 희석한다.
+    expect(분자 / (event.raw_candidate_count as number)).toBe(0.2);
+  });
+
+  /* --- 계측에서만 중복을 접는다 (05 델타 ②) ------------------------- */
+
+  it("같은 mergeKey를 가진 저확신 항목 다섯이면 분자에 1만 더한다", async () => {
+    // 정규화하면 제목·저자가 전부 같은 판독본 다섯이다. 확신도 미달은 사전 병합
+    // **전에** 강등되므로 응답에는 다섯 장이 그대로 남는다.
+    const 같은_책 = [
+      { title: "82년생 김지영", author: "조남주" },
+      { title: "82년생김지영", author: "조남주 (지은이)" },
+      { title: "82년생 김지영!", author: "조남주" },
+      { title: "82년생  김지영", author: "조남주 (지은이)" },
+      { title: "(양장) 82년생 김지영", author: "조남주" },
+    ];
+    setExtract([
+      같은_책.map((책) => extractedOf(책.title, 0, { author: 책.author, confidence: 0.1 })),
+    ]);
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    // 같은 책이 다섯 장에 흐릿하게 찍혔을 뿐인데 분자가 5 오르면, 또렷하게 읽혀
+    // 분모에 1만 더하는 같은 책과 **단위가 달라진다** — 이 런이 막겠다고 선언한
+    // 오독과 같은 방향이다.
+    expect(event.raw_unidentified_guardrail_count).toBe(1);
+    expect(event.raw_guardrail_denominator).toBe(1);
+    expect(사유별_계측(event).low_confidence).toBe(1);
+  });
+
+  it("접는 것은 세는 자리뿐이다 — 응답에는 다섯 장이 전부 남는다", async () => {
+    const 같은_책 = [
+      { title: "82년생 김지영", author: "조남주" },
+      { title: "82년생김지영", author: "조남주 (지은이)" },
+      { title: "82년생 김지영!", author: "조남주" },
+      { title: "82년생  김지영", author: "조남주 (지은이)" },
+      { title: "(양장) 82년생 김지영", author: "조남주" },
+    ];
+    setExtract([
+      같은_책.map((책) => extractedOf(책.title, 0, { author: 책.author, confidence: 0.1 })),
+    ]);
+
+    const body = await (await POST(analyzeRequest())).json();
+
+    // 계측을 고치겠다고 응답 목록까지 접으면 사용자 화면에서 카드가 사라진다.
+    // "왜 빠졌는지 보여준다"는 원칙(ADR-002)은 계측 사정과 무관하다.
+    expect(body.unidentified).toHaveLength(같은_책.length);
+    expect(응답_사유_분포(body.unidentified)).toEqual({ unreadable: 같은_책.length });
+    expect(new Set(body.unidentified.map((book: { rawText: string }) => book.rawText)).size).toBe(
+      같은_책.length,
+    );
+  });
+
+  /* --- 계측 사유가 골고루 나오는 세션 -------------------------------- */
+
+  const 상한에_밀릴_수 = 3;
+  const 흐릿한_후보_수 = 2;
+  const 판정_실패_수 = 4;
+  const 확인된_책_수 = MAX_CANDIDATES_FOR_LOOKUP - 판정_실패_수;
+  const 총_후보_수 = MAX_CANDIDATES_FOR_LOOKUP + 상한에_밀릴_수 + 흐릿한_후보_수;
+  // 확신도 미달 둘 + no_match 하나 + ambiguous 하나. 이름을 `분자`로 두면 위
+  // 두 테스트의 지역 변수를 가려 읽는 사람이 어느 쪽인지 헷갈린다.
+  const 분자_기대값 = 흐릿한_후보_수 + 2;
+
+  /**
+   * 계측 사유 여섯이 한 세션에 섞이게 만든다. 판독본의 `mergeKey`가 전부 달라
+   * 접힘은 일어나지 않는다 — 접힘은 바로 위 두 테스트가 따로 본다.
+   * - `low_confidence` : 확신도 0.1인 후보 둘
+   * - `lookup_capped`  : 조회 상한에 밀린 후보 셋
+   * - `search_failed`  : ItemSearch 응답을 확보하지 못한 책 하나
+   * - `no_match`       : 알라딘에 정말 없는 책 하나
+   * - `ambiguous`      : 유사 후보가 둘인 책 하나
+   * - `facts_failed`   : 검색은 됐는데 ItemLookUp 응답을 확보하지 못한 책 하나
+   */
+  function 뒤섞인_세션(): void {
+    const 또렷 = Array.from(
+      { length: MAX_CANDIDATES_FOR_LOOKUP + 상한에_밀릴_수 },
+      (_, index) => `책${String(index + 1).padStart(3, "0")}`,
+    );
+
+    setExtract([
+      [
+        ...또렷.map((title) => extractedOf(title)),
+        ...Array.from({ length: 흐릿한_후보_수 }, (_, index) =>
+          extractedOf(`흐릿 ${index}`, 0, { confidence: 0.1 }),
+        ),
+      ],
+    ]);
+
+    setSearch((query) => {
+      if (query.title === "책001") return { status: "failed" };
+      if (query.title === "책002") return { status: "ok", candidates: [] };
+      if (query.title === "책003") {
+        // 저자를 읽지 못했으므로 tie-break도 실패해 ambiguous로 내려간다
+        return {
+          status: "ok",
+          candidates: [candidateOf(903, "책003"), candidateOf(904, "책003")],
+        };
+      }
+      const index = 또렷.indexOf(query.title);
+      return { status: "ok", candidates: [candidateOf(index + 1, query.title)] };
+    });
+
+    setFacts((isbn13) =>
+      isbn13 === isbnOf(4)
+        ? { status: "failed" }
+        : {
+            status: "ok",
+            facts: factsOf(candidateOf(Number(isbn13.slice(-3)), "알라딘 원본 제목")),
+          },
+    );
+  }
+
+  it("응답의 사유 분포는 이 런 전후로 동일하다 — 접힘 결과가 옛 리터럴과 같다", async () => {
+    뒤섞인_세션();
+
+    const body = await (await POST(analyzeRequest())).json();
+
+    // 옛 코드는 `unreadable` 바구니 전체에 문자열 "unreadable"을 직접 박았고,
+    // 그 바구니에는 확신도 미달과 상한 밀림이 함께 들어 있었다. 새 코드는 둘을
+    // 갈라 계측한 뒤 `RESPONSE_REASON`으로 다시 접는다 — 그래서 이 분포는
+    // **바뀌지 않아야 한다.** 숫자를 유도식이 아니라 그대로 적는 이유는, 여기서
+    // 재려는 것이 "옛 값과 같은가"이지 "새 계산이 자기 자신과 맞는가"가 아니기
+    // 때문이다.
+    expect(응답_사유_분포(body.unidentified)).toEqual({
+      unreadable: 상한에_밀릴_수 + 흐릿한_후보_수,
+      no_match: 1,
+      ambiguous: 1,
+      lookup_failed: 2,
+    });
+  });
+
+  it("응답에는 응답 어휘 4종만 나가고 계측 어휘는 한 글자도 새지 않는다", async () => {
+    뒤섞인_세션();
+
+    const response = await POST(analyzeRequest());
+    const body = await response.json();
+
+    expect(analyzeResponseSchema.safeParse(body).success).toBe(true);
+    for (const reason of Object.keys(응답_사유_분포(body.unidentified))) {
+      expect(unidentifiedReasonSchema.options).toContain(reason);
+    }
+    // 스키마는 4종 안의 값이기만 하면 통과시키므로 어휘 유출은 따로 본다.
+    for (const name of 계측_전용_어휘) {
+      expect(JSON.stringify(body)).not.toContain(name);
+    }
+  });
+
+  it("사유별 계측이 일곱 칸이고 그 합이 (접은) 미확인 총수와 맞는다", async () => {
+    뒤섞인_세션();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const by = 사유별_계측(유일한_완료이벤트());
+
+    // 칸 목록을 여기 다시 적지 않는다 — 접힘 매핑의 키가 정본이다.
+    expect(Object.keys(by).sort()).toEqual(Object.keys(RESPONSE_REASON).sort());
+    // 일곱을 갈라 놓고 집계 둘만 내보내면 `search_failed`와 `facts_failed`를 서로
+    // 바꿔 배정해도 어떤 검사도 실패하지 않는다. 그래서 칸마다 값을 못 박는다.
+    expect(by).toEqual({
+      low_confidence: 흐릿한_후보_수,
+      lookup_capped: 상한에_밀릴_수,
+      blank_title: 0,
+      no_match: 1,
+      ambiguous: 1,
+      search_failed: 1,
+      facts_failed: 1,
+    });
+    // 판독본의 mergeKey가 전부 다르므로 접힘이 없다 — 합이 곧 응답 카드 수다.
+    const 합 = Object.values(by).reduce((sum, n) => sum + n, 0);
+    expect(합).toBe(body.unidentified.length);
+  });
+
+  it("분자는 조회하지 못한 책을 빼고 세고, 분모는 확인된 책을 더해 센다", async () => {
+    뒤섞인_세션();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    // 분자 = 확신도 미달 둘 + no_match 하나 + ambiguous 하나.
+    // 상한에 밀린 셋과 조회 실패 둘은 들어가지 않는다.
+    expect(event.raw_unidentified_guardrail_count).toBe(분자_기대값);
+    // 분모 = 확인된 책(절단 전) + 분자. 두 값의 차가 확인된 책 수를 되돌려 준다.
+    expect(event.raw_guardrail_denominator).toBe(확인된_책_수 + 분자_기대값);
+    expect(
+      (event.raw_guardrail_denominator as number) -
+        (event.raw_unidentified_guardrail_count as number),
+    ).toBe(확인된_책_수);
+    // 절단 전 확인 수(61)는 화면에 남은 수(50)보다 크다 — 분모가 절단을 따라가지 않는다.
+    expect(확인된_책_수).toBeGreaterThan(body.identified.length);
+
+    // 관측용 총수는 분모보다 크다. 둘을 나누면 안 되는 이유가 이 차이다.
+    expect(event.raw_candidate_count).toBe(총_후보_수);
+    expect(event.raw_candidate_count as number).toBeGreaterThan(
+      event.raw_guardrail_denominator as number,
+    );
+  });
+
+  it("제목이 기호뿐이라 판독이 무너진 후보는 unreadable이지만 분자에는 든다", async () => {
+    // 상한 강등분과 **같은 응답 사유**를 갖는데 계측은 반대다. 이 대비가 이
+    // 계약의 전부다 — 응답 한 칸(unreadable) 뒤에 성격이 다른 기전이 셋 있고,
+    // 그중 하나만 우리가 스스로 건 제한이다.
+    setExtract([[extractedOf("!!!")]]);
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    expect(body.unidentified).toEqual([{ rawText: "!!!", reason: "unreadable", candidates: [] }]);
+    expect(event).toMatchObject({
+      unidentified_by_reason: { unreadable: 1, no_match: 0, ambiguous: 0, lookup_failed: 0 },
+      raw_candidate_count: 1,
+      raw_guardrail_denominator: 1,
+      raw_unidentified_guardrail_count: 1,
+    });
+    expect(사유별_계측(event).blank_title).toBe(1);
+    expect(사유별_계측(event).lookup_capped).toBe(0);
+  });
+
+  it("미확인이 하나도 없으면 분자가 0이고 분모가 확인된 책 수다", async () => {
+    setExtract([[extractedOf("소년이 온다"), extractedOf("흰")]]);
+    searchByExactTitle(["소년이 온다", "흰"]);
+    factsForAll();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    expect(body.unidentified).toEqual([]);
+    expect(event).toMatchObject({
+      raw_candidate_count: body.identified.length,
+      raw_guardrail_denominator: body.identified.length,
+      raw_unidentified_guardrail_count: 0,
+    });
+    // 일곱 칸이 전부 0이다 — 미확인이 없는데 어느 칸이든 값이 있으면 어딘가에서
+    // 확인된 책이 미확인으로도 세어지고 있다는 뜻이다.
+    expect(Object.values(사유별_계측(event)).every((n) => n === 0)).toBe(true);
   });
 });

@@ -34,9 +34,21 @@ import {
   MAX_OUTPUT_BYTES_TOTAL,
 } from "@/lib/env";
 import { judge } from "@/lib/match";
-import { capIdentified, capUnidentified, dedupeByIsbn, reduceBeforeLookup } from "@/lib/merge";
+import {
+  capIdentified,
+  capUnidentified,
+  dedupeByIsbn,
+  mergeKey,
+  reduceBeforeLookup,
+} from "@/lib/merge";
 import { issueProof } from "@/lib/proof";
 import { analyzeRequestSchema, analyzeResponseSchema } from "@/lib/schemas";
+import {
+  measureUnidentified,
+  MEASURED_FROM_VERDICT,
+  RESPONSE_REASON,
+  type MeasuredUnidentified,
+} from "@/lib/unidentified";
 import { createRequestBreaker, lookupFactsMany, searchMany } from "@/services/aladin";
 import { extractFromPhoto, generateNotes } from "@/services/anthropic";
 import type { AnalyzeResponse, ErrorCode } from "@/types/api";
@@ -156,7 +168,9 @@ export async function POST(request: Request): Promise<Response> {
 
   // 조회 **전**에 줄인다. 확신도 하한과 65건 상한이 여기서 걸리지 않으면
   // 판독 한 번의 이상 동작이 알라딘 일일 한도를 한 요청에 소진시킨다 (FR-012).
-  const { toLookup, unreadable } = reduceBeforeLookup(candidates);
+  // 강등된 두 바구니는 응답에서 같은 사유로 접히지만 지표에서는 갈라야 하므로
+  // 나뉜 채로 받는다 (`lib/merge.ts` · `lib/unidentified.ts`).
+  const { toLookup, lowConfidence, capped } = reduceBeforeLookup(candidates);
 
   // 브레이커도 데드라인도 **요청 하나**가 ItemSearch와 ItemLookUp에 나눠 준다.
   // 각자 12s를 잡으면 합이 24s가 되어 총 예산이 깨지고, 브레이커를 따로 두면
@@ -169,7 +183,10 @@ export async function POST(request: Request): Promise<Response> {
     { deadlineMs: lookupDeadlineAt - Date.now(), breaker },
   );
 
-  const unidentified: UnidentifiedBook[] = [];
+  // 미확인은 **쌍**으로 쌓는다. `book`은 사용자가 볼 것이고, `measured`는 그
+  // 기전이다. 응답 사유는 `RESPONSE_REASON`이 유도하므로 이 파일이 사유 문자열을
+  // 직접 고르는 자리는 없다 — 두 어휘가 갈리려면 매핑 표를 고쳐야 한다.
+  const unidentified: MeasuredUnidentified[] = [];
   const promoted: PromotedBook[] = [];
 
   toLookup.forEach((candidate, index) => {
@@ -179,16 +196,17 @@ export async function POST(request: Request): Promise<Response> {
         isbn13: verdict.candidate.isbn13,
         photoIndex: candidate.photoIndex,
         rawText: candidate.rawText,
+        // 계측 키는 **추출 후보**에서 만든다. 알라딘 후보의 제목·저자로 만들면
+        // 같은 책인데 다른 바구니의 항목과 키가 어긋난다.
+        mergeKey: mergeKey(candidate),
         candidate: verdict.candidate,
       });
       return;
     }
     // 사유는 끝까지 다른 값으로 나른다 — no_match와 lookup_failed는 화면에서 다른 문장이다.
-    unidentified.push({
-      rawText: candidate.rawText,
-      reason: verdict.reason,
-      candidates: verdict.candidates,
-    });
+    // `judge`가 낸 응답 사유를 기전으로 되돌린 뒤(정의역이 넷뿐이라 성립한다)
+    // 응답 사유를 다시 유도한다. 왕복이므로 사용자가 보는 값은 그대로다.
+    demote(unidentified, keyed(candidate), MEASURED_FROM_VERDICT[verdict.reason], verdict.candidates);
   });
 
   // 사실 조회 **전에** ISBN 중복을 없앤다. 같은 책을 두 번 조회하면 알라딘 일일
@@ -207,7 +225,10 @@ export async function POST(request: Request): Promise<Response> {
     if (outcome.status !== "ok") {
       // ItemSearch로 찾아낸 책이므로 "알라딘에 없다"고 말할 근거가 없다. 사실을
       // 채우지 못했으니 확인으로도 올리지 않는다 (ADR-002 + ADR-005).
-      unidentified.push({ rawText: book.rawText, reason: "lookup_failed", candidates: [] });
+      // 기전을 `search_failed`와 나누는 것은 **어느 단계에서 떨어졌는지**를 남기기
+      // 위해서다. 어느 엔드포인트가 죽었는지가 아니다 — 브레이커가 열렸거나 예산이
+      // 없으면 `services/aladin.ts`가 호출조차 없이 `failed`를 준다.
+      demote(unidentified, book, "facts_failed");
       return;
     }
 
@@ -227,13 +248,25 @@ export async function POST(request: Request): Promise<Response> {
   });
 
   // 조회 전에 강등된 후보도 숨기지 않는다. 왜 빠졌는지 보여주는 편이 신뢰를 지킨다.
-  for (const candidate of unreadable) {
-    unidentified.push({ rawText: candidate.rawText, reason: "unreadable", candidates: [] });
-  }
+  // 응답에서는 둘 다 같은 문장으로 접히고(`RESPONSE_REASON`), 갈라지는 곳은 지표뿐이다.
+  for (const candidate of lowConfidence) demote(unidentified, keyed(candidate), "low_confidence");
+  for (const candidate of capped) demote(unidentified, keyed(candidate), "lookup_capped");
+
+  // 계측은 **표시 상한 절단 전에** 센다. 절단 뒤에 세면 후보가 쏟아진 요청일수록
+  // 미확인 비율이 낮게 나오는 뒤집힌 지표가 된다 (`lib/analytics.ts`의 `raw_` 규칙).
+  //
+  // 확인 쪽 모집단은 `identifiedFacts`다 — `dedupeByIsbn`을 지나 **책 단위**이고,
+  // 미확인 쪽도 `mergeKey`로 접혀 같은 단위가 된다. 둘의 단위가 다르면 흐릿한
+  // 사진을 여러 장 넣을수록 지표가 나빠 보인다.
+  const measurement = measureUnidentified(unidentified, identifiedFacts.length);
+  // 규모 관측값이다. 분모가 아니므로 `measurement`와 나누지 않는다.
+  const rawCandidateCount = identifiedFacts.length + unidentified.length;
 
   const { kept: keptIdentified, overflowCount } = capIdentified(identifiedFacts);
-  const { kept: keptUnidentified, overflowCount: unidentifiedOverflowCount } =
-    capUnidentified(unidentified);
+  // 절단은 `book`만 보고 기존과 똑같이 한다 — `measured`는 응답 경계를 넘지 않는다.
+  const { kept: keptUnidentified, overflowCount: unidentifiedOverflowCount } = capUnidentified(
+    unidentified.map((entry) => entry.book),
+  );
 
   /* --- 3단계: 한줄평 배치 (1회, 예산 8s) -------------------------- */
 
@@ -283,6 +316,10 @@ export async function POST(request: Request): Promise<Response> {
     identified_count: identified.length,
     unidentified_count: keptUnidentified.length,
     unidentified_by_reason: countByReason(keptUnidentified),
+    raw_candidate_count: rawCandidateCount,
+    raw_guardrail_denominator: measurement.guardrailDenominator,
+    raw_unidentified_guardrail_count: measurement.guardrailCount,
+    raw_unidentified_by_measurement: measurement.byMeasurement,
     overflow_count: overflowCount,
     failed_photo_count: failedPhotoIndexes.length,
     duration_ms: budget.elapsedMs(),
@@ -303,7 +340,50 @@ interface PromotedBook {
   photoIndex: number;
   /** 강등될 경우 사용자에게 보여 줄 원문. 확인으로 끝나면 쓰이지 않는다 */
   rawText: string;
+  /**
+   * 강등될 경우 쓸 계측 키. 추출 후보에서 미리 만들어 들고 온다 — 여기서
+   * `candidate`(알라딘 후보)로 다시 만들면 같은 책인데 다른 바구니의 항목과
+   * 키가 어긋나 계측에서 접히지 않는다.
+   */
+  mergeKey: string;
   candidate: AladinCandidate;
+}
+
+/**
+ * 미확인 1건을 쌓는다. **응답 사유를 고르는 유일한 자리다.**
+ *
+ * 호출부는 기전(`measured`)만 정하고 사용자에게 보일 사유는 `RESPONSE_REASON`이
+ * 유도한다. 둘을 따로 적게 두면 언젠가 한쪽만 고쳐져 화면 문장과 지표가 다른
+ * 이야기를 하게 된다 (`lib/unidentified.ts`).
+ *
+ * `mergeKey`는 계측이 판독본이 아니라 **책**을 세게 하는 값이고 응답에는 나가지
+ * 않는다. 목록은 접지 않으므로 같은 책의 흐릿한 판독본 다섯 개는 화면에 다섯 개로
+ * 그대로 남는다 — 왜 빠졌는지는 사진마다 보여야 한다 (ADR-002).
+ *
+ * `candidates`는 `ambiguous`에서만 채워지며, 그 규칙은 `unidentifiedBookSchema`의
+ * `.refine`이 응답 검증에서 다시 강제한다.
+ */
+function demote(
+  into: MeasuredUnidentified[],
+  source: { rawText: string; mergeKey: string },
+  measured: MeasuredUnidentified["measured"],
+  candidates: AladinCandidate[] = [],
+): void {
+  into.push({
+    book: { rawText: source.rawText, reason: RESPONSE_REASON[measured], candidates },
+    measured,
+    mergeKey: source.mergeKey,
+  });
+}
+
+/**
+ * 추출 후보를 `demote`가 받는 모양으로 바꾼다.
+ *
+ * 키는 `lib/merge.ts`의 것을 그대로 쓴다. 여기에 다시 구현하면 병합이 접은 책과
+ * 계측이 접는 책이 소리 없이 갈린다.
+ */
+function keyed(candidate: ExtractedCandidate): { rawText: string; mergeKey: string } {
+  return { rawText: candidate.rawText, mergeKey: mergeKey(candidate) };
 }
 
 type RequestOutcome =
@@ -401,7 +481,17 @@ async function collectNotes(
   return new Map();
 }
 
-/** 사유별 카운트. 합계로 뭉개면 `lookup_failed`를 가드레일 분자에서 뺄 수 없다 (ADR-005) */
+/**
+ * 화면에 실제로 나간 목록의 **응답 사유별** 카운트. 합계로 뭉개면
+ * `lookup_failed`를 가드레일 분자에서 뺄 수 없다 (ADR-005).
+ *
+ * 이것은 절단 **뒤**의 값이고, 가드레일 계산에는 쓰지 않는다 — 분자·분모는
+ * `raw_`가 붙은 세 필드가 따로 나른다 (`lib/analytics.ts`).
+ *
+ * 아래 네 이름은 사유를 **고르는** 값이 아니라 응답 어휘 4종을 빠짐없이 세기
+ * 위한 `Record`의 키다. 손으로 적어 두는 편이 낫다 — 사유가 늘거나 이름이
+ * 바뀌면 여기서 컴파일이 깨져야 하고, 스키마에서 돌려 만들면 그 못이 빠진다.
+ */
 function countByReason(books: readonly UnidentifiedBook[]): UnidentifiedReasonCounts {
   const counts: UnidentifiedReasonCounts = {
     unreadable: 0,

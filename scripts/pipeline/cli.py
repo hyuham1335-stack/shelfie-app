@@ -56,6 +56,95 @@ _NAMESPACES = ("config", "calibration", "run")
 LINT_RUN_ID = "20260101-0000-0000"
 LINT_SLUG = "s" * 40
 
+# 루프 선언의 어휘. **늘리려면 그 동작을 먼저 만든다** — 없는 기계를 어휘로
+# 예고하는 것이 M36 이 이름한 결함 그 자체다.
+LOOP_ON_EXCEED = ("escalate",)
+
+
+class ConfigDeclarationError(ValueError):
+    """루프 선언이 없거나 어휘 밖이다. **기본값으로 낙하하지 않는다.**
+
+    M36: `on_exceed` · `on_fail_return_to` · `xverify_return` 의 상한이 전부
+    프론트매터에만 있고 코드는 하드코딩된 값을 썼다. **지금 동작이 선언값과
+    우연히 일치해서** 다섯 런 동안 아무도 눈치채지 못했고, 선언을 고치면
+    조용히 무시됐다. 읽되, 읽을 것이 없으면 멈춘다 — `or` 폴백을 두면 그
+    폴백이 곧 새 하드코딩이다.
+    """
+
+    def __init__(self, phase_id, key, detail):
+        self.phase_id, self.key = phase_id, key
+        super(ConfigDeclarationError, self).__init__(
+            "`%s` 의 `loop.%s` %s" % (phase_id, key, detail))
+
+
+def _loop_counter(front):
+    """`loop.counter`. 어휘는 `state.COUNTERS` 다."""
+    got = (front.get("loop") or {}).get("counter")
+    if not got:
+        raise ConfigDeclarationError(front.get("id"), "counter", "가 없다")
+    if got not in st.COUNTERS:
+        raise ConfigDeclarationError(
+            front.get("id"), "counter",
+            "가 어휘 밖이다: %r (%s)" % (got, ", ".join(st.COUNTERS)))
+    return got
+
+
+def _loop_max(front, profile=None):
+    """`loop.max`, 또는 프로파일별이면 `loop.max_by_profile[profile]`."""
+    loop = front.get("loop") or {}
+    by = loop.get("max_by_profile")
+    if by:
+        got = by.get(profile) or by.get("normal")
+        if not got:
+            raise ConfigDeclarationError(
+                front.get("id"), "max_by_profile",
+                "에 %r 도 `normal` 도 없다" % (profile,))
+        return got
+    got = loop.get("max")
+    if not got:
+        raise ConfigDeclarationError(front.get("id"), "max",
+                                     "도 `max_by_profile` 도 없다")
+    return got
+
+
+def _loop_return_to(front):
+    """`loop.on_fail_return_to`. 없으면 기본 페이즈로 낙하하지 않는다."""
+    got = (front.get("loop") or {}).get("on_fail_return_to")
+    if not got:
+        raise ConfigDeclarationError(front.get("id"), "on_fail_return_to",
+                                     "가 없다")
+    return got
+
+
+def _loop_on_exceed(front):
+    """`loop.on_exceed`. **어휘가 하나뿐인 것은 사실이다** — 둘째 동작이 없다.
+
+    값을 늘리는 것은 그 동작을 구현한 뒤의 일이다. 지금 늘리면 선언이 다시
+    기계 사실을 참칭한다.
+    """
+    got = (front.get("loop") or {}).get("on_exceed")
+    if got not in LOOP_ON_EXCEED:
+        raise ConfigDeclarationError(
+            front.get("id"), "on_exceed",
+            "가 어휘 밖이다: %r (%s)" % (got, ", ".join(LOOP_ON_EXCEED)))
+    return got
+
+
+DECLARATION_RENDER = """## 페이즈 선언을 읽을 수 없다
+
+%s
+
+**기본값으로 낙하시키지 않는다.** 낙하시키면 프론트매터를 고쳐도 조용히
+무시되고, 그것이 M36 이다."""
+
+
+def _declaration_envelope(cmd, s, exc):
+    """선언 결함은 **제출물 결함이 아니다** — 코드가 아니라 설정이라 exit 2 다."""
+    return st.envelope(
+        cmd, False, 2, s,
+        {"phase": exc.phase_id, "key": "loop.%s" % exc.key},
+        DECLARATION_RENDER % exc, None)
+
 
 class PlaceholderError(ValueError):
     """`${...}` 를 해결하지 못했다. lint-phases 가 exit 2 로 거부한다."""
@@ -631,10 +720,7 @@ def lint_phases(root, phases_dir=None):
                     "produces.key %r 가 %s 와 겹친다" % (key, seen_keys[key]))
             else:
                 seen_keys[key] = pid
-        loop = front.get("loop") or {}
-        if loop.get("counter") and loop["counter"] not in st.COUNTERS:
-            add(name, "counter", "FAIL",
-                "알 수 없는 카운터: %r (%s)" % (loop["counter"], ", ".join(st.COUNTERS)))
+        _lint_loop(name, pid, front, loaded, add)
 
         # ── 플레이스홀더와 경로
         _lint_placeholders(name, front, ctx, add)
@@ -673,6 +759,56 @@ def lint_phases(root, phases_dir=None):
     _lint_taxonomy(root, add)
     _lint_reviewers(root, config, add)
     return out
+
+
+def _lint_loop(name, pid, front, loaded, add):
+    """루프 선언이 **읽히는 값**인가.
+
+    M36: `on_exceed` · `on_fail_return_to` · 상한이 프론트매터에만 있고 코드는
+    하드코딩을 썼다. 이제 코드가 읽으므로, 선언이 어휘 밖이면 런 중간이 아니라
+    **여기서** 안다. 검사하지 않으면 exit 2 를 런 한복판에서 만난다.
+    """
+    loop = front.get("loop") or {}
+    if not loop:
+        return
+    counter = loop.get("counter")
+    if not counter:
+        add(name, "counter", "FAIL", "loop.counter 가 없다 — 무엇을 세는지 "
+                                     "코드가 읽을 자리가 없다")
+    elif counter not in st.COUNTERS:
+        add(name, "counter", "FAIL",
+            "알 수 없는 카운터: %r (%s)" % (counter, ", ".join(st.COUNTERS)))
+
+    if not loop.get("max") and not loop.get("max_by_profile"):
+        add(name, "loop_max", "FAIL",
+            "loop.max 도 loop.max_by_profile 도 없다 — 상한이 코드에만 남는다")
+
+    on_exceed = loop.get("on_exceed")
+    if on_exceed is not None and on_exceed not in LOOP_ON_EXCEED:
+        add(name, "on_exceed", "FAIL",
+            "loop.on_exceed 가 어휘 밖이다: %r (%s) — **없는 동작을 어휘로 "
+            "예고하지 않는다.** 늘리려면 그 동작을 먼저 만든다"
+            % (on_exceed, ", ".join(LOOP_ON_EXCEED)))
+
+    # 01 은 `converge` 와 `loop` 가 같은 초과 동작을 선언한다. 코드는 `loop` 를
+    # 읽으므로 둘이 갈리면 `converge` 쪽이 조용히 무시된다.
+    conv_exceed = (front.get("converge") or {}).get("on_exceed")
+    if conv_exceed is not None and conv_exceed != on_exceed:
+        add(name, "on_exceed", "FAIL",
+            "converge.on_exceed(%r) 와 loop.on_exceed(%r) 가 다르다 — "
+            "코드는 loop 를 읽는다" % (conv_exceed, on_exceed))
+
+    back = loop.get("on_fail_return_to")
+    if back is not None:
+        if back not in loaded:
+            add(name, "on_fail_return_to", "FAIL", "되돌아갈 페이즈가 없다: %r" % back)
+        else:
+            here = front.get("index") or 0
+            there = (loaded[back]["front"].get("index") or 0)
+            if there >= here:
+                add(name, "on_fail_return_to", "FAIL",
+                    "%r 는 자기(index %s)보다 뒤다(index %s) — 되돌림은 뒤로만 "
+                    "간다" % (back, here, there))
 
 
 def _index_prefix(phase_id):
@@ -1273,8 +1409,11 @@ def run_record(root, phase, file, reviewer=None, round_=None, run_id=None,
     if failed:
         st.append_event(paths, "reviewer_failed", cmd="record", phase=pid,
                         reviewer=reviewer, reason=reason)
-        return _record_05_failed(root, paths, s, phase_item, ctx, reviewer,
-                                 round_, reason)
+        try:
+            return _record_05_failed(root, paths, s, phase_item, ctx, reviewer,
+                                     round_, reason)
+        except ConfigDeclarationError as exc:
+            return _declaration_envelope("record", s, exc)
 
     st.append_event(paths, "submit_received", cmd="record", phase=pid,
                     file=paths.rel(file), reviewer=reviewer)
@@ -1284,8 +1423,11 @@ def run_record(root, phase, file, reviewer=None, round_=None, run_id=None,
                            "`%s` 의 제출 처리는 아직 구현되지 않았다." % pid, None)
     # **제출을 세지 않는다** (M26). 계수는 `next`·`review07`·`gate` 가 기동을
     # 지시하는 자리에서 일어난다 — `_instruction_keys` 를 보라.
-    env = handler(root, paths, s, phase_item, ctx, Path(file), reviewer, round_)
-    return env
+    try:
+        return handler(root, paths, s, phase_item, ctx, Path(file), reviewer,
+                       round_)
+    except ConfigDeclarationError as exc:
+        return _declaration_envelope("record", s, exc)
 
 
 def _instruction_keys(s, pid, ctx):
@@ -1619,12 +1761,14 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
         # 검사가 근거로 삼는 이전 회차 지적이 사라졌다. 정수를 읽는
         # 소비자는 어디에도 없었다 — 순수한 손실이다 (P3).
         s["phases"]["01-plan"]["converged_at_round"] = round_
-        st.counter_inc(s, "round", max_rounds)
+        st.counter_inc(s, _loop_counter(phase_item["front"]), max_rounds)
         _note_cross_verify_gap(s)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 
-    used, _max, exceeded = st.counter_inc(s, "round", max_rounds)
+    used, _max, exceeded = st.counter_inc(
+        s, _loop_counter(phase_item["front"]), max_rounds)
     if exceeded:
+        _loop_on_exceed(phase_item["front"])
         st.escalate(paths, s,
                     "01 이 %d라운드 안에 수렴하지 않았다: %s" % (max_rounds, reason),
                     ["이대로 진행한다(미해결 지적을 안고 간다)",
@@ -1702,15 +1846,22 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
     st.note_cross_verify_round(s, "02", payload.get("mode") or "primary",
                                payload.get("primary_error"))
     if critical:
-        used, max_, exceeded = st.counter_inc(s, "xverify_return", 1)
-        if exceeded and used > 1:
-            st.escalate(paths, s, "02 가 두 번째로 Critical 을 냈다",
+        front = phase_item["front"]
+        # **왕복 N회 허용**이 02 의 셈법이다 — `used > max_` 다. `max: 1` 에서
+        # 예전의 `exceeded and used > 1` 과 비트 단위로 같고, 상한을 올리면
+        # 그때 처음으로 뜻이 갈린다. 그 갈림이 없던 것이 M36 이다.
+        max_decl = _loop_max(front)
+        return_to = _loop_return_to(front)
+        used, max_, _exceeded = st.counter_inc(s, _loop_counter(front), max_decl)
+        if used > max_:
+            _loop_on_exceed(front)
+            st.escalate(paths, s, "02 가 %d회를 넘겨 Critical 을 냈다" % max_,
                         ["이대로 진행한다", "범위를 줄인다", "중단한다"],
-                        phase="02-cross-verify")
+                        phase=front["id"])
             return _escalation_envelope("record", paths, s)
-        st.set_phase_status(s, "01-plan", "failed")
-        st.set_phase_status(s, "02-cross-verify", "failed")
-        s["phase"] = "01-plan"
+        st.set_phase_status(s, return_to, "failed")
+        st.set_phase_status(s, front["id"], "failed")
+        s["phase"] = return_to
         # **바뀐 설계는 새 설계다.** 예전에는 `phase` 만 되돌리고 `round` 카운터를
         # 그대로 뒀다. P3 에서 1~4회차가 수렴한 뒤 02 가 설계를 뒤집었는데 남은
         # 라운드가 한 번이었고, 그 한 번이 진짜 결함 셋을 찾았다 (M32).
@@ -1721,13 +1872,14 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
         return st.envelope(
             "record", False, 4, s,
             {"critical": len(critical), "granted_rounds": granted},
-            "## Critical 이 남았다 — 01 로 되돌린다\n\n%s\n\n"
-            "왕복은 1회다. 바뀐 설계에 리뷰 라운드 **%d 를 새로 지급했다** — "
+            "## Critical 이 남았다 — `%s` 로 되돌린다\n\n%s\n\n"
+            "왕복은 %d회다(`loop.max`). 바뀐 설계에 리뷰 라운드 **%d 를 새로 지급했다** — "
             "새 설계가 한 라운드로 수렴할 이유가 없다.\n"
             "쓴 회차는 지워지지 않는다: %d / %d."
-            % ("\n".join("- %s: %s" % (f.get("id"), f.get("title"))
+            % (return_to,
+               "\n".join("- %s: %s" % (f.get("id"), f.get("title"))
                          for f in critical),
-               granted, s["counters"]["round"]["used"],
+               max_, granted, s["counters"]["round"]["used"],
                s["counters"]["round"]["max"]),
             "python scripts/pipeline/cli.py next --run-id %s" % s["run_id"])
 
@@ -2156,13 +2308,14 @@ def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
 
     blocking = [f for f in merged if f.get("severity") in verdict.BLOCKING]
     if blocking:
-        loop = phase_item["front"].get("loop") or {}
-        used, _max, exceeded = st.counter_inc(s, "review_repair",
-                                              loop.get("max") or 2)
+        front = phase_item["front"]
+        max_decl = _loop_max(front)
+        used, _max, exceeded = st.counter_inc(s, _loop_counter(front), max_decl)
         if exceeded:
+            _loop_on_exceed(front)
             st.escalate(paths, s,
                         "05 의 Critical/Major %d건이 %d회 안에 해소되지 않았다"
-                        % (len(blocking), loop.get("max") or 2),
+                        % (len(blocking), max_decl),
                         ["계약 결함을 먼저 의심한다 — 같은 지적이 반복되면 "
                          "코드가 아니라 계약이 틀렸을 수 있다",
                          "이대로 진행한다(미해결 지적을 안고 간다)", "중단한다"],
@@ -2324,9 +2477,12 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
          "human_comments": len(payload.get("human_comments") or [])})
 
     if payload.get("change_requested"):
-        used, max_, exceeded = st.counter_inc(s, "pr_repair", 2)
+        used, max_, exceeded = st.counter_inc(s,
+                                              _loop_counter(phase_item["front"]),
+                                              _loop_max(phase_item["front"]))
         st.save(paths, s)
         if exceeded:
+            _loop_on_exceed(phase_item["front"])
             st.escalate(paths, s, "외부 변경 요청이 수리 예산 안에서 안 닫혔다",
                         options=["사람이 직접 수리한 뒤 재개", "PR 을 닫는다",
                                  "중단"], phase="07-pr-review")
@@ -2424,6 +2580,14 @@ def cmd_gate(root, args):
 
 
 def run_gate_cmd(root, phase="04", only_stage=None, replay=None, run_id=None):
+    try:
+        return _run_gate_cmd(root, phase, only_stage, replay, run_id)
+    except ConfigDeclarationError as exc:
+        _paths, s = st.load(Path(root), run_id)
+        return _declaration_envelope("gate", s, exc)
+
+
+def _run_gate_cmd(root, phase="04", only_stage=None, replay=None, run_id=None):
     import gate as gate_mod
 
     root = Path(root)
@@ -2542,9 +2706,9 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
                     phase="04-gate")
         return _escalation_envelope("gate", paths, s)
 
-    loop = phase_item["front"].get("loop") or {}
-    used, max_, exceeded = st.counter_inc(s, loop.get("counter") or "repair",
-                                          loop.get("max") or 3)
+    used, max_, exceeded = st.counter_inc(s,
+                                          _loop_counter(phase_item["front"]),
+                                          _loop_max(phase_item["front"]))
     # **쌍을 쌓는다** — `owner|sig`. 시그니처만 쌓으면 flip 이 배정한 다음 역할이
     # 지시를 받기 전에 정체 감지가 먼저 멈춘다 (M33).
     s.setdefault("sig_chain", []).extend(dispatch.get("pairs") or [])
@@ -2552,6 +2716,7 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
     st.save(paths, s)
 
     if exceeded:
+        _loop_on_exceed(phase_item["front"])
         st.escalate(paths, s, "수리 예산 %d회를 소진했다" % max_,
                     ["계약을 고쳐 다시 돌린다", "범위를 줄인다", "중단한다"],
                     phase="04-gate")
@@ -3633,13 +3798,19 @@ def run_retry(root, phase, counter, reason, run_id=None):
                            "알 수 없는 카운터: %r (%s)"
                            % (counter, ", ".join(st.COUNTERS)), None)
 
-    loop = loaded[pid]["front"].get("loop") or {}
     profile = (s.get("profile") or {}).get("name") or "normal"
-    max_ = loop.get("max") or (loop.get("max_by_profile") or {}).get(profile) or 3
+    try:
+        max_ = _loop_max(loaded[pid]["front"], profile)
+    except ConfigDeclarationError as exc:
+        return _declaration_envelope("retry", s, exc)
     used, _m, exceeded = st.counter_inc(s, counter, max_)
     st.append_event(paths, "counter_inc", cmd="retry", phase=pid,
                     counter=counter, used=used, reason=reason)
     if exceeded:
+        try:
+            _loop_on_exceed(loaded[pid]["front"])
+        except ConfigDeclarationError as exc:
+            return _declaration_envelope("retry", s, exc)
         st.escalate(paths, s, "`%s` 카운터가 상한 %d 에 닿았다: %s" % (counter, max_, reason),
                     ["범위를 줄인다", "계약을 고친다", "중단한다"], phase=pid)
         return st.envelope("retry", False, 7, s, {"counter": counter, "used": used},

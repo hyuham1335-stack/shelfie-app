@@ -258,3 +258,8 @@ python scripts/pipeline/cli.py record --phase 05 --reviewer {code} \
 **`review_repair.max: 2` · `stuck_after_identical: 2` · `local_repair.max_per_run: 3`
 과 그 판정 기준 세 숫자는 미검증 상속값이다.** 원본 명세에서 왔고 이 리포에서
 재본 적이 없다. 첫 세 런의 원장이 이 값을 검사한다.
+
+**`loop.counter` · `loop.max` · `loop.on_exceed` 는 코드가 여기서 읽는다** (M36).
+예전에는 카운터 이름이 코드에 박혀 있었고 상한에는 `or 2` 폴백이 있었다 —
+**폴백은 곧 새 하드코딩이다.** 지금은 선언이 없으면 exit 2 이고, 그 사실을
+`lint-phases` 가 런 전에 먼저 잡는다.

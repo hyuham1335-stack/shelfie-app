@@ -1704,6 +1704,114 @@ class TestRoundBudgetAfterRoundTrip:
         assert "지급" in line, line
 
 
+class TestLoopDeclarationsAreRead:
+    """M36 — 선언만 있고 코드가 안 읽는 설정을 잡는다.
+
+    **지금 동작이 선언값과 우연히 일치했다.** 그래서 "읽는지" 만 보는 단언은
+    되돌려도 초록이다. 여기 있는 것은 전부 **값을 바꾸는 변이 테스트**다 —
+    선언을 고치면 동작이 따라 바뀌는가를 묻는다. ADR-H023 이 
+    `stuck_after_identical` 에서 겪은 함정이 그것이다.
+    """
+
+    CRITICAL = {"id": "F-1", "severity": "critical", "title": "설계를 뒤집는다",
+                "quote": "빈 문자열을 먼저 거른다."}
+
+    def _xv(self, repo):
+        return repo / "harness" / "phases" / "02-cross-verify.md"
+
+    def _round_trip(self, repo, paths):
+        """01 을 수렴시키고 02 에 Critical 판정을 낸다. 반환: 02 의 봉투."""
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan"))
+        _submit_review(repo, paths, _review("xv"))
+        v = paths.run_dir / "02_verdict.json"
+        v.write_text(json.dumps(
+            {"reviewer": "xv", "mode": "primary", "status": "ok",
+             "findings": [dict(self.CRITICAL)],
+             "adopted": [{"id": "F-1", "verdict": "accept"}],
+             "resolved_from_previous": []}, ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / "02_verdict.raw.md").write_text(
+            "# " + "판정", encoding="utf-8")
+        return cli.run_record(repo, phase="02", file=str(v), reviewer=None,
+                              round_=None)
+
+    def test_왕복_상한을_프론트매터에서_읽는다(self, run01):
+        """상한 3 이면 두 번째 왕복이 허용된다. 하드코딩 1 이면 에스컬레이션이다."""
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].__setitem__("max", 3))
+
+        first = self._round_trip(repo, paths)
+        assert first["exit"] == 4, first["render"]
+        second = self._round_trip(repo, paths)
+        assert second["exit"] == 4, second["render"]
+
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["xverify_return"]["max"] == 3, after["counters"]
+        assert not after.get("escalated"), "상한 3 인데 두 번째에서 멈췄다"
+
+    def test_상한을_안_올리면_두_번째_왕복이_멈춘다(self, run01):
+        """실물 선언(max 1)의 동작이 안 바뀌었음을 잠근다."""
+        repo, paths, s = run01
+        assert self._round_trip(repo, paths)["exit"] == 4
+        second = self._round_trip(repo, paths)
+        _, after = st.load(repo, paths.run_id)
+        assert after.get("escalated"), second["render"]
+
+    def test_왕복_상한을_지우면_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].pop("max"))
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.max", env["data"]
+        assert "02-cross-verify" in env["render"], env["render"]
+
+    def test_되돌아갈_페이즈를_지우면_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].pop("on_fail_return_to"))
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.on_fail_return_to", env["data"]
+        _, after = st.load(repo, paths.run_id)
+        assert after["phase"] == "02-cross-verify", "되돌아가지 않았어야 한다"
+
+    def test_카운터를_지우면_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo), lambda f: f["loop"].pop("counter"))
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.counter", env["data"]
+
+    def test_on_exceed_어휘_밖은_런타임이_거부한다(self, run01):
+        repo, paths, s = run01
+        _rewrite(self._xv(repo),
+                 lambda f: f["loop"].__setitem__("on_exceed", "continue"))
+        assert self._round_trip(repo, paths)["exit"] == 4
+        env = self._round_trip(repo, paths)
+        assert env["exit"] == 2, env["render"]
+        assert env["data"]["key"] == "loop.on_exceed", env["data"]
+        _, after = st.load(repo, paths.run_id)
+        assert not after.get("escalated"), "어휘 밖인데 escalate 로 낙하했다"
+
+    def test_on_exceed_어휘_밖은_lint_가_거부한다(self, repo, phases):
+        _rewrite(phases / "04-gate.md",
+                 lambda f: f["loop"].__setitem__("on_exceed", "continue"))
+        assert _fails(_lint(repo), "on_exceed"), _lint(repo)
+
+    def test_converge_와_loop_의_on_exceed_가_어긋나면_거부한다(self, repo, phases):
+        _rewrite(phases / "01-plan.md",
+                 lambda f: f["converge"].__setitem__("on_exceed", "continue"))
+        assert _fails(_lint(repo), "on_exceed"), _lint(repo)
+
+    def test_되돌아갈_페이즈는_자기보다_앞이어야_한다(self, repo, phases):
+        _rewrite(phases / "02-cross-verify.md",
+                 lambda f: f["loop"].__setitem__("on_fail_return_to", "03-implement"))
+        assert _fails(_lint(repo), "on_fail_return_to"), _lint(repo)
+
+    def test_상한이_없으면_lint_가_거부한다(self, repo, phases):
+        _rewrite(phases / "04-gate.md", lambda f: f["loop"].pop("max"))
+        assert _fails(_lint(repo), "loop_max"), _lint(repo)
+
+
 class TestInitAndNext:
 
     def test_init_creates_a_run_and_next_renders_the_first_packet(self, repo, phases):

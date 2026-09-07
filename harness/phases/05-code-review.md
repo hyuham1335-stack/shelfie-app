@@ -247,7 +247,8 @@ python scripts/pipeline/cli.py record --phase 05 --reviewer {code} \
 | 무엇 | 분류 | 어떻게 |
 |---|---|---|
 | `precheck` 예산 초과 · base behind | 정책 | **exit 9 즉시 사용자 판단.** 자동 분할·자동 리베이스 금지 |
-| `infra_preflight` 프로브 실패 | infra | exit 10 · **카운터 미소모** · 즉시 에스컬레이션 |
+| `infra_preflight` 프로브 실패 (`on_missing: fail`) | infra | exit 10 · **카운터 미소모** · 즉시 에스컬레이션 |
+| 〃 (`on_missing: warn`) | — | exit 0 + `infra_skipped:{name}` gap · 등급 `PASS_WITH_GAPS`. **면제는 통과가 아니다** — 키 없이도 목업으로 도는 경로가 있을 때만 쓰고, 그 이유를 어댑터의 `why` 에 적는다 (M44) |
 | 계약 부재 | — | `no_contract` 모드로 진행. `skipped_no_contract` 로 기록 |
 | 계약이 재개 사이에 변경됨 | 정책 | exit 3 + "03 부터 재실행" |
 | 리뷰어 호출 실패·타임아웃 | infra | 그 리뷰어만 1회 재시도 → 실패 시 `--failed --reason` 으로 신고. **비차단 스킵** + `degraded` |

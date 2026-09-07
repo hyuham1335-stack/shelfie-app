@@ -3421,6 +3421,73 @@ def _bulk_change(repo, files, lines=1):
                                for j in range(lines)) + "\n", encoding="utf-8")
 
 
+def _commit_all(repo, msg="wip"):
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", msg)
+
+
+class TestPrecheckScope:
+    """M40 — `scope` 를 받고 한 번도 쓰지 않았다.
+
+    변경 집합이 늘 미커밋 diff 라, 06 에서 커밋 뒤에 부르면 `at_06` 이 항상
+    0파일/0줄이었다 (P5 실측: `at_05` 8/91 · `at_06` 0/0). 같은 페이즈의 PR
+    본문은 `main...HEAD` 로 11파일을 옳게 적었다 — 한 페이즈가 두 방법으로
+    재고 다른 답을 냈다.
+    """
+
+    def test_커밋된_변경이_scope_pr_에_잡힌다(self, repo):
+        """P5 의 증상 그 자체다."""
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 3)
+        _commit_all(repo)
+        got = pc.run(repo, scope="pr")
+        assert got["budget"]["files"] == 3, got["budget"]
+        assert got["budget"]["lines"] > 0, got["budget"]
+
+    def test_scope_worktree_는_미커밋만_본다(self, repo):
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 3)
+        _commit_all(repo)
+        got = pc.run(repo, scope="worktree")
+        assert got["budget"]["files"] == 0, got["budget"]
+
+    def test_커밋과_미커밋이_이중계수되지_않는다(self, repo):
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 1, lines=10)
+        _commit_all(repo)
+        _bulk_change(repo, 1, lines=11)      # 같은 파일을 한 줄 더 더럽힌다
+        got = pc.run(repo, scope="pr")
+        assert got["budget"]["files"] == 1, got["budget"]
+
+    def test_미커밋만_있어도_scope_pr_이_본다(self, repo):
+        """05 시점의 동작이다 — 03 이 방금 쓴 것은 아직 커밋 전이다."""
+        _branch(repo, "feat-x")
+        _bulk_change(repo, 2)
+        got = pc.run(repo, scope="pr")
+        assert got["budget"]["files"] == 2, got["budget"]
+
+    def test_알_수_없는_scope_는_거부된다(self, repo):
+        _branch(repo, "feat-x")
+        with pytest.raises(ValueError):
+            pc.run(repo, scope="staged")
+
+
+def _probe_policy(repo, name, value):
+    """실물 어댑터의 프로브 정책을 바꾼다.
+
+    실물 `anthropic_key` 는 M44 이후 `on_missing: warn` 이다(목업으로 떨어지는
+    경로가 있다). **exit 10 기전 자체를 보는 테스트는 그 정책에 기대면 안 된다**
+    — 기전과 이 리포의 정책은 다른 사실이다.
+    """
+    ap = repo / "harness" / "adapters" / "nextjs-ts.json"
+    d = harness._read_json(ap)
+    for probe in d["infra_preflight"]:
+        if probe["name"] == name:
+            probe["on_missing"] = value
+    ap.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8")
+
+
 class TestPrecheckBudget:
     """예산 초과는 exit 9 다 — **자동 분할하지 않는다.** 범위 판단은 사람의 것이다."""
 
@@ -3483,10 +3550,78 @@ class TestPrecheckInfra:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         got = pc.run(repo, scope="pr")
         assert got["exit"] == 10
         assert got["classification"] == "infra"
         assert got["counter_consumed"] is False
+
+    def _touch_services(self, repo):
+        p = repo / "src" / "services"
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "anthropic.ts").write_text("export const a = 1" + "\n",
+                                        encoding="utf-8")
+
+    def _on_missing(self, repo, value, why="목업으로 떨어진다"):
+        ap = repo / "harness" / "adapters" / "nextjs-ts.json"
+        d = harness._read_json(ap)
+        for probe in d["infra_preflight"]:
+            if probe["name"] == "anthropic_key":
+                if value is None:
+                    probe.pop("on_missing", None)
+                    probe.pop("why", None)
+                else:
+                    probe["on_missing"] = value
+                    if why is not None:
+                        probe["why"] = why
+        ap.write_text(json.dumps(d, ensure_ascii=False, indent=2)+ "\n",
+                      encoding="utf-8")
+
+    def test_on_missing_warn_은_exit_10_을_내지_않는다(self, repo, monkeypatch):
+        """M44 — P4 를 죽인 기전. 키가 없어도 목업이 돌면 회귀가 안 깨진다."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _branch(repo, "feat-x")
+        self._touch_services(repo)
+        self._on_missing(repo, "warn")
+        got = pc.run(repo, scope="pr")
+        assert got["exit"] == 0, got["checks"]
+
+    def test_면제는_통과가_아니라_gap_이다(self, repo, monkeypatch):
+        """면제가 조용하면 그것은 면제가 아니라 구멍이다."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _branch(repo, "feat-x")
+        self._touch_services(repo)
+        self._on_missing(repo, "warn")
+        got = pc.run(repo, scope="pr")
+        assert got["gaps"] == ["infra_skipped:anthropic_key"], got
+        waived = [c for c in got["checks"] if c.get("waived")]
+        assert len(waived) == 1, got["checks"]
+        assert "목업으로 떨어진다" in waived[0]["message"], waived[0]
+
+    def test_기본값은_여전히_fail_이다(self, repo, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _branch(repo, "feat-x")
+        self._touch_services(repo)
+        self._on_missing(repo, None)
+        got = pc.run(repo, scope="pr")
+        assert got["exit"] == 10, got["checks"]
+        assert got["classification"] == "infra"
+        assert not got["gaps"], got["gaps"]
+
+    def test_why_없는_warn_은_lint_가_거부한다(self, repo, phases, monkeypatch):
+        self._on_missing(repo, "warn", why=None)
+        ap = repo / "harness" / "adapters" / "nextjs-ts.json"
+        d = harness._read_json(ap)
+        for probe in d["infra_preflight"]:
+            probe.pop("why", None)
+        ap.write_text(json.dumps(d, ensure_ascii=False, indent=2)+ "\n",
+                      encoding="utf-8")
+        rows = [r for r in cli.lint_phases(repo)
+                if r["status"] == "FAIL" and r["rule"] == "infra_preflight"]
+        assert rows, cli.lint_phases(repo)
+
+    def test_실물_어댑터가_스키마를_만족한다(self, repo, phases):
+        assert _fails(_lint(repo), "infra_preflight") == []
 
     def test_present_env_probe_passes(self, repo, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-테스트")
@@ -3494,6 +3629,7 @@ class TestPrecheckInfra:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         got = pc.run(repo, scope="pr")
         assert got["exit"] == 0
 
@@ -3504,6 +3640,7 @@ class TestPrecheckInfra:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         got = pc.run(repo, scope="pr")
         assert "sk-비밀값-12345" not in json.dumps(got, ensure_ascii=False)
 
@@ -4563,6 +4700,7 @@ class TestPrecheckSpecAlignment:
         p = repo / "src" / "services"
         p.mkdir(parents=True)
         (p / "anthropic.ts").write_text("export const a = 1\n", encoding="utf-8")
+        _probe_policy(repo, "anthropic_key", "fail")
         cli.run_init(repo, "x", request_file)
         env = cli.run_precheck(repo, scope="pr")
         assert env["exit"] == 10

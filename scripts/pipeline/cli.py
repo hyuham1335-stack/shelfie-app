@@ -662,6 +662,7 @@ def lint_phases(root, phases_dir=None):
     ctx = build_context(root, config=config, calibration=calibration)
 
     _lint_runner_bin(root, adapter, config, add)
+    _lint_infra_preflight(adapter, config, add)
 
     seen_index, seen_keys, terminals = {}, {}, []
     max_index = max((p["front"].get("index") or 0) for p in loaded.values())
@@ -828,6 +829,27 @@ def _lint_runner_bin(root, adapter, config, add):
     if allowed and got not in allowed:
         add("harness/adapters/%s.json" % config.get("adapter"), "runner_bin", "FAIL",
             "runner.bin %r 이 화이트리스트 밖이다" % got)
+
+
+def _lint_infra_preflight(adapter, config, add):
+    """면제에는 이유가 있어야 한다 (M44).
+
+    `on_missing: "warn"` 은 "키가 없어도 회귀가 돈다" 는 주장이다. 그 주장의
+    근거가 없으면 다음 사람이 검증할 수 없고, 검증할 수 없는 면제는 면제가
+    아니라 구멍이다.
+    """
+    where = "harness/adapters/%s.json" % config.get("adapter")
+    for probe in adapter.get("infra_preflight") or []:
+        policy = probe.get("on_missing") or "fail"
+        if policy not in ("fail", "warn"):
+            add(where, "infra_preflight", "FAIL",
+                "%s 의 on_missing 이 어휘 밖이다: %r (fail, warn)"
+                % (probe.get("name"), policy))
+        elif policy == "warn" and not (probe.get("why") or "").strip():
+            add(where, "infra_preflight", "FAIL",
+                "%s 는 on_missing=warn 인데 why 가 없다 — 왜 그 프로브 없이도 "
+                "회귀가 도는지를 적지 않으면 면제가 아니라 구멍이다"
+                % probe.get("name"))
 
 
 def _lint_background(name, step, ctx, add):
@@ -1031,7 +1053,10 @@ def _plan_05_review(root, paths, s, ctx):
     # **라우팅 전에 프로파일을 다시 센다.** 04 수리 중 계약 델타가 적용됐으면
     # 여기 오는 `profile` 이 낡은 값이고, 그 값이 곧 리뷰어 상한이다 (M34).
     refreshed = _refresh_profile(root, paths, s, ctx)
-    changed = pc.changed_files(root)
+    # **라우팅은 `worktree` 다** (M40 · ADR-H028). 예산은 PR 전체를 재지만
+    # 라우팅까지 넓히면 05 가 브랜치의 앞선 커밋(캘리브레이션·문서 등)까지
+    # 리뷰어 매칭에 넣는다. 그것은 근거가 따로 필요한 별개 결정이다.
+    changed = pc.changed_files(root, "worktree", ctx["config"])
     profile = (s.get("profile") or {}).get("name") or "normal"
     routed = review_mod.route(ctx["config"], changed, profile)
     node = s.setdefault("phases", {}).setdefault("05-code-review", {})
@@ -2903,6 +2928,11 @@ def run_precheck(root, scope="pr", run_id=None, phase="05"):
         s.setdefault("phases", {}).setdefault(pid, {})["precheck"] = {
             "exit": got["exit"], "classification": got["classification"],
             "budget": got["budget"]}
+        # **면제된 프로브는 등급이 치른다** (M44 · §E9). 어휘는 이미 있었고
+        # 소비자(`pr.build_body`·`report.GAP_REASONS`)도 있었는데 **쓰는 코드가
+        # 없었다** — 선언만 있고 코드가 안 읽는 M36 과 같은 모양이다.
+        for gap in got.get("gaps") or []:
+            st.demote(s, st.GRADES[1], gap)
         st.append_event(paths, "check_fail" if got["exit"] else "stage_done",
                         cmd="precheck", phase=pid, exit=got["exit"])
         st.save(paths, s)
@@ -2942,9 +2972,17 @@ def _precheck_next(pid, s):
 
 def _precheck_render(got):
     if got["exit"] == 0:
-        return ("`precheck` 통과. 파일 %d · 줄 %d 로 예산 안이고 브랜치·base·"
-                "인프라가 전부 맞다.\n계약 대조로 넘어간다."
-                % (got["budget"]["files"], got["budget"]["lines"]))
+        lines = ["`precheck` 통과. 파일 %d · 줄 %d 로 예산 안이고 브랜치·base·"
+                 "인프라가 전부 맞다."
+                 % (got["budget"]["files"], got["budget"]["lines"])]
+        # **면제를 조용히 넘기지 않는다** (M44). "전부 맞다" 로만 적으면
+        # 면제가 통과와 구분되지 않는다.
+        for gap in got.get("gaps") or []:
+            lines += ["", "**면제된 프로브가 있다: `%s`.** 통과가 아니라 "
+                          "미검증이다 — 등급이 `PASS_WITH_GAPS` 로 내려가고 "
+                          "보고서·PR 본문에 이름으로 남는다." % gap]
+        lines += ["계약 대조로 넘어간다."]
+        return "\n".join(lines)
     bad = [c for c in got["checks"] if not c["ok"]]
     head = ("## 인프라 선행 조건이 안 맞는다" if got["exit"] == 10 else
             "## 사람의 판단이 필요하다")
@@ -4057,7 +4095,7 @@ def build_parser():
 
     sp = sub.add_parser("precheck", add_help=False)
     sp.add_argument("--scope", dest="scope", default="pr",
-                    choices=["pr"])
+                    choices=["pr", "worktree"])
     sp.add_argument("--phase", dest="phase", default="05", choices=["05", "06"])
     sp.add_argument("--run-id", dest="run_id", default=None)
 

@@ -29,7 +29,7 @@
  * 않는가(표현)는 서로 다른 문장이다.
  */
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ApiResult } from "@/lib/api-client";
 import type { AnalyzeResponse, RecommendResponse } from "@/types/api";
 import type { IdentifiedBook } from "@/types/book";
@@ -312,7 +312,26 @@ describe("PRD 5번 [오프라인·네트워크 단절] — 고른 사진과 기�
  * ------------------------------------------------------------------ */
 
 describe("PRD 5번 [결과 이탈] — 잃을 것이 생긴 뒤에만 되묻는다", () => {
-  /** 브라우저가 창을 닫으려 할 때. 우리가 막았으면 `true` */
+  /**
+   * 브라우저가 창을 닫으려 할 때. 우리가 막았으면 `true`
+   *
+   * ## `true` 를 기다리는 것과 `false` 를 즉시 보는 것은 비대칭이다
+   *
+   * 가드는 `page.tsx` 의 `useEffect` 로 붙는다 — **렌더 커밋 뒤에** 도는 코드다.
+   * 그런데 `await findBy*` 는 대기하는 동안 act 환경을 끄고 `setTimeout(0)` 하나로만
+   * 드레인한다. React 스케줄러는 Node 에서 `setImmediate` 를 쓰므로 effect flush 는
+   * check 페이즈에서 돌고, `setTimeout(0)` 은 1ms 로 클램프된다. **이벤트 루프 한
+   * 회차가 1ms 를 넘으면 드레인이 effect 보다 먼저 도착해** 리스너가 아직 없는 순간이
+   * 관측된다. CI 와 로컬(25회 중 1회) 둘 다에서 재현됐고 **지는 자리는 매번 달랐다.**
+   *
+   * 그래서 `await findBy*` 뒤의 `true` 단정은 `waitFor`로 감싼다 — 기다리는 것은
+   * **가드가 붙는 시점**이지 가드의 유무가 아니다.
+   *
+   * **`false` 쪽은 감싸지 않는다.** `waitFor`는 조건이 참이 될 때까지 재시도하므로
+   * `false`를 감싸면 "아직 안 붙었다"가 "영원히 안 붙는다"로 통과해 버린다 — 되묻지
+   * 않는 쪽도 계약인데 그 계약을 검사하지 않게 된다. 그 자리들은 전부 동기
+   * `render`/`fireEvent` 직후라 act가 flush를 보장하고, 이 경쟁에 애초에 노출되지 않는다.
+   */
   function unloadIsWarned(): boolean {
     const event = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(event);
@@ -344,7 +363,7 @@ describe("PRD 5번 [결과 이탈] — 잃을 것이 생긴 뒤에만 되묻는�
   it("결과를 손에 쥔 뒤(reviewing)에는 이탈을 한 번 되묻는다", async () => {
     await analyzeInto(makeAnalyze());
 
-    expect(unloadIsWarned()).toBe(true);
+    await waitFor(() => expect(unloadIsWarned()).toBe(true));
   });
 
   it("확인 0건·미확인만 남아도 되묻는다 — 미확인 목록도 30초를 들여 얻은 결과다", async () => {
@@ -356,7 +375,7 @@ describe("PRD 5번 [결과 이탈] — 잃을 것이 생긴 뒤에만 되묻는�
     );
 
     expect(screen.getByText("읽어낸 책을 알라딘에서 확인하지 못했어요")).toBeInTheDocument();
-    expect(unloadIsWarned()).toBe(true);
+    await waitFor(() => expect(unloadIsWarned()).toBe(true));
   });
 
   it("추천 결과 화면에서도 되묻는다", async () => {
@@ -366,7 +385,7 @@ describe("PRD 5번 [결과 이탈] — 잃을 것이 생긴 뒤에만 되묻는�
     submitMood("번아웃이라 가볍게 읽을 것");
     await screen.findByRole("heading", { name: "이 책은 어때요?" });
 
-    expect(unloadIsWarned()).toBe(true);
+    await waitFor(() => expect(unloadIsWarned()).toBe(true));
   });
 
   it("사용자가 스스로 처음으로 돌아가면 다시 되묻지 않는다", async () => {
@@ -376,7 +395,7 @@ describe("PRD 5번 [결과 이탈] — 잃을 것이 생긴 뒤에만 되묻는�
         unidentified: [{ rawText: "읽히지 않은 책등", reason: "no_match", candidates: [] }],
       }),
     );
-    expect(unloadIsWarned()).toBe(true);
+    await waitFor(() => expect(unloadIsWarned()).toBe(true));
 
     // 버리기로 한 것은 사용자다. 그 뒤에 되묻는 것은 자기가 한 선택을 되묻는 것이다.
     fireEvent.click(screen.getByRole("button", { name: "다시 찍기" }));

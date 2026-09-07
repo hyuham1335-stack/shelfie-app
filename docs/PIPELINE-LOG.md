@@ -17,12 +17,12 @@
 
 | 층 | 실물 | 규모 |
 |---|---|---|
-| 실행기 | `scripts/pipeline/{cli,state,verdict,contract,gate,attribution,adapters,ledger,precheck,review,trace_contract,mask,pr,promote,review07,report}.py` — 16개 모듈 | **8,786줄** · Python 3.8 stdlib만 (서드파티 0) |
+| 실행기 | `scripts/pipeline/{cli,state,verdict,contract,gate,attribution,adapters,ledger,precheck,review,trace_contract,mask,pr,promote,review07,report}.py` — 16개 모듈 | **9,270줄** · Python 3.8 stdlib만 (서드파티 0) |
 | 계약 계층 | `scripts/harness.py` — `doctor` · `calibrate` · `init` · glob 엔진 | 1,272줄 |
 | 페이즈 파일 | `harness/phases/{01-plan,02-cross-verify,03-implement,04-gate,05-code-review,06-pr,07-pr-review,08-report}.md` | **8개** · JSON 프론트매터 + 산문 |
 | 진입점 | `.claude/commands/feature.md` · `.claude/agents/{plan-reviewer,impl-writer,test-writer}.md` · 리뷰어 스킬 5종(`.claude/skills/*-reviewer/`) | 에이전트 정의는 각 3KB 이하 |
 | 기록 | `scripts/session_log.py` — `SessionEnd` 훅이 부르는 원장 수집기 | 원장은 `docs/pipeline-ledger.jsonl` (§7) |
-| 테스트 | `test_pipeline.py` 502 · `test_execute.py` 176 · `test_harness.py` 70 | **748건** (파일럿 앱은 1,403건 — P6 이 +51) |
+| 테스트 | `test_pipeline.py` 544 · `test_execute.py` 176 · `test_harness.py` 70 | **790건** (파일럿 앱은 1,403건 — P6 이 +51) |
 
 실행기가 Python stdlib 인 이유는 셋이다 — 스택마다 실행기를 다시 만들지 않기 위해, **게이트가 깨진 프로젝트에서도 돌기 위해**, 프로젝트 의존성 그래프를 오염시키지 않기 위해 (`team-spec.md:98-103`). 서드파티 금지의 대가로 페이즈 프론트매터는 YAML 이 아니라 `---` 로 감싼 **JSON** 이다.
 
@@ -236,7 +236,7 @@ P1 실측: impl 이 `src/lib/session.ts` 하나(**+114/−8**), test 가 `sessio
 
 **세션 `1c064337` 은 승격하지 않았다** — `commits: []` 이고 직전 `/log` 실행 그 자체다(2026-09-04 17:35:06 의 promote 두 줄을 쓴 세션). 올릴 새 항목이 없어 재검토 대상에서 빼려고 표시만 한다.
 
-**`후속 (P6 런)` 행의 근거는 원장이다** — `docs/pipeline-ledger.jsonl` 의 세션 `e0269bac` 줄이 커밋 셋(`be30d41`·`7f94226`·`b68b9c4`)을 담고 있고(`commits_since.kind: base_branch` · `ref: main`), 같은 줄의 `run.grade: PASS_WITH_GAPS` · `run_status: done` · `tests.app: 1403`(`source: run_state`)이 P6 의 완주를 증언한다. **앱 테스트 1403 은 원장이 준 값이다** — 04 게이트 영수증의 `tests.ran` 과도 같다. **파이썬 748건은 다시 돌려 만든 값이 아니다** — 이 증분이 `scripts/` 를 한 줄도 고치지 않았으므로 `def test_` 정적 계수(502·176·70)로 대조해 그대로임만 확인했고, §1 규모 표의 앱 테스트 칸만 1,353 → 1,403 으로 갱신했다. §6.5 훅 표도 `.claude/settings.json` 과 대조해 `SessionEnd`·`Stop`·`PreToolUse` 셋 그대로였다. **커밋 셋을 한 행으로 묶은 이유는 `후속 (P3 런)` 과 같다** — 런 하나가 낸 앱 산출물·원장·보고서이고, 쪼개면 같은 런이 §5 에서 세 번 학습된다. **이 승격을 쓰는 커밋 자신은 행으로 만들지 않는다.**
+**`후속 (P6 런)` 행의 근거는 원장이다** — `docs/pipeline-ledger.jsonl` 의 세션 `e0269bac` 줄이 커밋 셋(`be30d41`·`7f94226`·`b68b9c4`)을 담고 있고(`commits_since.kind: base_branch` · `ref: main`), 같은 줄의 `run.grade: PASS_WITH_GAPS` · `run_status: done` · `tests.app: 1403`(`source: run_state`)이 P6 의 완주를 증언한다. **앱 테스트 1403 은 원장이 준 값이다** — 04 게이트 영수증의 `tests.ran` 과도 같다. **파이썬 790건은 다시 돌려 만든 값이 아니다** — 이 증분이 `scripts/` 를 한 줄도 고치지 않았으므로 `def test_` 정적 계수로 대조했고, **그 대조가 §1 규모 표의 드리프트 셋을 드러냈다.** 표는 실행기 8,786줄 · 파이썬 748건(502·176·70) · 앱 1,353건을 적고 있었는데 실측은 **9,270줄 · 790건(544·176·70) · 1,403건**이다 — 앞의 둘은 M36~M44 증분(ROADMAP 이 “테스트 502 → 544” 라고 적은 그것)이 §1 을 갱신하지 않아 남은 것이고 세 번째는 P6 이 만든 것이다. **셋 다 갱신했다.** 앞선 승격 행들이 매번 “§1 규모 표를 정적 계수로 다시 대조했다” 고 적은 절차가 한 번 건너뛰어진 자리이고, 이 리포의 어휘로는 `DOC_CODE_DRIFT` 다. §6.5 훅 표도 `.claude/settings.json` 과 대조해 `SessionEnd`·`Stop`·`PreToolUse` 셋 그대로였다. **커밋 셋을 한 행으로 묶은 이유는 `후속 (P3 런)` 과 같다** — 런 하나가 낸 앱 산출물·원장·보고서이고, 쪼개면 같은 런이 §5 에서 세 번 학습된다. **이 승격을 쓰는 커밋 자신은 행으로 만들지 않는다.**
 
 ### 5.1 앞선 순차 실행기 런에서 와서 8페이즈 설계를 바꾼 것
 

@@ -3136,6 +3136,15 @@ def run_report(root, out=None, run_id=None):
                         error=str(exc))
 
     _config, _adapter, cal = adapters.load(root)
+    # **원장 축은 모델이 쓰는 서술이 아니라 기계 사실이다.** 08 의 입력 파일은
+    # 서술 전용이므로 실행기가 여기서 붙인다 — "승격 목록이 원장에서 자동으로
+    # 나온다, 네가 빠뜨릴 수 없다" 와 같은 규율이다 (M39).
+    import ledger as ledger_mod
+    try:
+        data["ledger"] = {
+            "by_category": ledger_mod.stage_promotions(root)["by_category"]}
+    except (OSError, ValueError, KeyError):
+        pass
     text, missing = rep.build(s, data, cal or {}, s.get("promotions") or [])
 
     target = Path(out) if out else (

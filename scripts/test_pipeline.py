@@ -2935,6 +2935,84 @@ class TestLedgerBaseline:
         assert ldg.distinct_runs(repo) == 1
 
 
+class TestDocDriftAxis:
+    """M39 — 문서 드리프트가 어휘 밖으로 새고 승격 경로를 못 가졌다.
+
+    `other/*` 는 글롭처럼 생겼지만 `categories()` 가 만드는 dict 의 **문자열
+    키**다. 그리고 `unpromotable` 이라, 이 리포에서 가장 자주 나는 결함이
+    승격 후보가 되지 않았다 (원장 실측 17건 · 3런).
+    """
+
+    def test_문서_드리프트_코드가_어휘에_있다(self, repo):
+        ldg.seed(repo)
+        assert "DOC_CODE_DRIFT" in ldg.categories(repo)
+        ldg.append(repo, "r1", "05",
+                   [_finding(category="DOC_CODE_DRIFT")])
+        assert len(ldg.read_all(repo)) == 1
+
+    def test_seed_와_디스크_taxonomy_의_코드_집합이_같다(self, repo):
+        """M39 는 두 곳을 동시에 고쳐야 한다. 갈라져도 아무도 몰랐다."""
+        disk = harness._read_json(ROOT / ldg.TAXONOMY_REL)
+        seeded = {c["code"] for c in ldg.SEED_TAXONOMY["categories"]}
+        assert {c["code"] for c in disk["categories"]} == seeded
+
+    def test_글롭처럼_생긴_새_코드는_거부된다(self, repo):
+        data = {"version": 1, "categories": [
+            {"code": "foo/*", "enforceable": "prose", "status": "active"}]}
+        assert any("코드 형태" in e for e in ldg.validate_taxonomy(data)),             ldg.validate_taxonomy(data)
+
+    def test_실물_taxonomy_가_형태_규칙을_통과한다(self, repo):
+        """`other/*` 는 retired 라 면제된다 — 원장의 과거를 읽을 수 있어야 한다."""
+        disk = harness._read_json(ROOT / ldg.TAXONOMY_REL)
+        assert ldg.validate_taxonomy(disk) == []
+
+    def test_other_글롭은_경로처럼_매칭되지_않는다(self, repo):
+        """성격 규정 — 지금도 통과한다. 제출 1회를 무르게 한 그 오해를 잠근다."""
+        ldg.seed(repo)
+        with pytest.raises(ValueError):
+            ldg.append(repo, "r1", "05", [_finding(category="other/무엇")])
+
+    def test_제목이_매번_다르면_임계에_닿지_않는다(self, repo):
+        """**M39 의 진실이다.** 어휘를 고쳐도 승격은 안 된다.
+
+        버킷 키가 `sha1(category|target_role|정규화 제목)` 이라, 카테고리가
+        아무리 잦아도 제목이 매번 다르면 임계에 영원히 못 닿는다. 나중에
+        누가 "고쳐졌다" 고 착각하지 않게 단언으로 못박는다.
+        """
+        ldg.seed(repo)
+        for run in ("r1", "r2", "r3"):
+            for n in (1, 2):
+                ldg.append(repo, run, "05",
+                           [_finding(category="DOC_CODE_DRIFT",
+                                     title="%s 의 %d 번째 어긋남" % (run, n))])
+        got = ldg.stage_promotions(repo)
+        assert got["candidates"] == [], got["candidates"]
+        assert got["held"] == [], got["held"]
+        roll = {b["category"]: b for b in got["by_category"]}
+        assert roll["DOC_CODE_DRIFT"]["count"] == 6, roll
+        assert roll["DOC_CODE_DRIFT"]["distinct_runs"] == 3, roll
+        assert roll["DOC_CODE_DRIFT"]["distinct_keys"] == 6, roll
+        assert roll["DOC_CODE_DRIFT"]["promotable"] is True, roll
+
+    def test_롤업이_승격을_바꾸지_않는다(self, repo):
+        """같은 제목이 임계를 넘으면 후보가 되는 경로는 그대로다."""
+        ldg.seed(repo)
+        for run in ("r1", "r2"):
+            ldg.append(repo, run, "05",
+                       [_finding(category="NAMING", severity="critical",
+                                 title="같은 이름")])
+        got = ldg.stage_promotions(repo)
+        assert len(got["candidates"]) == 1, got
+
+    def test_승격_불가_카테고리도_롤업에는_보인다(self, repo):
+        """드러내고 안 고치는 것이 이 리포의 기본 수다."""
+        ldg.seed(repo)
+        ldg.append(repo, "r1", "05", [_finding(category="OTHER")])
+        roll = {b["category"]: b
+                for b in ldg.stage_promotions(repo)["by_category"]}
+        assert roll["OTHER"]["promotable"] is False, roll
+
+
 class TestLedgerPromotion:
     """임계값 여섯과 distinct_runs >= 2. 전부 미검증 상속값이다."""
 

@@ -75,10 +75,22 @@
       "note": "계약은 메인 단독 소유다. 수리가 아니라 에스컬레이션이고 자동 승격 대상이 아니다"
     },
     {
-      "code": "other/*",
+      "code": "DOC_CODE_DRIFT",
+      "enforceable": "prose",
+      "status": "active",
+      "note": "문서·주석이 코드가 말하는 사실과 어긋난다. 기계가 못 막는다 — 어느 문장이 어느 상수를 참칭하는지는 판정이다"
+    },
+    {
+      "code": "OTHER",
       "enforceable": "prose",
       "status": "unpromotable",
-      "note": "분류되지 않은 것. 어휘 밖으로 새지 않게 받아 두되 승격하지 않는다"
+      "note": "분류되지 않은 것. **글롭이 아니라 문자열 그대로의 코드다** — categories() 가 만드는 dict 의 키이고 append() 는 `code not in known` 으로만 본다. 받아 두되 승격하지 않는다"
+    },
+    {
+      "code": "other/*",
+      "enforceable": "prose",
+      "status": "retired",
+      "note": "OTHER 로 갈렸다 (M39). 원장의 옛 줄이 이 코드를 쓰므로 지우지 않는다 — append-only 원장의 과거를 읽을 수 있게 남긴다. retired 는 이미 NEVER_PROMOTE 라 거동이 안 바뀐다"
     }
   ]
 }

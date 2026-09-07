@@ -822,11 +822,17 @@ gap 은 effort 와 **따로 센다**:
   {"code":"CONCURRENCY","enforceable":"prose","status":"active"},
   {"code":"TEST_MISSING_FAILURE_PATH","enforceable":"prose","status":"active"},
   {"code":"CONTRACT_DEFECT","enforceable":"none","status":"escalate_only"},
-  {"code":"other/*","enforceable":"prose","status":"unpromotable"}]}
+  {"code":"DOC_CODE_DRIFT","enforceable":"prose","status":"active"},
+  {"code":"OTHER","enforceable":"prose","status":"unpromotable"},
+  {"code":"other/*","enforceable":"prose","status":"retired"}]}
 ```
 
 `status`: `active` / `proposed`(어휘만) / `retired` / `escalate_only` / `unpromotable`.
 **`active` + `enforceable != prose`인 것만** 05의 "검토 제외" 목록에 들어간다 — 이 파일 하나가 원장 어휘·승격 목적지·리뷰 범위 셋의 단일 출처다.
+
+**코드는 글롭이 아니다.** `categories()` 가 만드는 dict 의 **문자열 키**이고 `append()` 는 `code not in known` 으로만 본다 — `other/foo` 는 `other/*` 에 매칭되지 않고 어휘 밖으로 튕긴다. 그 오해가 P5 에서 제출 1회를 무르게 했다(M39). 이제 `validate_taxonomy` 가 코드 형태를 `^[A-Z][A-Z0-9_]*$` 로 잠근다. 옛 코드 `other/*` 는 **원장의 과거를 읽을 수 있게** `retired` 로 남긴다 — `retired` 는 이미 `NEVER_PROMOTE` 라 거동이 바뀌지 않고, `findings.jsonl` 은 한 줄도 고치지 않는다.
+
+**승격의 축은 제목이지 카테고리가 아니다.** 버킷 키가 `sha1(category|target_role|정규화 제목)` 이라, 카테고리가 아무리 잦아도 제목이 매번 다르면 임계에 **영원히** 닿지 않는다. 이것은 결함이 아니라 "승격의 산물이 규칙" 이라는 정의의 결과다. 그러나 그 사실이 어디에도 안 보이면 "승격 0건" 이 "지적이 없었다" 로 읽히므로, `stage_promotions` 이 **승격하지 않는 `by_category` 롤업**을 함께 낸다 (ADR-H026). `candidates` 와 `held` 는 그 롤업으로 한 비트도 달라지지 않는다.
 
 ### 5.2 `findings.jsonl` (append-only)
 

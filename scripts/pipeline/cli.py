@@ -892,12 +892,23 @@ def _plan_05_review(root, paths, s, ctx):
     import precheck as pc
     import review as review_mod
 
+    # **라우팅 전에 프로파일을 다시 센다.** 04 수리 중 계약 델타가 적용됐으면
+    # 여기 오는 `profile` 이 낡은 값이고, 그 값이 곧 리뷰어 상한이다 (M34).
+    refreshed = _refresh_profile(root, paths, s, ctx)
     changed = pc.changed_files(root)
     profile = (s.get("profile") or {}).get("name") or "normal"
     routed = review_mod.route(ctx["config"], changed, profile)
     node = s.setdefault("phases", {}).setdefault("05-code-review", {})
-    node["planned"] = [r["code"] for r in routed["reviewers"]]
+    # **계획된 리뷰어는 줄지 않는다.** `next --phase 05` 는 여러 번 불릴 수
+    # 있고 그때마다 변경 집합을 다시 읽는다. 줄어든 집합으로 덮으면 계획이
+    # 조용히 작아지고 `escaped_05` 를 세는 것이 뜻을 잃는다 — `review05` 가
+    # "런 안에서 좋아지지 않는다" 를 지키는 것과 같은 규율이다.
+    kept = [c for c in (node.get("planned") or [])
+            if c not in [r["code"] for r in routed["reviewers"]]]
+    node["planned"] = [r["code"] for r in routed["reviewers"]] + kept
     node["routing"] = routed
+    node["profile_reconfirmed"] = refreshed if refreshed.get("changed") else None
+    node["contract_dropped"] = refreshed.get("dropped") or []
     node["mode"] = review_mod.mode(ctx["config"],
                                    pc._changed_lines(root, changed))
     if not node["planned"]:
@@ -963,6 +974,32 @@ def _excluded_render(root):
             + "\n".join("- `%s`" % c for c in codes))
 
 
+def _contract_drift_lines(node, s):
+    """계약이 바뀌어 프로파일이 다시 정해졌다는 것과, 파서가 흘린 줄.
+
+    둘 다 **조용하면 안 되는 사실**이다. 프로파일은 리뷰어 상한을 정하고,
+    흘린 줄은 그 프로파일과 스코프 선택을 동시에 빗나가게 한다 (M34 · D-2).
+    """
+    out = []
+    re_ = node.get("profile_reconfirmed")
+    if re_:
+        prev = re_.get("previous") or {}
+        prof = s.get("profile") or {}
+        out += ["**계약이 바뀌어 프로파일을 다시 셌다** — `%s`(유닛 %s) → "
+                "`%s`(유닛 %s). 리뷰어 상한이 그만큼 달라진다."
+                % (prev.get("name"), prev.get("units"),
+                   prof.get("name"), prof.get("units")), ""]
+    dropped = node.get("contract_dropped") or []
+    if dropped:
+        out += ["**계약의 %d줄이 유닛으로 세어지지 않았다** — 파서는 "
+                "`컨테이너 · 심볼` 쌍을 요구한다. 이 줄들은 프로파일 판정에도 "
+                "스코프 선택에도 들어가지 않는다:" % len(dropped), ""]
+        out += ["- `%s` — %s" % (d.get("raw"), d.get("reason"))
+                for d in dropped[:5]]
+        out += [""]
+    return out
+
+
 def _review_render(s):
     """봉투가 **누가 리뷰하는지와 무엇이 빠졌는지**를 말한다."""
     node = (s.get("phases") or {}).get("05-code-review") or {}
@@ -970,6 +1007,7 @@ def _review_render(s):
     if not routed:
         return ""
     lines = ["## 리뷰어 라우팅 (결정론 — 네가 정하지 않는다)", ""]
+    lines += _contract_drift_lines(node, s)
     if not routed["reviewers"]:
         lines += ["**매칭된 리뷰어가 0개다.** 그러면 `review05.status` 는 "
                   "`failed` 이고 등급이 `PASS_WITH_GAPS` 로 떨어진다 — "
@@ -1739,14 +1777,7 @@ def _record_03(root, paths, s, phase_item, ctx, file, reviewer, round_):
     except (OSError, ValueError) as exc:
         return st.envelope("record", False, 8, s, {}, "JSON 을 읽지 못했다: %s" % exc, None)
 
-    contract_path = resolve("${run.contract_file}", ctx)
-    full = root / contract_path
-    if full.exists():
-        s["contract"] = dict(s.get("contract") or {}, present=True,
-                             path=contract_path,
-                             sha256=_sha256(full))
-        parsed = contract_mod.parse(full.read_text(encoding="utf-8"), ctx["config"])
-        s["profile"] = _confirm_profile(s, ctx["config"], parsed)
+    _refresh_profile(root, paths, s, ctx)
 
     got = attribution.clean_ownership(root, ctx["config"], claims)
     if not got["ok"]:
@@ -1782,6 +1813,58 @@ def _record_03(root, paths, s, phase_item, ctx, file, reviewer, round_):
     st.set_phase_status(s, "03-implement", "passed",
                         claims=file.name)
     return _advance_to_next(root, paths, s, phase_item, ctx)
+
+
+def _refresh_profile(root, paths, s, ctx):
+    """계약이 바뀌었으면 프로파일을 **다시** 센다. 반환: 바뀐 내용 dict.
+
+    예전에는 `_confirm_profile` 을 부르는 자리가 `_record_03` 하나뿐이었다.
+    `run_record` 의 멱등 가드가 통과한 03 의 재제출을 막으므로, 04 수리 중
+    메인이 계약 델타를 적용해도 프로파일은 그대로 굳었다 — P3 에서 유닛이
+    2 → 5 가 됐는데 `small` 이 남아 05 의 리뷰어가 1명이 됐다 (M34).
+
+    변화를 감지할 재료는 이미 있었다. `contract.sha256` 을 적어 두고 **읽는
+    쪽이 없었다.** 여기서 그것을 읽는다.
+
+    `dropped` 도 함께 드러낸다. 계약 파서가 `컨테이너 · 심볼` 쌍이 아닌 줄을
+    유닛으로 안 세는데, 그 사실을 읽는 곳이 doctor 의 **템플릿** 검사뿐이라
+    실제 계약이 유닛 셋을 흘렸을 때 아무도 말하지 않았다 (P3 의 델타 D-2).
+    """
+    import contract as contract_mod
+
+    contract_path = resolve("${run.contract_file}", ctx)
+    full = root / contract_path
+    if not full.exists():
+        return {"changed": False, "dropped": []}
+
+    sha = _sha256(full)
+    node = dict(s.get("contract") or {}, present=True, path=contract_path)
+    same = node.get("sha256") == sha
+    node["sha256"] = sha
+
+    parsed = contract_mod.parse(full.read_text(encoding="utf-8"), ctx["config"])
+    node["dropped"] = parsed.get("dropped") or []
+    s["contract"] = node
+    if same:
+        # **매번 다시 세지 않는다.** 같은 계약을 재판정하면 판정이 흔들리고
+        # `previous` 가 뜻 없는 값으로 채워진다.
+        return {"changed": False, "dropped": node["dropped"]}
+
+    before = dict(s.get("profile") or {})
+    after = _confirm_profile(s, ctx["config"], parsed)
+    changed = after.get("name") != before.get("name")
+    if changed:
+        after = dict(after, previous={k: v for k, v in before.items()
+                                      if k != "previous"},
+                     reconfirmed_at=st.stamp())
+        if paths is not None:
+            # `now` 는 `append_event` 의 타임스탬프 인자다 — 겹치면 안 된다.
+            st.append_event(paths, "profile_reconfirmed", cmd="next",
+                            was=before.get("name"), became=after.get("name"),
+                            units=after.get("units"))
+    s["profile"] = after
+    return {"changed": changed, "previous": before if changed else None,
+            "dropped": node["dropped"]}
 
 
 def _confirm_profile(s, config, parsed):
@@ -2366,6 +2449,11 @@ def run_gate_cmd(root, phase="04", only_stage=None, replay=None, run_id=None):
                                "\n".join("- %s" % c["message"] for c in failed), None)
 
     config, adapter, calibration = adapters.load(root)
+    # **수리 라운드마다 계약을 다시 읽는다.** 메인이 여기서 계약 델타를 적용하고,
+    # 그 델타가 스코프 선택과 프로파일을 함께 바꾼다. 예전에는 스코프만 새 계약을
+    # 보고 프로파일은 03 이 정한 값으로 굳어 있었다 (M34).
+    if not only_stage:
+        _refresh_profile(root, paths, s, ctx)
     round_no = ((s.get("counters") or {}).get("repair") or {}).get("used", 0) + 1
     log_path = paths.gates / ("gr-%d.stdout.log" % round_no)
 

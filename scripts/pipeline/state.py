@@ -82,6 +82,9 @@ EVENT_KINDS = (
     # 뭉치면 원장에서 다섯 라운드를 쓴 런과 세 라운드를 쓰고 둘을 더 받은 런이
     # 같아 보인다 (M32).
     "counter_grant",
+    # 계약이 바뀌어 프로파일이 다시 정해졌다. 리뷰어 상한이 그 값에서 나오므로
+    # 언제 무엇에서 무엇으로 바뀌었는지가 사후에 필요하다 (M34).
+    "profile_reconfirmed",
 )
 
 GRADES = ("PASS", "PASS_WITH_GAPS", "INCOMPLETE")

@@ -55,6 +55,20 @@ def explain_gap(gap):
     return "`%s` — 어휘에 없는 사유다 (보고서가 설명하지 못한다)" % gap
 
 
+def _profile_cell(node):
+    """`이름 (출처 · 유닛 n)`. 재판정이 있었으면 `무엇에서 무엇으로` 까지."""
+    if not node:
+        return None
+    cell = "%s (%s · 유닛 %s)" % (node.get("name"), node.get("source"),
+                                  node.get("units"))
+    prev = node.get("previous")
+    if prev:
+        cell = "%s — 계약이 바뀌어 다시 셌다: %s(유닛 %s) → %s(유닛 %s)" % (
+            cell, prev.get("name"), prev.get("units"),
+            node.get("name"), node.get("units"))
+    return cell
+
+
 def _counter_cell(node):
     """`used / max` 와, 지급이 있었으면 그 사실까지.
 
@@ -165,6 +179,9 @@ def build(state, data, calibration, promotions):
         ("감사 런", audit.get("is_audit_run")),
         # **01 의 관측 품질이 이 표에 없었다.** 05·07 만 적어서, 교차검증이
         # 다섯 라운드 내내 폴백이어도 보고서는 아무 말도 하지 않았다 (P3).
+        # **프로파일이 리뷰어 상한을 정한다.** 그 값이 어디서 나왔는지가
+        # 보고서에 없으면 "리뷰어 1명" 이 계획인지 결함인지 갈리지 않는다 (M34).
+        ("프로파일", _profile_cell(state.get("profile"))),
         ("01 교차검증", cv.get("mode")),
         ("폴백 회차", "%s / %s" % (cv.get("degraded_rounds") or 0,
                                    len(cv.get("rounds") or {}))),

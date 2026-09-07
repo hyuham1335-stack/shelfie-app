@@ -1438,6 +1438,183 @@ class TestCrossVerifyTransientFailure:
         assert env["exit"] == 8, env["render"]
 
 
+FIVE_UNIT_CONTRACT = """# 계약: 제목 유사도
+
+## 스키마·데이터 변경
+
+없음.
+
+## 외부 경계
+
+없음.
+
+## 유닛
+
+- `lib/match.ts · matchTitle(a: string, b: string): number`
+  - 정상: 0~1 유사도 / 예외: 빈 문자열 → `0`
+- `lib/match.ts · normalizeTitle(a: string): string`
+- `lib/match.ts · stripPunctuation(a: string): string`
+- `lib/match.ts · tokenize(a: string): string[]`
+- `lib/match.ts · scorePair(a: string, b: string): number`
+
+## 진입점
+
+없음.
+
+## 오류 어휘
+
+- `MATCH_EMPTY` (400)
+"""
+
+
+class TestProfileReconfirmation:
+    """M34 — 계약이 바뀌면 프로파일을 다시 센다.
+
+    P3 의 계약 델타 D-2 는 04 게이트 수리 중에 적용됐고, 유닛이 2 → 5 가 됐는데
+    프로파일은 `small` 로 남아 05 의 리뷰어가 1명이 됐다. `_confirm_profile` 을
+    부르는 자리가 `_record_03` 하나뿐이었고, `run_record` 의 멱등 가드가 통과한
+    03 의 재제출을 막으므로 그 뒤에는 재판정 경로가 없었다.
+
+    변화를 감지할 재료(`contract.sha256`)는 이미 상태에 있었고 읽는 쪽이 없었다.
+    """
+
+    def _at_05(self, repo, paths, s, profile):
+        s["profile"] = dict(profile)
+        st.set_phase_status(s, "04-gate", "passed")
+        s["phase"] = "05-code-review"
+        st.save(paths, s)
+
+    def test_a_contract_delta_reconfirms_the_profile(self, gated, phases):
+        repo, paths, s = gated
+        # 03 이 세었을 때의 계약(유닛 1개) — small
+        s["contract"]["sha256"] = hashlib.sha256(
+            (repo / "_workspace" / "contract_sim.md").read_bytes()).hexdigest()
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+
+        # 04 수리 중 메인이 델타를 적용한다 — 유닛이 1 → 5 가 된다
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert after["profile"]["name"] == "normal", after["profile"]
+        assert after["profile"]["units"] == 5, after["profile"]
+        assert after["profile"]["previous"]["name"] == "small", after["profile"]
+        assert after["profile"].get("reconfirmed_at"), after["profile"]
+
+    def test_the_reviewer_cap_follows_the_new_profile(self, gated, phases):
+        """재판정이 값을 내는 자리는 05 의 리뷰어 수다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = hashlib.sha256(
+            (repo / "_workspace" / "contract_sim.md").read_bytes()).hexdigest()
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        routed = after["phases"]["05-code-review"]["routing"]
+        assert routed["profile"] == "normal", routed
+        assert routed["cap"] > 1, routed
+
+    def test_an_unchanged_contract_reconfirms_nothing(self, gated, phases):
+        """sha 가 같으면 재판정하지 않는다 — 매번 다시 세면 판정이 흔들린다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = hashlib.sha256(
+            (repo / "_workspace" / "contract_sim.md").read_bytes()).hexdigest()
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert after["profile"]["name"] == "small", after["profile"]
+        assert "previous" not in after["profile"], after["profile"]
+
+    def test_a_user_profile_survives_the_refresh(self, gated, phases):
+        """`--profile` 로 준 값은 사람이 정한 것이다 — 자동 판정이 못 이긴다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = "낡은값"
+        self._at_05(repo, paths, s, {"name": "small", "source": "user"})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert after["profile"]["name"] == "small", after["profile"]
+        assert after["profile"]["source"] == "user", after["profile"]
+
+    def test_dropped_units_are_named_not_silent(self, gated, phases):
+        """D-2 의 침묵. 계약이 `경로` — 서술 형태로 쓴 줄은 유닛으로 안 세어졌고
+        `dropped` 를 읽는 곳이 doctor 의 **템플릿** 검사뿐이라 아무도 말하지
+        않았다. 유닛이 5 가 아니라 2 로 세어져 프로파일과 스코프가 함께 빗나갔다.
+        """
+        repo, paths, s = gated
+        s["contract"]["sha256"] = "낡은값"
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            CONTRACT_MD.replace(
+                "- `lib/match.ts · matchTitle(a: string, b: string): number`",
+                "- `lib/match.ts · matchTitle(a: string, b: string): number`\n"
+                "- `lib/normalize.ts` — 제목을 정규화한다"),
+            encoding="utf-8")
+
+        env = cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        dropped = after["contract"]["dropped"]
+        assert dropped, after["contract"]
+        assert "lib/normalize.ts" in json.dumps(dropped, ensure_ascii=False)
+        assert "유닛으로 세어지지 않" in env["render"], env["render"]
+
+    def test_the_report_names_the_profile_and_its_source(self, gated, phases):
+        """`리뷰어 1/1` 이 계획인지 결함인지는 프로파일이 갈라 준다."""
+        repo, paths, s = gated
+        s["contract"]["sha256"] = "낡은값"
+        self._at_05(repo, paths, s,
+                    {"name": "small", "source": "auto", "units": 1,
+                     "entrypoints": 0})
+        (repo / "_workspace" / "contract_sim.md").write_text(
+            FIVE_UNIT_CONTRACT, encoding="utf-8")
+        cli.run_next(repo, run_id=paths.run_id)
+
+        _, after = st.load(repo, paths.run_id)
+        text, _missing = rep_mod.build(after, {}, {}, [])
+        line = next(l for l in text.splitlines() if l.startswith("| 프로파일"))
+        assert "normal" in line and "small" in line, line
+        assert "유닛 5" in line, line
+
+    def test_replanning_05_does_not_shrink_the_planned_reviewers(self, gated,
+                                                                 phases):
+        """재판정을 넣으면 이 자리를 더 자주 지난다. 변경 집합이 줄었다고
+        계획된 리뷰어가 조용히 줄면 `escaped_05` 를 세는 것이 뜻을 잃는다.
+        """
+        repo, paths, s = gated
+        (repo / "src" / "lib" / "match.ts").write_text("// 고침\n",
+                                                       encoding="utf-8")
+        self._at_05(repo, paths, s,
+                    {"name": "normal", "source": "auto", "units": 5,
+                     "entrypoints": 0})
+        cli.run_next(repo, run_id=paths.run_id)
+        _, mid = st.load(repo, paths.run_id)
+        first = mid["phases"]["05-code-review"]["planned"]
+        assert first, mid["phases"]["05-code-review"]
+
+        # 변경 집합이 사라진다 (커밋됐다고 치자)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "wip", "--no-verify")
+
+        cli.run_next(repo, run_id=paths.run_id)
+        _, after = st.load(repo, paths.run_id)
+        assert set(after["phases"]["05-code-review"]["planned"]) >= set(first), \
+            "계획된 리뷰어는 줄지 않는다"
+
+
 class TestRoundBudgetAfterRoundTrip:
     """M32 — 바뀐 설계는 새 설계다. 한 라운드로 수렴할 이유가 없다.
 

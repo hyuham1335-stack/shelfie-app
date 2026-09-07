@@ -219,7 +219,7 @@ function stripSymbols(value: string): string {
  * Levenshtein 거리. 새 의존성을 들이지 않기 위해 직접 구현한다 (CLAUDE.md).
  *
  * 행 전체를 보관하지 않고 이전 행 하나만 들고 굴러 O(min(n,m)) 메모리로 끝낸다.
- * 제목은 200자 상한이라 시간은 문제가 되지 않지만, 후보 80건 × 검색 결과만큼
+ * 제목은 200자 상한이라 시간은 문제가 되지 않지만, 후보 65건 × 검색 결과만큼
  * 반복 호출되므로 할당을 줄여 두는 편이 낫다.
  */
 function levenshtein(a: readonly string[], b: readonly string[]): number {

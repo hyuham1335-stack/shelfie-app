@@ -171,7 +171,17 @@ sequenceDiagram
     end
     Note over R: 연속 5회 실패 시 요청 스코프 브레이커 Open<br/>잔여 후보는 조회 없이 lookup_failed로 강등<br/>(no_match와 섞지 않는다 — ADR-005)
 
-    R->>R: lib/merge — ISBN13 중복 제거 + 50권 결정적 절단
+    R->>R: lib/merge — ISBN13 중복 제거 (조회 **전**이다 — 같은 책을 두 번 조회하지 않는다)
+
+    loop 승격된 책마다 (같은 브레이커·같은 데드라인)
+        R->>SL: ISBN13으로 ItemLookUp
+        SL->>EL: GET ItemLookUp
+        EL-->>SL: 쪽수·독자평점·상세 링크
+        SL-->>R: AladinFacts 또는 failed
+    end
+    Note over R: **최악의 경우** 검색한 것이 전부 조회된다 — 승격 필터와 중복 제거는<br/>이 수를 줄일 수는 있어도 늘리지 못하므로 260은 상한이다 (TRD 10번의 `× 2단계`)<br/>failed는 lookup_failed로 강등한다 (ADR-002 + ADR-005)
+
+    R->>R: lib/merge — 50권 결정적 절단 (조회 **뒤**다 — 호출 수를 줄이지 못한다)
 
     alt 남은 예산 8s 이상
         R->>SA: 확인된 책 전체 한줄평 배치 요청 (1회)
@@ -285,6 +295,13 @@ sequenceDiagram
         R-->>C: UPSTREAM_UNAVAILABLE
         C-->>U: "지금 확인할 수 없었어요" + 재시도 — 절판 안내를 쓰지 않는다
     else 후보 있음
+        Note over R: **자르고 나서 조회한다** — 5건만 돌려주므로 나머지까지<br/>부르면 알라딘 일일 한도만 축난다 (resolve/route.ts)
+        loop 상위 5건마다
+            R->>SL: ISBN13으로 ItemLookUp
+            SL->>EL: GET ItemLookUp
+            EL-->>SL: 쪽수·독자평점·상세 링크
+        end
+        Note over R: 이 호출은 세션당 260회 유도에 **들어가지 않는다**<br/>별개 요청이고 자기 예산·자기 브레이커를 갖는다 (TRD 10번)
         R-->>C: AladinCandidate[]
         C-->>U: 후보 목록 → 선택 시 확인된 책으로 이동
         C->>RB: POST /api/events (book_resolved)

@@ -74,10 +74,12 @@ export const MAX_CANDIDATES_PER_PHOTO = 60;
  * **두 단계**를 그대로 통과한다 — 검색한 것이 전부 조회된다. 그래서 유도식은
  *
  *   MAX_CANDIDATES_FOR_LOOKUP × 2단계 × ALADIN_CALLS_PER_LOOKUP
- *     = 65 × 2 × 2 = 260 ≤ MAX_ALADIN_CALLS_PER_SESSION
+ *     = 65 × 2 × 2 = 260 = MAX_ALADIN_CALLS_PER_SESSION
  *
- * 이고, 여기에 `MAX_IDENTIFIED_BOOKS`(50)는 들어가지 않는다. 표시 상한 절단은
- * 조회가 **끝난 뒤**에 걸리므로 호출 수를 줄이지 못한다. 두 단계가 같은 수를
+ * 이다. 가운데 `2단계`는 **ItemSearch와 ItemLookUp 두 단계**를 센 것이고, 뒤의 2는
+ * `ALADIN_CALLS_PER_LOOKUP`(호출 1 + 재시도 1)이다 — 값이 같아 한 수를 두 번 적은
+ * 것처럼 보이지만 뜻이 다르다. 여기에 `MAX_IDENTIFIED_BOOKS`(50)는 들어가지
+ * 않는다. 표시 상한 절단은 조회가 **끝난 뒤**에 걸리므로 호출 수를 줄이지 못한다. 두 단계가 같은 수를
  * 받는다는 것이 이 값의 근거이고, 이 값을 올리면 선언(260)이 조용히 깨진다.
  */
 export const MAX_CANDIDATES_FOR_LOOKUP = 65;
@@ -87,9 +89,11 @@ export const MAX_CANDIDATES_FOR_LOOKUP = 65;
  *
  * 이것은 **선언**이다 — 우리가 알라딘 일일 한도(5,000회)에 대해 감수하기로 한
  * 세션당 최악값이고, 이 값에서 "하루 약 19세션"이라는 실질 상한이 나온다.
- * 현재 구성이 실제로 내는 값(유도값)은 아래 상수들에서 계산되며, **유도값이 이
- * 선언을 넘지 않는지는 상수가 아니라 회귀 테스트가 잠근다**(`merge.test.ts`).
- * 260을 손으로 적은 상수와 계산한 상수를 둘 다 두면 한쪽만 고쳐지는 날이 온다.
+ * 현재 구성이 실제로 내는 값(유도값)은 아래 상수들에서 계산되며, **유도값과 이
+ * 선언이 같은지를 상수가 아니라 회귀 테스트가 잠근다**(`merge.test.ts`).
+ * 여유를 허용하는 대소 비교가 아니라 **동등** 대조인 이유는, 유도값이 이보다 작아도
+ * 통과시키면 후보 상한만 내려놓고 선언은 260에 남겨 둔 상태를 아무도 못 잡기
+ * 때문이다. 260을 손으로 적은 상수와 계산한 상수를 둘 다 두면 한쪽만 고쳐지는 날이 온다.
  */
 export const MAX_ALADIN_CALLS_PER_SESSION = 260;
 
@@ -98,7 +102,8 @@ export const MAX_ALADIN_CALLS_PER_SESSION = 260;
  *
  * `services/aladin.ts`의 `requestWithRetry`가 호출 1회 + 5xx·타임아웃일 때의
  * 조건부 재시도 1회로 끝나므로 2다. 재시도 정책이 바뀌면 이 값도 함께 바뀌어야
- * 하고, 그러면 아래 유도값이 상한을 넘는지 테스트가 즉시 알려 준다.
+ * 하고, 그러면 유도값이 선언된 상한과 여전히 같은지를 테스트가 즉시 알려 준다.
+ * 대소 비교였다면 이 값을 1로 낮추는 변경이 조용히 통과했을 것이다.
  */
 export const ALADIN_CALLS_PER_LOOKUP = 2;
 

@@ -6452,6 +6452,89 @@ def _r07(paths, **kw):
     return p
 
 
+class TestEscaped05Reraise:
+    """07 이 05 의 지적을 **가리킬 수 있는가** (M48).
+
+    `escaped_05` 는 05 라우팅 품질의 유일한 지표인데, dedup 이
+    `sha1(category|target_role|title)` 하나뿐이라 **07 이 같은 결함에 다른
+    이름을 붙이면 새 것으로 센다.**
+
+    P6 의 `R7-1`(`OTHER` · "정규화 제목이 빈 항목이 한 키로 접혀…")은 05 의
+    `data` 가 이미 낸 `F-7`(`CONTRACT_DEFECT` · "제목을 못 읽은 항목이 모두
+    같은 mergeKey 라…")과 같은 결함이다. `07_pr_review.json` 의 `note` 가
+    사람 말로 그렇게 적는데 기계는 `deduped: 0` · `escaped_05: 2` 를 냈다 —
+    **지표가 05 를 실제보다 나쁘게 적었다.**
+
+    M21 이 05 라운드 안에서 같은 문제를 `reraised_from_previous` 라는 1급
+    어휘로 풀었다. 그 어휘가 01·02·05 에 있고 **07 에만 없었다.**
+
+    `finding_key` 는 바꾸지 않는다 — 05 단조성과 승격 집계가 같은 함수를 쓰고,
+    키를 바꾸면 원장의 과거 키가 전부 무의미해진다. **키를 바꾸는 것이 아니라
+    경계에 선언을 하나 더 두는 것**이다.
+    """
+
+    OPEN05 = {"key": "a" * 40, "id": "F-7", "severity": "major",
+              "reviewer": "data", "title_norm": "제목을 못 읽은 항목이 한 키로 접힌다"}
+
+    def _with_open_05(self, repo, run_id):
+        """05 가 major 하나를 열어 둔 채 07 에 온 런."""
+        _p, s = st.load(repo, run_id)
+        node = s.setdefault("phases", {}).setdefault("05-code-review", {})
+        node["rounds"] = {"1": {"data": {"keys": [dict(self.OPEN05)],
+                                         "closed": []}}}
+        st.save(_p, s)
+        return s
+
+    def _finding(self, **kw):
+        d = {"id": "R7-1", "category": "OTHER", "severity": "major",
+             "target_role": "impl", "title": "정규화 제목이 빈 항목이 한 키로 접힌다",
+             "path": "src/lib/merge.ts", "quote": "mergeKey", "source": "code-review",
+             "evidence": "같은 자리다"}
+        d.update(kw)
+        return d
+
+    def test_봉투가_05_의_열린_지적을_싣는다(self, repo, request_file, phases):
+        """모델이 재구성하면 그 재구성이 곧 결함이다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases)
+        self._with_open_05(repo, run_id)
+        env = cli.run_next(repo, run_id=run_id)
+        assert self.OPEN05["key"] in env["render"], env["render"]
+        assert "reraised_from_previous" in env["render"], env["render"]
+
+    def test_가리킨_지적은_escaped_05_에서_빠진다(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._with_open_05(repo, run_id)
+        f = _r07(paths, findings=[
+            self._finding(reraised_from_previous=self.OPEN05["key"])])
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] in (0, 11), env["render"]
+        _p, s = st.load(repo, run_id)
+        assert s["review07"]["escaped_05"] == 0, s["review07"]
+        assert s["review07"]["deduped"] == 1, s["review07"]
+
+    def test_안_가리키면_여전히_새_것으로_센다(self, repo, request_file, phases):
+        """선언 기반이다 — 자동 의미 dedup 이 아니라는 것을 정직하게 잠근다."""
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._with_open_05(repo, run_id)
+        f = _r07(paths, findings=[self._finding()])
+        cli.run_record(repo, "07", str(f), run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        assert s["review07"]["escaped_05"] == 1, s["review07"]
+
+    def test_열려_있지_않은_것을_가리키면_exit_8(self, repo, request_file, phases):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        self._with_open_05(repo, run_id)
+        f = _r07(paths, findings=[
+            self._finding(reraised_from_previous="b" * 40)])
+        env = cli.run_record(repo, "07", str(f), run_id=run_id)
+        assert env["exit"] == 8, env["render"]
+        assert "reraised_from_previous" in env["render"], env["render"]
+
+
 class TestRecord07:
 
     def test_깨끗하면_08_로_간다(self, repo, request_file, phases):

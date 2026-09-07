@@ -152,7 +152,8 @@ finding 은 **05 와 같은 스키마**를 쓴다.
    {"id": "G-1", "category": "AUTHZ_MISSING_RULE", "severity": "major",
     "target_role": "impl", "title": "…", "path": "…", "line": 34,
     "quote": "원문의 부분문자열", "source": "external|code-review|human",
-    "evidence": "…", "suggestion": "…"}],
+    "evidence": "…", "suggestion": "…",
+    "reraised_from_previous": "05 의 열린 지적 키 (같은 결함일 때만)"}],
  "change_requested": false,
  "human_comments": []}
 ```
@@ -163,6 +164,12 @@ finding 은 **05 와 같은 스키마**를 쓴다.
 - `quote` 는 외부 리뷰 **원문의 부분문자열**이어야 한다. 05 와 같은 검사다
 - `change_requested: true` 인데 findings 가 비면 exit 8 — 무엇을 고치라는
   것인지 없이 차단만 하는 제출이다
+- **05 가 이미 낸 것과 같은 결함이면 `reraised_from_previous` 로 가리켜라.**
+  `escaped_05` 의 대조는 `sha1(category|target_role|title)` 이라 **네가 같은
+  결함에 다른 이름을 붙이면 새 것으로 센다** — 그러면 05 라우팅 품질의 유일한
+  지표가 05 를 실제보다 나쁘게 적는다. 가리킬 키는 봉투의 「05 가 이미 낸 지적」
+  절에 있고, **목록에 없는 키를 가리키면 exit 8** 이다. 새 것이면 아무것도
+  달지 않는다 — **안 다는 것이 기본이고 다는 것이 주장이다**
 
 ## 금지
 

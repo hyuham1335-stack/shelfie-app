@@ -163,11 +163,24 @@ def decide(state, external, config, audit=False):
             "reasons": reasons, "gaps": gaps}
 
 
-def escaped(root, findings, run_id):
+def escaped(root, findings, run_id, previous_open=None):
     """05 가 이미 낸 것을 뺀 나머지. **05 라우팅 품질의 지표다.**
 
     dedup 이 목적이 아니라 **세는 것**이 목적이다 — 여기서 처음 잡힌
     Critical/Major 가 05 의 리뷰어 라우팅이 놓친 것이다.
+
+    대조는 둘이다.
+
+    ① **키 대조** — `sha1(category|target_role|title)`. 07 이 05 와 같은
+       이름을 붙였을 때만 맞는다.
+    ② **선언 대조** — 07 이 `reraised_from_previous` 로 05 의 열린 지적을
+       가리키면 그것도 dupe 다. 키만 보면 **07 이 같은 결함에 다른 이름을
+       붙였을 때 새 것으로 세고**, 그러면 지표가 05 를 실제보다 나쁘게 적는다
+       (M48). M21 이 05 라운드 안에서 고친 것과 같은 어휘를 경계에 둔다.
+
+    **자동 의미 dedup 이 아니다.** 07 이 선언하면 기계가 검증하는 것이고,
+    선언하지 않으면 여전히 새 것으로 센다. 자동으로 하려면 모델 호출이 하나
+    더 들고 그 비용의 근거가 아직 없다 — 보고서가 "선언 기반"임을 적는다.
     """
     seen = set()
     for row in ledger.read_all(root):
@@ -176,12 +189,33 @@ def escaped(root, findings, run_id):
         if row.get("finding_key"):
             seen.add(row["finding_key"])
 
+    open_keys = {k.get("key") for k in (previous_open or []) if k.get("key")}
+
     fresh, dupes = [], 0
     for f in findings or []:
         key = ledger.finding_key(f)
-        if key in seen:
+        if key in seen or f.get("reraised_from_previous") in open_keys:
             dupes += 1
             continue
         fresh.append(dict(f, finding_key=key))
     n = sum(1 for f in fresh if f.get("severity") in ("critical", "major"))
     return {"findings": fresh, "deduped": dupes, "escaped_05": n}
+
+
+def check_reraise(findings, previous_open):
+    """[오류 문자열]. 열려 있지 않은 것을 가리키면 그것은 회계가 아니다.
+
+    `verdict.check_review` 가 05 에서 하는 검사와 같은 형태다 — 가리킨 대상이
+    실재해야 선언이 대조 가능한 사실이 된다.
+    """
+    open_keys = {k.get("key") for k in (previous_open or []) if k.get("key")}
+    errors = []
+    for f in findings or []:
+        ref = f.get("reraised_from_previous")
+        if ref and ref not in open_keys:
+            errors.append(
+                "finding %s: `reraised_from_previous` 가 05 의 열린 지적을 "
+                "가리키지 않는다 (%r). 봉투의 「05 가 이미 낸 지적」 절에 있는 "
+                "키만 쓸 수 있다 — 없는 것을 가리키면 dedup 이 검증되지 않는다."
+                % (f.get("id"), ref))
+    return errors

@@ -1307,6 +1307,10 @@ def render_packet(root, phase, ctx, s, checks=None):
             parts.append(rv_render)
         parts.append(_vocabulary_render(root))
         parts.append(_excluded_render(root))
+    if pid == "07-pr-review":
+        # 07 이 05 와 같은 결함에 다른 이름을 붙이면 새 것으로 세어진다.
+        # 목록을 봉투가 직접 준다 — 모델이 재구성하면 그 재구성이 곧 결함이다 (M48).
+        parts.append(_open_from_05_render(_open_from_05(s)))
     warns = [c for c in (checks or []) if c.get("warn")]
     if warns:
         parts.append("## 경고\n\n" + "\n".join("- %s" % c["message"] for c in warns))
@@ -1835,6 +1839,38 @@ def _previous_open(rounds, round_, reviewer=None):
     if reviewer is not None:
         out = [k for k in out if k.get("reviewer") == reviewer]
     return out
+
+
+def _open_from_05(s):
+    """05 가 열어 둔 채 07 에 넘긴 지적. 07 의 dedup 선언이 가리킬 대상이다.
+
+    라운드 번호를 마지막보다 크게 잡아 **모든 회차**를 훑는다 — 05 는 이미
+    끝났고, 남은 물음은 "무엇이 열린 채로 왔나" 하나다 (M48).
+    """
+    node = (s.get("phases") or {}).get("05-code-review") or {}
+    rounds = node.get("rounds") or {}
+    if not rounds:
+        return []
+    return _previous_open(rounds, max(int(r) for r in rounds) + 1)
+
+
+def _open_from_05_render(open_):
+    """봉투가 목록을 직접 준다 — 모델이 재구성하면 그 재구성이 곧 결함이다."""
+    if not open_:
+        return ("## 05 가 이미 낸 지적\n\n(없다) — 05 가 연 채로 넘긴 것이 없다. "
+                "여기서 잡는 것은 전부 새 것이다.")
+    lines = ["## 05 가 이미 낸 지적 — 같은 것이면 가리켜라", "",
+             "아래는 05 가 **열어 둔 채** 넘긴 것이다. 같은 결함에 다른 이름을 "
+             "붙이면 기계는 새 것으로 세고, 그러면 `escaped_05` 가 05 를 실제보다 "
+             "나쁘게 적는다 (M48). 같은 것이면 그 finding 에 "
+             '`"reraised_from_previous": "<키>"` 를 단다.', ""]
+    for k in open_:
+        lines.append("- `%s` (`%s`, `%s`) — %s"
+                     % (k.get("key"), k.get("severity"), k.get("reviewer"),
+                        k.get("title_norm") or k.get("title") or "제목 없음"))
+    lines += ["", "**목록에 없는 키를 가리키면 exit 8 이다.** 새 것이면 아무것도 "
+                  "달지 않는다 — 안 다는 것이 기본이고, 다는 것이 주장이다."]
+    return "\n".join(lines)
 
 
 def _note_cross_verify_gap(s):
@@ -2589,6 +2625,9 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
             errors.append("finding %s: severity 가 어휘 밖이다 (%r)"
                           % (f.get("id"), f.get("severity")))
 
+    # 가리킨 대상이 실재해야 선언이 대조 가능한 사실이 된다 (M48).
+    errors += rv7.check_reraise(findings, _open_from_05(s))
+
     if payload.get("change_requested") and not findings:
         errors.append("`change_requested` 가 참인데 findings 가 비었다 — "
                       "무엇을 고치라는 것인지 없이 차단만 하는 제출이다.")
@@ -2598,7 +2637,8 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
                                      + ["- %s" % e for e in errors]),
                            None)
 
-    got = rv7.escaped(root, findings, s["run_id"])
+    open05 = _open_from_05(s)
+    got = rv7.escaped(root, findings, s["run_id"], previous_open=open05)
     # **dedup 은 버리는 것이 아니라 세는 것이다** — 여기서 처음 잡힌
     # Critical/Major 가 05 라우팅이 놓친 것이다.
     ledger.append(root, s["run_id"], "07",

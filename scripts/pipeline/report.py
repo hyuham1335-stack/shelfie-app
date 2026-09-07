@@ -215,7 +215,12 @@ def build(state, data, calibration, promotions):
         ("맥락 부족 요청", len(r05.get("need_more_context") or []) or 0),
         ("외부 리뷰", (r07.get("external") or {}).get("status")),
         ("내장 리뷰", r07.get("code_review")),
-        ("escaped_05", r07.get("escaped_05")),
+        # **이 지표를 그대로 읽으면 안 된다** (M48). 대조는 키 일치와 07 의
+        # 선언 둘이고, 07 이 같은 결함에 다른 이름을 붙이고 선언도 안 하면
+        # 여전히 새 것으로 세어진다. 접힌 수를 함께 적어 그 성격을 드러낸다.
+        ("escaped_05", "%s (05 와 접힘 %s · 키 일치 + 선언 대조)"
+         % (r07.get("escaped_05"), r07.get("deduped"))
+         if r07.get("escaped_05") is not None else None),
         ("감사 런", audit.get("is_audit_run")),
         # **01 의 관측 품질이 이 표에 없었다.** 05·07 만 적어서, 교차검증이
         # 다섯 라운드 내내 폴백이어도 보고서는 아무 말도 하지 않았다 (P3).

@@ -1,29 +1,29 @@
 {
-  "measured_at": "2026-09-07T13:18:19+0900",
+  "measured_at": "2026-09-07T17:44:48+0900",
   "adapter": "nextjs-ts",
   "adapter_verified": false,
   "partial": true,
   "stages": {
     "compile": {
-      "sec": 2.59,
+      "sec": 2.22,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-07T13:18:19+0900"
+      "measured_at": "2026-09-07T17:44:48+0900"
     },
     "lint": {
-      "sec": 7.8,
+      "sec": 8.62,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-07T13:18:19+0900"
+      "measured_at": "2026-09-07T17:44:48+0900"
     },
     "check": {
-      "sec": 8.64,
+      "sec": 1.83,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-07T13:18:19+0900"
+      "measured_at": "2026-09-07T17:44:48+0900"
     },
     "scoped": {
       "sec": 4.33,
@@ -35,14 +35,14 @@
       "stale_reason": "선택 대상 없음 — 계약이 있어야 측정된다. --select <test-name> 으로 수동 측정할 수 있다"
     },
     "full": {
-      "sec": 23.45,
+      "sec": 24.92,
       "ok": true,
       "exit_code": 0,
-      "tests_ran": 1353,
+      "tests_ran": 1352,
       "suites": 46,
       "failures": 0,
       "state": "measured",
-      "measured_at": "2026-09-07T13:18:19+0900"
+      "measured_at": "2026-09-07T17:44:48+0900"
     },
     "e2e": {
       "sec": null,
@@ -51,11 +51,11 @@
       "reason": "cmd:null — 이 스택에 없는 스테이지"
     },
     "build": {
-      "sec": 6.83,
+      "sec": 7.5,
       "ok": true,
       "exit_code": 0,
       "state": "measured",
-      "measured_at": "2026-09-07T13:18:19+0900"
+      "measured_at": "2026-09-07T17:44:48+0900"
     },
     "docs": {
       "sec": null,
@@ -72,14 +72,13 @@
   },
   "report_glob_matched": true,
   "infra": {
-    "anthropic_key": false,
-    "aladin_key": false
+    "anthropic_key": false
   },
   "derived": {
     "background_threshold_sec": 180,
     "background_full_regression": false,
     "full_timeout_sec": 300,
-    "tests_ran_floor": 1217,
+    "tests_ran_floor": 1216,
     "retry_budget": 2
   }
 }

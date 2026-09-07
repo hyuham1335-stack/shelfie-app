@@ -1070,15 +1070,34 @@ def _write_review05(s, node, planned, ok, merged, slot, round_=None):
         round_status[str(round_)] = this
     status = review_mod.worst_status(list(round_status.values()) or [this])
 
+    # **실적도 라운드를 가로질러 보존한다** (M43). 예전에는 `status` 만
+    # `round_status` 로 최악을 지키고 `planned`/`ok` 는 매 라운드 덮였다.
+    # 그래서 1회차에 셋이 돌아도 델타 라운드(1명)가 끝나면 `1/1` 로 적혀
+    # 보고서와 승인 프롬프트가 리뷰 실적을 축소했다. 그 필드는 "리뷰가
+    # 수행됐는가" 를 findings 개수와 분리하려고 만든 신호인데, 분모가
+    # 마지막 라운드로 줄면 그 뜻을 잃는다.
+    failed_now = sorted(c for c in planned
+                        if (slot.get(c) or {}).get("keys") is None
+                        and c in slot)
+    rounds = node.setdefault("round_reviewers", {})
+    if round_ is not None:
+        rounds[str(round_)] = {"planned": len(planned), "ok": ok,
+                               "failed": failed_now}
+    seen = list(rounds.values()) or [{"planned": len(planned), "ok": ok,
+                                      "failed": failed_now}]
+
     prev = s.get("review05") or {}
     s["review05"] = {
         "status": status,
         "round_status": dict(round_status),
-        "reviewers_planned": len(planned),
-        "reviewers_ok": ok,
-        "reviewers_failed": sorted(c for c in planned
-                                   if (slot.get(c) or {}).get("keys") is None
-                                   and c in slot),
+        # `max` 다. `status` 가 "런 안에서 좋아지지 않는다" 이므로 실적은
+        # 대칭으로 "런 안에서 줄지 않는다" 여야 한다. 그리고 **파생 수 하나로
+        # 덮지 않고 `rounds` 를 통째로 남긴다** — M31 이 회차 기록을 정수로
+        # 덮은 손실이었다 (ADR-H022).
+        "rounds": dict(rounds),
+        "reviewers_planned": max(r["planned"] for r in seen),
+        "reviewers_ok": max(r["ok"] for r in seen),
+        "reviewers_failed": sorted({c for r in seen for c in r["failed"]}),
         "mode": node.get("mode") or "fanout",
         "major": sum(1 for f in merged if f.get("severity") in verdict.BLOCKING),
         "need_more_context": [n for v in slot.values()

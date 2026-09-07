@@ -234,6 +234,9 @@ docs/harness/pipeline/runs/{run_id}.md          # 08 보고서
 {"contract":{"present":true,"sha256":"…"},
  "cross_verify":{"mode":"primary|fallback|skipped"},
  "review05":{"status":"ok|degraded|failed","reviewers_planned":3,"reviewers_ok":3,
+             "round_status":{"1":"ok","2":"ok"},
+             "rounds":{"1":{"planned":3,"ok":3,"failed":[]},
+                       "2":{"planned":1,"ok":1,"failed":[]}},
              "mode":"merged|fanout","major":0,"need_more_context":[],
              "dropped_by_enforcement":0,"truncated":false},
  "precheck":{"at_05":{"files":7,"lines":213,"base_behind":0,"infra":{}},"at_06":{}},
@@ -597,6 +600,13 @@ stateDiagram-v2
 | `ok` | 계획된 리뷰어가 **전부** 유효 JSON을 제출 |
 | `degraded` | 1개 이상 실패했지만 1개 이상 성공 |
 | `failed` | 전부 실패, 또는 계획된 리뷰어가 0개 |
+
+**`reviewers_planned`·`reviewers_ok` 도 라운드를 가로질러 보존한다** (M43).
+`status` 가 "런 안에서 좋아지지 않는다" 이므로 실적은 대칭으로 **"런 안에서
+줄지 않는다"** — 두 값은 라운드별 기록의 **최댓값**이다. 매 라운드 덮으면
+1회차에 셋이 돌아도 델타 라운드(1명)가 끝나는 순간 `1/1` 로 적혀, 보고서와
+승인 프롬프트가 리뷰 실적을 축소한다. 파생 수 하나로 덮지 않고 회차별 기록을
+`review05.rounds` 에 통째로 남긴다 — 정수로 덮는 것이 M31 의 손실이었다.
 
 ### 3.6 `06-pr` — 승인 · push · PR
 

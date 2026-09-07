@@ -4219,6 +4219,46 @@ class TestReview05DeltaRound:
         node["mode"] = "fanout"
         return run_id, paths, s, node
 
+    def test_델타_라운드가_1회차_리뷰어_수를_지우지_않는다(self, repo):
+        """M43 — 1회차에 셋이 돌았는데 상태가 `1/1` 로 기록됐다."""
+        s, node = {}, {}
+        cli._write_review05(s, node, ["data", "sec", "arch"], 3, [],
+                            {"data": {"keys": []}, "sec": {"keys": []},
+                             "arch": {"keys": []}}, round_=1)
+        cli._write_review05(s, node, ["arch"], 1, [],
+                            {"arch": {"keys": []}}, round_=2)
+        got = s["review05"]
+        assert got["reviewers_planned"] == 3, got
+        assert got["reviewers_ok"] == 3, got
+        assert got["rounds"]["1"]["planned"] == 3, got["rounds"]
+        assert got["rounds"]["2"]["planned"] == 1, got["rounds"]
+
+    def test_status_는_델타_뒤에도_최악을_보존한다(self, repo):
+        """이 수정이 만들 수 있는 유일한 회귀를 잠근다.
+
+        실적을 최댓값으로 접는다고 `status` 까지 새 값에서 유도하면 델타
+        라운드가 1회차의 `degraded` 를 지운다.
+        """
+        s, node = {}, {}
+        cli._write_review05(s, node, ["data", "sec", "arch"], 2, [],
+                            {"data": {"keys": []}, "sec": {"keys": []},
+                             "arch": {"keys": None}}, round_=1)
+        cli._write_review05(s, node, ["arch"], 1, [],
+                            {"arch": {"keys": []}}, round_=2)
+        got = s["review05"]
+        assert got["status"] == "degraded", got
+        assert got["reviewers_planned"] == 3, got
+        assert got["reviewers_ok"] == 2, got
+
+    def test_실패한_리뷰어가_라운드를_넘어_남는다(self, repo):
+        s, node = {}, {}
+        cli._write_review05(s, node, ["data", "arch"], 1, [],
+                            {"data": {"keys": None}, "arch": {"keys": []}},
+                            round_=1)
+        cli._write_review05(s, node, ["arch"], 1, [],
+                            {"arch": {"keys": []}}, round_=2)
+        assert s["review05"]["reviewers_failed"] == ["data"], s["review05"]
+
     def test_worst_status_is_a_pure_function(self, repo):
         assert rv.worst_status(["ok", "degraded"]) == "degraded"
         assert rv.worst_status(["degraded", "ok"]) == "degraded"

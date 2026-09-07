@@ -44,7 +44,7 @@ import { aladinCandidateSchema, aladinFactsSchema } from "@/lib/schemas";
 type AladinCandidate = z.infer<typeof aladinCandidateSchema>;
 type AladinFacts = z.infer<typeof aladinFactsSchema>;
 
-/** 알라딘 조회 동시성 상한 (TR-004). 상한 없이 80건을 한꺼번에 던지지 않는다 */
+/** 알라딘 조회 동시성 상한 (TR-004). 상한 없이 65건을 한꺼번에 던지지 않는다 */
 export const ALADIN_CONCURRENCY = 12;
 
 /** 같은 요청 안에서 연속 이만큼 실패하면 브레이커를 연다 (TRD 7번 요청 스코프 브레이커) */
@@ -81,9 +81,9 @@ const ALADIN_API_VERSION = "20131101";
  *
  * 인스턴스 간 브레이커는 공유 스토어가 필요해 Scale로 미뤄져 있지만, 한 요청
  * 안에서는 인메모리로 얼마든지 가능하다. 이것이 없으면 알라딘이 완전히 다운됐을
- * 때 한 요청이 후보 80건 × (호출 1 + 재시도 1) = **최대 160회의 실패 호출**을
- * 던지고, 12s 대조 예산을 타임아웃으로만 소진한 뒤에야 끝난다. 이미 죽은 서비스를
- * 계속 두드리는 것은 우리에게도 상대에게도 손해다 (TRD 7번).
+ * 때 한 요청이 후보 65건(`MAX_CANDIDATES_FOR_LOOKUP`) × (호출 1 + 재시도 1) =
+ * **최대 130회의 실패 호출**을 던지고, 12s 대조 예산을 타임아웃으로만 소진한 뒤에야
+ * 끝난다. 이미 죽은 서비스를 계속 두드리는 것은 우리에게도 상대에게도 손해다 (TRD 7번).
  */
 export interface RequestBreaker {
   isOpen(): boolean;
@@ -271,12 +271,14 @@ export type FactsOutcome = { status: "ok"; facts: AladinFacts } | { status: "fai
  * ISBN13으로 서지 사실(`pages`·`aladinRating`·`aladinLink`)을 채운다.
  *
  * ## 왜 확인으로 승격된 책에만 부르는가 (호출 수 재검토)
- * 대조 예산은 12s인데 후보 80건 × (ItemSearch + ItemLookUp) = 최대 160회를 그
+ * 대조 예산은 12s인데 후보 65건 × (ItemSearch + ItemLookUp) = 최대 130회를 그
  * 안에 넣을 수 없다. 그래서 **ItemLookUp은 `judge()`가 확인으로 승격시킨 책에만**
  * 호출한다 — 미확인 책은 화면에 원문과 사유만 보여 주므로 사실 필드가 애초에
  * 필요 없다(API_SPEC의 `UnidentifiedBook`에는 `pages`도 `aladinRating`도 없다).
- * 승격은 후보보다 훨씬 적고 50권 상한(FR-005) 아래이므로, 추가 호출은 후보 수가
- * 아니라 확인된 책 수에 비례한다. 배치 조회는 택하지 않았다 — 알라딘 ItemLookUp은
+ * 다만 이 단계를 묶는 상한은 `MAX_CANDIDATES_FOR_LOOKUP`(65)이지 `MAX_IDENTIFIED_BOOKS`가
+ * 아니다 — 50권 절단(FR-005)은 `capIdentified`가 라우트에서 조회가 **끝난 뒤**에
+ * 거는 것이라 호출 수를 한 건도 줄이지 못한다. 승격된 책은 조회 대상의 부분집합이므로
+ * 최악의 경우 둘은 같은 수다. 배치 조회는 택하지 않았다 — 알라딘 ItemLookUp은
  * `ItemId` 하나만 받는다.
  *
  * ## 사실을 못 채우면 확인으로 올리지 않는다 (ADR-002)

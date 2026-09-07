@@ -61,14 +61,12 @@ function 확인(overrides: Partial<확인된책> & { isbn13: string }): 확인�
  * 깨진다 — 후보 상한 200이면 `200 × 2 × 2 = 800 > 260`이다.
  */
 describe("세션당 알라딘 호출 상한 (TRD 10번 — 문서에만 있는 상한은 검증되지 않은 상한이다)", () => {
-  it("실행 경로의 유도값이 선언된 상한을 넘지 않는다 — 검색·조회 두 단계가 같은 수를 태운다", () => {
+  it("실행 경로의 유도값이 선언된 상한과 같다 — 검색·조회 두 단계가 같은 수를 태운다", () => {
+    // `≤`가 아니라 **동등**이다. 상한 쪽만 올려서 통과시키는 길을 막는다 —
+    // `MAX_ALADIN_CALLS_PER_SESSION`을 9999로 올리면 여기서 깨진다.
     const 유도값 = MAX_CANDIDATES_FOR_LOOKUP * 2 * ALADIN_CALLS_PER_LOOKUP;
 
-    expect(유도값).toBeLessThanOrEqual(MAX_ALADIN_CALLS_PER_SESSION);
-  });
-
-  it("한 조회는 최대 2회의 HTTP 호출을 낸다 — services/aladin.ts의 호출 1회 + 조건부 재시도 1회", () => {
-    expect(ALADIN_CALLS_PER_LOOKUP).toBe(2);
+    expect(유도값).toBe(MAX_ALADIN_CALLS_PER_SESSION);
   });
 
   it("reduceBeforeLookup이 실제로 그 상한 안에서 자른다 — 후보 300건도 조회는 상한만큼뿐이다", () => {

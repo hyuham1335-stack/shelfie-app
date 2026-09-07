@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ALADIN_CALLS_PER_LOOKUP } from "@/lib/env";
 import { aladinFactsSchema } from "@/lib/schemas";
 
 import {
@@ -288,7 +289,7 @@ describe("searchByTitle — 실패는 failed로 나른다 (ADR-005 회귀)", () 
     expect(outcome).toEqual({ status: "failed" });
   });
 
-  it("5xx는 1회 재시도한다 (호출 2회)", async () => {
+  it("5xx는 1회 재시도한다 — 실측 호출 수가 ALADIN_CALLS_PER_LOOKUP과 같다", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { impl, calls } = alwaysRespond(() => jsonResponse({}, 503));
 
@@ -297,7 +298,9 @@ describe("searchByTitle — 실패는 failed로 나른다 (ADR-005 회귀)", () 
       fetchImpl: impl,
     });
 
-    expect(calls).toHaveLength(2);
+    // **동등**이다. 상수를 3으로 올리면 실측은 2라 여기서 깨진다 — 그것이
+    // `lib/env.ts`의 선언과 `services/aladin.ts`의 재시도 정책을 이어 두는 유일한 줄이다.
+    expect(calls).toHaveLength(ALADIN_CALLS_PER_LOOKUP);
   });
 
   it("5xx 재시도가 성공하면 ok다", async () => {
@@ -330,7 +333,7 @@ describe("searchByTitle — 실패는 failed로 나른다 (ADR-005 회귀)", () 
     expect(calls).toHaveLength(1);
   });
 
-  it("네트워크 오류는 failed이고 1회 재시도한다", async () => {
+  it("네트워크 오류는 failed이고 1회 재시도한다 — 실측 호출 수가 ALADIN_CALLS_PER_LOOKUP과 같다", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { impl, calls } = stubFetch(async () => {
       throw new TypeError("fetch failed");
@@ -342,7 +345,7 @@ describe("searchByTitle — 실패는 failed로 나른다 (ADR-005 회귀)", () 
     });
 
     expect(outcome).toEqual({ status: "failed" });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(ALADIN_CALLS_PER_LOOKUP);
   });
 
   it("타임아웃(데드라인 소진)은 failed이고, 남은 예산이 없으므로 재시도하지 않는다", async () => {
@@ -815,14 +818,16 @@ describe("lookupFacts — 검증 경계 (ADR-002)", () => {
 });
 
 describe("lookupFacts — 실패는 failed로 나른다 (ADR-005 회귀. 이 블록은 삭제하지 않는다)", () => {
-  it("500이면 failed이고 1회 재시도한다", async () => {
+  it("500이면 failed이고 1회 재시도한다 — 실측 호출 수가 ALADIN_CALLS_PER_LOOKUP과 같다", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { impl, calls } = alwaysRespond(() => jsonResponse({}, 500));
 
     expect(await lookupFacts(ISBN13, { deadlineMs: AMPLE_DEADLINE_MS, fetchImpl: impl })).toEqual({
       status: "failed",
     });
-    expect(calls).toHaveLength(2);
+    // 유도식이 `× 2단계`라 ItemSearch(`searchByTitle`)와 ItemLookUp(`lookupFacts`)
+    // **둘 다** 상수를 태운다. 한쪽만 잠그면 유도식의 절반만 검사된다.
+    expect(calls).toHaveLength(ALADIN_CALLS_PER_LOOKUP);
   });
 
   it("타임아웃은 failed다", async () => {

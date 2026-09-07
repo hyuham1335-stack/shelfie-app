@@ -144,9 +144,33 @@ def _diff_stat(root, config):
     return r.stdout.strip()
 
 
+_INTENT = re.compile(r"(?s)<!--\s*INTENT\s*(\{.*?\})\s*-->")
+
+
 def _inv_block(plan_text):
-    """01 의 INV(불변) 블록. 없으면 없다고 적는다 — 지어내지 않는다."""
-    m = re.search(r"(?ms)^#{2,}\s*INV.*?(?=^##\s|\Z)", plan_text)
+    """01 의 INV(불변) 목록. 없으면 없다고 적는다 — 지어내지 않는다.
+
+    **INV 는 헤딩이 아니라 `<!-- INTENT {...} -->` JSON 주석 안에 있다**
+    (`01-plan.md` 의 산출물 형태). 헤딩만 찾던 예전 구현은 이 리포의 모든
+    플랜에서 빈 문자열을 돌려줬고, 본문이 "01 의 INV 블록이 없다" 고
+    **없는 결손을 보고**했다 (M42).
+
+    헤딩 폴백을 남긴다 — 다른 스택이 헤딩을 쓸 수 있고, `01-plan.md` 는 짧은
+    요청에서 INV 블록을 생략한다고도 적는다. 둘 다 없으면 빈 문자열이고,
+    **그때는 "없다" 가 참이다.**
+    """
+    m = _INTENT.search(plan_text or "")
+    if m:
+        try:
+            inv = (json.loads(m.group(1)) or {}).get("invariants") or []
+        except ValueError:
+            inv = []
+        rows = ["- **%s** `%s` — %s" % (i.get("id"), i.get("kind"),
+                                        i.get("text"))
+                for i in inv if isinstance(i, dict) and i.get("id")]
+        if rows:
+            return "\n".join(rows)
+    m = re.search(r"(?ms)^#{2,}\s*INV.*?(?=^##\s|\Z)", plan_text or "")
     return m.group(0).strip() if m else ""
 
 
@@ -169,11 +193,28 @@ def _contract_sections(root, state, config):
 
 
 def _adopted(paths):
+    """02 의 **채택 판정**. `reject` 도 뺴지 않는다.
+
+    `adopted[]` 는 "채택된 것" 이 아니라 판정이고(`02-cross-verify.md` 절차 4),
+    거부를 감추면 본문이 거짓말을 한다. 이유도 자르지 않는다 — 자르면 거부
+    근거가 사라지고 그것이 이 절의 유일한 값이다.
+
+    원소가 dict 가 아니면 `str` 로 떨어뜨린다 (M41). 스키마가 문자열을 금하지
+    않고, 본문 조립 중에 예외를 던지면 06 이 죽는다.
+    """
     try:
         d = json.loads(_read(paths.run_dir / "02_verdict.json") or "{}")
     except ValueError:
         return []
-    return [str(a) for a in (d.get("adopted") or [])]
+    out = []
+    for a in d.get("adopted") or []:
+        if isinstance(a, dict) and a.get("id"):
+            head = "**%s** `%s`" % (a.get("id"), a.get("verdict") or "판정 없음")
+            reason = (a.get("reason") or "").strip()
+            out.append("%s — %s" % (head, reason) if reason else head)
+        else:
+            out.append(str(a))
+    return out
 
 
 def _minor_open(paths):
@@ -186,6 +227,28 @@ def _minor_open(paths):
         if f.get("severity") == "minor":
             out.append(f.get("title") or f.get("finding_key") or "제목 없음")
     return out
+
+
+REQUEST_QUOTE_LIMIT = 1200
+
+
+def _quoted_request(path):
+    """(인용문, 절단 안내). **줄 경계에서 자르고 잘랐다고 적는다** (M42).
+
+    예전에는 문자 수로 잘라 문장 중간에서 끊었고 **끊었다는 말을 안 했다.**
+    상한 자체는 유지한다 — 포지가 본문 크기를 제한하므로 무한정 실을 수
+    없다. 경계 절단 + 명시가 상한값과 무관하게 정직하다.
+    """
+    full = _read(path) or ""
+    if len(full) <= REQUEST_QUOTE_LIMIT:
+        return full.strip(), ""
+    cut = full[:REQUEST_QUOTE_LIMIT]
+    nl = cut.rfind("\n")
+    if nl > 0:
+        cut = cut[:nl]
+    return (cut.strip(),
+            "_(요청 원문 %d자 중 앞 %d자다. 전문은 `%s` 에 있다.)_"
+            % (len(full), len(cut.strip()), path.name))
 
 
 def _check_mark(v):
@@ -205,7 +268,7 @@ def build_body(root, paths, state, config):
         grade, (" (" + ", ".join(gaps) + ")" if gaps else ""))
 
     inv = _inv_block(_read(paths.run_dir / "01_plan.md"))
-    request = _read(paths.request, limit=1200).strip()
+    request, request_note = _quoted_request(paths.request)
     units = _contract_sections(root, state, config)
     stat = _diff_stat(root, config)
     adopted = _adopted(paths)
@@ -231,6 +294,8 @@ def build_body(root, paths, state, config):
     lines += ["**원본 요청**", ""]
     lines += ["> " + request.replace("\n", "\n> ") if request
               else "_요청 원문이 없다._", ""]
+    if request_note:
+        lines += [request_note, ""]
     lines += ["## 작업 내용", ""]
     lines += [units or "_계약의 유닛·진입점 절이 없다 (no_contract)._", ""]
     lines += ["- 변경 규모: %s" % stat, ""]

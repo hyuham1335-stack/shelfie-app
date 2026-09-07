@@ -4969,6 +4969,90 @@ class TestPr06Preflight:
         assert env["exit"] == 9
 
 
+class TestPr06BodyTruth:
+    """M41·M42 — 본문이 파이썬 repr 을 찍고 없는 결손을 보고했다."""
+
+    def _body(self, repo, paths, s):
+        return pr_mod.build_body(repo, paths, s,
+                                 harness._read_json(repo / harness.CONFIG_REL))
+
+    def _verdict(self, paths, adopted):
+        (paths.run_dir / "02_verdict.json").write_text(
+            json.dumps({"reviewer": "xv", "adopted": adopted},
+                       ensure_ascii=False), encoding="utf-8")
+
+    def _plan(self, paths, text):
+        (paths.run_dir / "01_plan.md").write_text(text, encoding="utf-8")
+
+    def test_채택_판정이_파이썬_repr_로_나가지_않는다(self, repo, request_file,
+                                                    phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._verdict(paths, [{"id": "F-1", "verdict": "reject",
+                               "reason": "관계의 한쪽 끝이 외부가 아니다"}])
+        body = self._body(repo, paths, s)
+        assert "{'id'" not in body, body
+        assert "F-1" in body and "reject" in body, body
+        assert "관계의 한쪽 끝이 외부가 아니다" in body, body
+
+    def test_문자열_원소도_받는다(self, repo, request_file, phases):
+        """스키마가 문자열을 금하지 않는다. 본문 조립 중 예외는 06 을 죽인다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._verdict(paths, ["F-1 을 채택했다"])
+        assert "F-1 을 채택했다" in self._body(repo, paths, s)
+
+    def test_INTENT_블록의_INV_가_본문에_나온다(self, repo, request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        intent = json.dumps({"invariants": [
+            {"id": "INV-1", "kind": "must", "text": "상한을 바꾸지 않는다"},
+            {"id": "INV-2", "kind": "must_not", "text": "로직을 고치지 않는다"}]},
+            ensure_ascii=False)
+        self._plan(paths, "<!-- INTENT " + intent + " -->" + chr(10) * 2 +
+                   "# 플랜" + chr(10))
+        body = self._body(repo, paths, s)
+        assert "INV-1" in body and "상한을 바꾸지 않는다" in body, body
+        assert "INV-2" in body, body
+        assert "INV 블록이 없다" not in body, body
+
+    def test_INV_가_진짜_없으면_없다고_적는다(self, repo, request_file, phases):
+        """수정이 내용을 지어내지 않게 잠근다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._plan(paths, "# 플랜" + chr(10) + chr(10) + "본문뿐이다." + chr(10))
+        assert "INV 블록이 없다" in self._body(repo, paths, s)
+
+    def test_헤딩_형태의_INV_도_받는다(self, repo, request_file, phases):
+        """다른 스택은 헤딩을 쓸 수 있다 — 폴백을 남긴다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        self._plan(paths, "## INV" + chr(10) * 2 + "- INV-9 지키는 것" +
+                   chr(10) * 2 + "## 다음" + chr(10))
+        body = self._body(repo, paths, s)
+        assert "INV-9" in body and "INV 블록이 없다" not in body, body
+
+    def test_요청_인용이_경계에서_끊기고_끊긴_사실을_적는다(self, repo,
+                                                          request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _pp, s = st.load(repo, run_id)
+        long_req = (chr(10)).join("%d 번째 줄이다. 문장이 여기서 끝난다." % i
+                                  for i in range(200))
+        paths.request.write_text(long_req, encoding="utf-8")
+        body = self._body(repo, paths, s)
+        quoted = [l for l in body.splitlines() if l.startswith("> ")]
+        assert quoted, body
+        # 마지막 인용 줄이 문장 중간에서 잘리지 않았다
+        assert quoted[-1].rstrip().endswith("끝난다."), quoted[-1]
+        assert "원문" in body and str(len(long_req)) in body, body
+
+
 class TestPr06Body:
 
     def test_본문_최상단이_완료_등급_한_줄이다(self, repo, request_file, phases):

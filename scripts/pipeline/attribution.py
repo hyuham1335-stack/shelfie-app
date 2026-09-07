@@ -289,11 +289,35 @@ def resolve_ambiguous(failures, config, flip_state):
     return out
 
 
-def dispatch(failures, config, prev_sigs, flip_state):
-    """소유자별 배정. 같은 대상을 공유하면 하나만 보낸다."""
+def owner_sig(failure):
+    """정체 감지가 세는 단위. **시그니처가 아니라 (소유자, 시그니처) 다.**
+
+    `signature()` 는 소유자를 해시 입력에 넣지만 그 소유자는 `resolve_ambiguous`
+    가 돌기 **전** 값이라, ambiguous 실패의 sig 는 문자열 `"ambiguous"` 로 굳어
+    라운드를 넘어 똑같이 유지된다. 그래서 sig 만 세면 flip 이 다음 역할을
+    배정한 바로 그 라운드에 정체 감지가 먼저 멈추고, **배정이 지시로 나가지
+    못한 채 버려진다** — ambiguous 실패는 두 역할 중 한쪽만 시도해 보게 된다
+    (M33 · P3 가 실물에서 밟았다).
+
+    배정 **뒤의** 소유자를 붙이면 그 둘이 더 이상 같은 조건이 아니다.
+    """
+    return "%s|%s" % (failure.get("owner"), failure.get("sig"))
+
+
+def dispatch(failures, config, prev_sigs, flip_state, stuck_after=2):
+    """소유자별 배정. 같은 대상을 공유하면 하나만 보낸다.
+
+    `prev_sigs` 는 이전 라운드들의 **쌍** 목록이다(`owner_sig`). `stuck_after`
+    는 04 프론트매터의 `loop.stuck_after_identical` 이고, 그 값이 코드에 닿는
+    유일한 경로다 — 예전에는 선언만 있고 `2` 가 여기 박혀 있어 값을 3 으로
+    바꿔도 동작이 안 변했다.
+    """
     resolved = resolve_ambiguous(failures, config, flip_state)
     sigs = [f["sig"] for f in resolved]
-    stuck = any(s in (prev_sigs or []) for s in sigs)
+    pairs = [owner_sig(f) for f in resolved]
+    prior = list(prev_sigs or [])
+    threshold = max(int(stuck_after or 2), 1) - 1
+    stuck = any(prior.count(p) >= threshold for p in pairs) if threshold else True
 
     by_owner = {}
     for f in resolved:
@@ -312,7 +336,7 @@ def dispatch(failures, config, prev_sigs, flip_state):
     if len(owners) <= 1 or disjoint:
         return {"by_owner": by_owner, "owner": owners[0] if owners else None,
                 "parallel": len(owners) > 1, "deferred": [], "stuck": stuck,
-                "sigs": sigs, "failures": resolved}
+                "sigs": sigs, "pairs": pairs, "failures": resolved}
 
     chosen = max(owners, key=lambda o: len(by_owner[o]))
     deferred = [{"owner": o, "failure_count": len(by_owner[o]),
@@ -320,7 +344,7 @@ def dispatch(failures, config, prev_sigs, flip_state):
                 for o in owners if o != chosen]
     return {"by_owner": {chosen: by_owner[chosen]}, "owner": chosen,
             "parallel": False, "deferred": deferred, "stuck": stuck,
-            "sigs": sigs, "failures": resolved}
+            "sigs": sigs, "pairs": pairs, "failures": resolved}
 
 
 # ------------------------------------------------------------- clean_ownership

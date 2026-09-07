@@ -2361,8 +2361,10 @@ def run_gate_cmd(root, phase="04", only_stage=None, replay=None, run_id=None):
     log_text = ""
     if log_path.exists():
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    dispatch = gate_mod.attribute(root, config, adapter, report, s,
-                                  replay=replay, log_text=log_text)
+    dispatch = gate_mod.attribute(
+        root, config, adapter, report, s, replay=replay, log_text=log_text,
+        stuck_after=((phase_item["front"].get("loop") or {})
+                     .get("stuck_after_identical") or 2))
 
     if report.get("tests"):
         s["tests"] = report["tests"]
@@ -2410,8 +2412,14 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
         return _escalation_envelope("gate", paths, s)
 
     if dispatch.get("stuck"):
+        # **소유자를 이름으로 적는다.** "같은 실패가 두 번" 만으로는 누구에게
+        # 두 번 보냈는지가 안 보이고, 그것이 다음 판단(계약을 고칠 것인가
+        # 범위를 줄일 것인가)에 필요한 사실이다.
         st.escalate(paths, s,
-                    "동일 실패 시그니처가 연속 2회다 — 예산이 남아도 멈춘다",
+                    "같은 실패를 같은 소유자(%s)에게 되풀이해 보냈다 — "
+                    "예산이 남아도 멈춘다 (%s)"
+                    % (dispatch.get("owner") or "?",
+                       ", ".join(dispatch.get("pairs") or [])[:200]),
                     ["계약을 고쳐 다시 돌린다", "범위를 줄인다", "중단한다"],
                     phase="04-gate")
         return _escalation_envelope("gate", paths, s)
@@ -2419,7 +2427,9 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
     loop = phase_item["front"].get("loop") or {}
     used, max_, exceeded = st.counter_inc(s, loop.get("counter") or "repair",
                                           loop.get("max") or 3)
-    s.setdefault("sig_chain", []).extend(dispatch.get("sigs") or [])
+    # **쌍을 쌓는다** — `owner|sig`. 시그니처만 쌓으면 flip 이 배정한 다음 역할이
+    # 지시를 받기 전에 정체 감지가 먼저 멈춘다 (M33).
+    s.setdefault("sig_chain", []).extend(dispatch.get("pairs") or [])
     st.set_phase_status(s, "04-gate", "failed")
     st.save(paths, s)
 

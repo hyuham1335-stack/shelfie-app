@@ -230,8 +230,14 @@ def _tests_signal(root, adapter, calibration, results, report_root):
 
 # ------------------------------------------------------------------ 귀속
 
-def attribute(root, config, adapter, report, state, replay=None, log_text=""):
-    """실패를 역할에 귀속한다. 반환은 dispatch dict 또는 None(실패 없음)."""
+def attribute(root, config, adapter, report, state, replay=None, log_text="",
+              stuck_after=2):
+    """실패를 역할에 귀속한다. 반환은 dispatch dict 또는 None(실패 없음).
+
+    `stuck_after` 는 04 프론트매터의 `loop.stuck_after_identical` 이다. 호출부가
+    그 값을 넘기지 않으면 명세의 기본값 2 를 쓴다 — 예전에는 넘길 자리조차 없어
+    선언이 코드에 닿지 않았다 (M33).
+    """
     failed = report.get("failed")
     if failed is None:
         return None
@@ -267,5 +273,7 @@ def attribute(root, config, adapter, report, state, replay=None, log_text=""):
                      "sig": attr.signature("ambiguous", failed["id"], "stage", text)}]
 
     flip = (state or {}).setdefault("flip", {})
+    # **쌍이다.** `sig_chain` 은 `owner|sig` 를 쌓는다 — 시그니처만 세면 flip 이
+    # 값을 낼 바로 그 라운드에 정체 감지가 먼저 멈춘다 (M33).
     prev = (state or {}).get("sig_chain") or []
-    return attr.dispatch(failures, config, prev, flip)
+    return attr.dispatch(failures, config, prev, flip, stuck_after=stuck_after)

@@ -1697,8 +1697,68 @@ class TestAttribution:
 
     def test_same_signature_twice_is_stuck(self, repo, config):
         failures = [{"id": "F-1", "owner": "impl", "sig": "a", "frames": []}]
-        got = attr.dispatch(failures, config, prev_sigs=["a"], flip_state={})
+        got = attr.dispatch(failures, config, prev_sigs=["impl|a"], flip_state={})
         assert got["stuck"] is True, "예산이 남아도 즉시 에스컬레이션이다"
+
+    # --- M33. 정체 감지는 시그니처가 아니라 (소유자, 시그니처) 를 센다 -------
+
+    def test_a_flip_gets_its_turn_before_stuck(self, repo, config):
+        """**P3 가 밟은 경로다.** flip 이 다음 역할을 배정한 바로 그 라운드에
+        정체 감지가 먼저 멈추면, 그 배정은 지시로 나가지 못하고 버려진다.
+        ambiguous 실패는 구조적으로 두 역할 중 한쪽만 시도해 보게 된다.
+        """
+        failure = {"id": "F-1", "owner": "ambiguous", "sig": "a", "frames": []}
+        flip, chain = {}, []
+
+        # 예전 코드가 체인에 쌓던 것은 **순수 시그니처**였고, ambiguous 실패의
+        # 그 값은 라운드를 넘어 안 바뀌므로 2회차를 반드시 멈춰 세웠다.
+        assert attr.dispatch([dict(failure)], config, ["a"], {})["stuck"] is False, \
+            "시그니처만으로 정체를 세면 flip 이 값을 낼 기회가 없다"
+
+        first = attr.dispatch([dict(failure)], config, chain, flip)
+        assert first["owner"] == "impl"
+        assert first["stuck"] is False
+        chain.extend(first["pairs"])
+
+        second = attr.dispatch([dict(failure)], config, chain, flip)
+        assert second["owner"] == "test", "flip 이 다음 역할로 넘겼다"
+        assert second["stuck"] is False, "그 배정은 지시로 나가야 한다"
+        chain.extend(second["pairs"])
+
+        third = attr.dispatch([dict(failure)], config, chain, flip)
+        assert third["owner"] == "contract", "역할을 다 돌면 계약 결함이다"
+        assert third["stuck"] is False
+
+    def test_the_same_owner_twice_is_still_stuck(self, repo, config):
+        """경로에서 소유자가 정해진 실패는 쌍이 1회차부터 고정이다."""
+        failure = {"id": "F-1", "owner": "impl", "sig": "a", "frames": []}
+        chain = []
+        first = attr.dispatch([dict(failure)], config, chain, {})
+        assert first["stuck"] is False
+        chain.extend(first["pairs"])
+        second = attr.dispatch([dict(failure)], config, chain, {})
+        assert second["stuck"] is True, "같은 소유자에게 같은 실패를 두 번 보냈다"
+
+    def test_stuck_after_identical_is_read_not_hardcoded(self, repo, config):
+        """`stuck_after_identical` 은 프론트매터에만 있고 코드가 안 읽었다 —
+        값을 3 으로 바꿔도 2회차에 멈췄다.
+        """
+        failure = {"id": "F-1", "owner": "impl", "sig": "a", "frames": []}
+        chain = ["impl|a"]
+        got = attr.dispatch([dict(failure)], config, chain, {}, stuck_after=3)
+        assert got["stuck"] is False, "3회 설정이면 2회차에 안 멈춘다"
+        chain.extend(got["pairs"])
+        again = attr.dispatch([dict(failure)], config, chain, {}, stuck_after=3)
+        assert again["stuck"] is True, "3회차에 멈춘다"
+
+    def test_dispatch_reports_pairs_and_sigs_separately(self, repo, config):
+        """`sigs` 는 `attribution.json` 기록용으로 남는다 — 쌍이 그것을 대체하지
+        않는다. 무엇으로 셌는지와 무엇이 실패했는지는 다른 사실이다.
+        """
+        failure = {"id": "F-1", "owner": "ambiguous", "sig": "a", "frames": []}
+        got = attr.dispatch([dict(failure)], config, [], {})
+        assert got["sigs"] == ["a"]
+        assert got["pairs"] == ["impl|a"], "쌍은 배정된 소유자를 담는다"
 
 
 # ---------------------------------------------------------------------------
@@ -1933,6 +1993,17 @@ class TestGateReplay:
         assert first["exit"] == 4
         second = _gate(repo, fx)
         assert second["exit"] == 10, "동일 시그니처 2회면 예산이 남아도 멈춘다"
+
+    def test_the_sig_chain_carries_the_owner(self, gated, fxdir):
+        """M33 — 원장에 쌓이는 것이 시그니처가 아니라 `owner|sig` 쌍이다."""
+        repo, paths, s = gated
+        stages = dict(ALL_PASS, compile={"exit": 2})
+        log = "src/lib/match.ts(9,3): error TS2322: Type mismatch.\n"
+        fx = make_fixture(fxdir, "chain-owner", stages, stdouts={"compile": log})
+        _gate(repo, fx)
+        _, after = st.load(repo, paths.run_id)
+        chain = after.get("sig_chain") or []
+        assert chain and all(c.startswith("impl|") for c in chain), chain
 
     def test_single_stage_run_spends_no_counter_and_keeps_the_report(self, gated, fxdir):
         repo, paths, s = gated

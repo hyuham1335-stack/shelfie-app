@@ -150,9 +150,12 @@ class TestEnvelope:
 
     def test_state_summary_carries_counters(self, repo, request_file):
         _, s = st.create_run(repo, "demo", request_file)
-        st.counter_inc(s, "repair", 3)
+        st.counter_inc(s, "repair", 3, "gate_failure")
         env = st.envelope("gate", False, 4, s, {}, "", None)
-        assert env["state_summary"]["counters"]["repair"] == {"used": 1, "max": 3}
+        got = env["state_summary"]["counters"]["repair"]
+        assert (got["used"], got["max"]) == (1, 3), got
+        # 소모 사유가 상태에 함께 있다 (M47) — 봉투가 그것을 지우지 않는다.
+        assert [x["reason"] for x in got["spent"]] == ["gate_failure"], got
         assert env["state_summary"]["escalated"] is False
         assert env["run_id"] == s["run_id"]
 
@@ -386,8 +389,84 @@ class TestCounters:
 
     def test_inc_reports_exceeded_at_the_limit(self, repo, request_file):
         _, s = st.create_run(repo, "demo", request_file)
-        assert st.counter_inc(s, "repair", 2) == (1, 2, False)
-        assert st.counter_inc(s, "repair", 2) == (2, 2, True)
+        assert st.counter_inc(s, "repair", 2, "gate_failure") == (1, 2, False)
+        assert st.counter_inc(s, "repair", 2, "gate_failure") == (2, 2, True)
+
+
+class TestCounterSpendReason:
+    """예산을 **무엇에 썼는지**가 원장에 남는가 (M47).
+
+    `counter_inc` 이벤트 어휘는 `state.EVENT_KINDS` 에 처음부터 있었고, 바로
+    아래 주석이 그 취지를 적는다 — "뭉치면 원장에서 다섯 라운드를 쓴 런과 세
+    라운드를 쓰고 둘을 더 받은 런이 같아 보인다". **그런데 일곱 호출처 중
+    `retry` 한 곳만 이벤트를 냈다.**
+
+    P6 의 `events.jsonl` 에 `counter_inc` 가 **0건**인데 `review_repair` 는
+    3/2 였다. 그 셋이 형식 반려로 탄 것인지 수리 실패로 탄 것인지 원장에서
+    갈리지 않는다 — 실제로는 M46 의 교착 때문에 **수리를 한 번도 시도하기
+    전에** 05 에스컬레이션에 닿았다.
+
+    예산 자체는 가르지 않는다. 상한을 새로 정하려면 실측이 있어야 하고
+    아직 없다 — 재지 않은 상수를 상속하지 않는다.
+    """
+
+    def test_사유_없이는_예산을_못_쓴다(self, repo, request_file):
+        """폴백을 두지 않는다 — 폴백이 곧 새 하드코딩이다 ([[ADR-H025]])."""
+        _, s = st.create_run(repo, "demo", request_file)
+        with pytest.raises(ValueError):
+            st.counter_inc(s, "repair", 2, None)
+
+    def test_어휘_밖_사유는_거부된다(self, repo, request_file):
+        _, s = st.create_run(repo, "demo", request_file)
+        with pytest.raises(ValueError):
+            st.counter_inc(s, "repair", 2, "그때그때 지어낸 말")
+
+    def test_소모_사유가_상태에_쌓인다(self, repo, request_file):
+        _, s = st.create_run(repo, "demo", request_file)
+        st.counter_inc(s, "review_repair", 3, "format_reject")
+        st.counter_inc(s, "review_repair", 3, "review_blocking")
+        spent = s["counters"]["review_repair"]["spent"]
+        assert [x["reason"] for x in spent] == ["format_reject", "review_blocking"]
+        assert [x["n"] for x in spent] == [1, 2]
+
+    def test_소모가_이벤트로도_남는다(self, repo, request_file):
+        """상태는 마지막 모습이고 이벤트는 순서다 — 둘 다 필요하다."""
+        paths, s = st.create_run(repo, "demo", request_file)
+        st.counter_inc(s, "review_repair", 3, "format_reject", paths=paths)
+        kinds = [json.loads(l) for l in
+                 paths.events.read_text(encoding="utf-8").splitlines() if l.strip()]
+        got = [e for e in kinds if e["kind"] == "counter_inc"]
+        assert got and got[-1]["data"]["reason"] == "format_reject", got
+
+    def test_보고서가_예산을_무엇에_썼는지_적는다(self, repo, request_file):
+        """원장에 있어도 보고서가 안 말하면 사람이 그 런을 못 읽는다."""
+        _, s = st.create_run(repo, "demo", request_file)
+        st.counter_inc(s, "review_repair", 2, "format_reject")
+        st.counter_inc(s, "review_repair", 2, "format_reject")
+        cell = rep_mod._counter_cell(s["counters"]["review_repair"])
+        assert "format_reject" in cell, cell
+        assert "2" in cell, cell
+
+    def test_사유가_섞이면_둘_다_적는다(self, repo, request_file):
+        _, s = st.create_run(repo, "demo", request_file)
+        st.counter_inc(s, "review_repair", 3, "format_reject")
+        st.counter_inc(s, "review_repair", 3, "review_blocking")
+        cell = rep_mod._counter_cell(s["counters"]["review_repair"])
+        assert "format_reject" in cell and "review_blocking" in cell, cell
+
+    def test_모든_호출처가_사유를_준다(self, repo):
+        """어휘가 있는데 코드가 안 쓰는 것이 [[ADR-H025]](M36) 의 모양이다.
+
+        P6 의 `events.jsonl` 은 `counter_inc` 0건이었다 — 일곱 호출처 중
+        하나만 이벤트를 냈기 때문이다.
+        """
+        text = (ROOT / "scripts" / "pipeline" / "cli.py").read_text(encoding="utf-8")
+        spots = [m.start() for m in re.finditer(r"st\.counter_inc\(", text)]
+        assert len(spots) >= 7, "호출처를 못 찾았다 — 이 검사가 무의미해졌다"
+        for i in spots:
+            window = text[i:i + 320]
+            assert any('"%s"' % r in window for r in st.COUNTER_REASONS), window
+            assert "paths=paths" in window, window
 
 
 class TestModelCallBudget:

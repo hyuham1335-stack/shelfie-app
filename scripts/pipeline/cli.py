@@ -1871,12 +1871,14 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
         # 검사가 근거로 삼는 이전 회차 지적이 사라졌다. 정수를 읽는
         # 소비자는 어디에도 없었다 — 순수한 손실이다 (P3).
         s["phases"]["01-plan"]["converged_at_round"] = round_
-        st.counter_inc(s, _loop_counter(phase_item["front"]), max_rounds)
+        st.counter_inc(s, _loop_counter(phase_item["front"]), max_rounds,
+                       "converged", paths=paths)
         _note_cross_verify_gap(s)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 
     used, _max, exceeded = st.counter_inc(
-        s, _loop_counter(phase_item["front"]), max_rounds)
+        s, _loop_counter(phase_item["front"]), max_rounds,
+        "not_converged", paths=paths)
     if exceeded:
         _loop_on_exceed(phase_item["front"])
         st.escalate(paths, s,
@@ -1962,7 +1964,8 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
         # 그때 처음으로 뜻이 갈린다. 그 갈림이 없던 것이 M36 이다.
         max_decl = _loop_max(front)
         return_to = _loop_return_to(front)
-        used, max_, _exceeded = st.counter_inc(s, _loop_counter(front), max_decl)
+        used, max_, _exceeded = st.counter_inc(s, _loop_counter(front), max_decl,
+                                              "xverify_critical", paths=paths)
         if used > max_:
             _loop_on_exceed(front)
             st.escalate(paths, s, "02 가 %d회를 넘겨 Critical 을 냈다" % max_,
@@ -2420,7 +2423,8 @@ def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
     if blocking:
         front = phase_item["front"]
         max_decl = _loop_max(front)
-        used, _max, exceeded = st.counter_inc(s, _loop_counter(front), max_decl)
+        used, _max, exceeded = st.counter_inc(s, _loop_counter(front), max_decl,
+                                              "review_blocking", paths=paths)
         if exceeded:
             _loop_on_exceed(front)
             st.escalate(paths, s,
@@ -2610,7 +2614,9 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
     if payload.get("change_requested"):
         used, max_, exceeded = st.counter_inc(s,
                                               _loop_counter(phase_item["front"]),
-                                              _loop_max(phase_item["front"]))
+                                              _loop_max(phase_item["front"]),
+                                              "external_change_requested",
+                                              paths=paths)
         st.save(paths, s)
         if exceeded:
             _loop_on_exceed(phase_item["front"])
@@ -2839,7 +2845,8 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
 
     used, max_, exceeded = st.counter_inc(s,
                                           _loop_counter(phase_item["front"]),
-                                          _loop_max(phase_item["front"]))
+                                          _loop_max(phase_item["front"]),
+                                          "gate_failure", paths=paths)
     # **쌍을 쌓는다** — `owner|sig`. 시그니처만 쌓으면 flip 이 배정한 다음 역할이
     # 지시를 받기 전에 정체 감지가 먼저 멈춘다 (M33).
     s.setdefault("sig_chain", []).extend(dispatch.get("pairs") or [])
@@ -3956,9 +3963,8 @@ def run_retry(root, phase, counter, reason, run_id=None):
         max_ = _loop_max(loaded[pid]["front"], profile)
     except ConfigDeclarationError as exc:
         return _declaration_envelope("retry", s, exc)
-    used, _m, exceeded = st.counter_inc(s, counter, max_)
-    st.append_event(paths, "counter_inc", cmd="retry", phase=pid,
-                    counter=counter, used=used, reason=reason)
+    used, _m, exceeded = st.counter_inc(s, counter, max_, "manual",
+                                        paths=paths, note=reason)
     if exceeded:
         try:
             _loop_on_exceed(loaded[pid]["front"])

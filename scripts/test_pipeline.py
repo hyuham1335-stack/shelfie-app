@@ -4104,6 +4104,121 @@ class TestReview05Enforcement:
         assert got["dropped_by_enforcement"] == 1
 
 
+class TestReview05Vocabulary:
+    """어휘 밖 category 를 **낸 리뷰어에게** 돌려준다 (M46).
+
+    지금까지 이 검사는 `ledger.append` 에만 있었고, 그것은 **리뷰어 전원이
+    모여 병합된 뒤에** 돈다. 그래서 셋 중 하나가 어휘 밖을 내면 exit 8 이
+    마지막 제출자에게 가고, 그 제출자는 남의 findings 를 고칠 수 없어
+    **스스로 빠져나올 수 없었다.** 빠져나가는 유일한 길이 리뷰 회차 예산을
+    태우는 것이고, P6 에서 실제로 셋 전원 재제출을 낳았다(events seq 45~51).
+
+    리뷰어별 층에는 이미 `attempts` 2회 예산과 강등 경로가 있다. 검사를 그
+    층으로 내리면 위반한 리뷰어가 그 기계를 그대로 탄다 — M20 이 고친
+    "리뷰어의 잘못이 아닌 것으로 리뷰어를 벌한다"의 같은 형태다.
+    """
+
+    @staticmethod
+    def _taxonomy(repo):
+        """실물 어휘를 복사한다 — 실물이 바뀌면 이 검사가 먼저 깨진다."""
+        dst = repo / ldg.TAXONOMY_REL
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text((ROOT / ldg.TAXONOMY_REL).read_text(encoding="utf-8"),
+                       encoding="utf-8")
+        return ldg.categories(repo)
+
+    def _bad(self):
+        return _sub(by_checklist={
+            "의존 방향": [{"id": "F-1", "category": "지어낸_코드",
+                       "severity": "major", "target_role": "impl",
+                       "title": "인가 규칙이 빠졌다", "path": "x.ts",
+                       "quote": "인가를 건너뛴다"}],
+            "네이밍": []})
+
+    def test_어휘_밖_category_는_제출_시점에_거부된다(self, repo):
+        got = rv.check(repo, _config(repo), self._bad(), RAW_ONE, [],
+                       known=self._taxonomy(repo))
+        assert got["exit"] == 8
+        assert any("taxonomy" in e for e in got["errors"]), got["errors"]
+
+    def test_거부_메시지가_낸_finding_과_어휘를_함께_말한다(self, repo):
+        """무엇이 틀렸는지 모르면 재제출이 추측이 된다."""
+        got = rv.check(repo, _config(repo), self._bad(), RAW_ONE, [],
+                       known=self._taxonomy(repo))
+        joined = " ".join(got["errors"])
+        assert "F-1" in joined and "지어낸_코드" in joined, joined
+        assert "AUTHZ_MISSING_RULE" in joined, "허용 어휘를 보여 줘야 한다"
+
+    def test_어휘_안이면_통과한다(self, repo):
+        got = rv.check(repo, _config(repo), _sub(), RAW_ONE, [],
+                       known=self._taxonomy(repo))
+        assert got["ok"], got["errors"]
+
+    def test_known_을_안_주면_검사하지_않는다(self, repo):
+        """호출부가 taxonomy 를 못 읽는 경우까지 여기서 막지 않는다."""
+        got = rv.check(repo, _config(repo), self._bad(), RAW_ONE, [])
+        assert got["ok"], got["errors"]
+
+    def _at_05(self, repo, paths, s):
+        """05 제출을 받을 수 있는 최소 상태 — 대조가 끝났고 라우팅이 확정됐다."""
+        self._taxonomy(repo)
+        st.set_phase_status(s, "04-gate", "passed")
+        s["phase"] = "05-code-review"
+        node = s.setdefault("phases", {}).setdefault("05-code-review", {})
+        node["trace"] = {"status": "ok", "blocking": 0}
+        node["planned"] = ["arch", "sec"]
+        st.save(paths, s)
+
+    def _submit(self, repo, paths, payload, code):
+        j = paths.run_dir / ("05_review_%s.json" % code)
+        j.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        (paths.run_dir / ("05_review_%s.raw.md" % code)).write_text(
+            RAW_ONE, encoding="utf-8")
+        return cli.run_record(repo, phase="05", file=str(j),
+                              reviewer=code, round_=1)
+
+    def test_어휘_위반이_낸_리뷰어에게_돌아간다(self, gated, phases):
+        """P6 은 이것이 마지막 제출자에게 갔고 셋 전원이 재제출했다."""
+        repo, paths, s = gated
+        self._at_05(repo, paths, s)
+        got = self._submit(repo, paths, dict(self._bad(), reviewer="arch"), "arch")
+        assert got["exit"] == 8, got
+        assert "taxonomy" in json.dumps(got, ensure_ascii=False)
+
+    def test_어휘_위반은_그_리뷰어의_제출_시도로_세어진다(self, gated, phases):
+        """`attempts` 예산과 강등 경로를 타야 스스로 빠져나올 수 있다."""
+        repo, paths, s = gated
+        self._at_05(repo, paths, s)
+        self._submit(repo, paths, dict(self._bad(), reviewer="arch"), "arch")
+        _p, after = st.load(repo, paths.run_id)
+        node = after["phases"]["05-code-review"]
+        assert node.get("attempts", {}).get("1", {}).get("arch") == 1, node
+
+    def test_봉투가_쓸_수_있는_어휘를_먼저_말한다(self, repo):
+        """M20 의 원칙 — 리뷰어가 모르면 exit 8 이고, 모르게 둔 것은 봉투 잘못이다."""
+        self._taxonomy(repo)
+        got = cli._vocabulary_render(repo)
+        assert "AUTHZ_MISSING_RULE" in got and "CONTRACT_DEFECT" in got, got
+        assert "지어내지" in got or "지어낸" in got, got
+
+    def test_어휘를_못_읽으면_봉투가_그렇게_말한다(self, repo):
+        """빈 목록을 '어휘가 없다'로 내면 리뷰어가 무엇을 써도 튕긴다."""
+        got = cli._vocabulary_render(repo)
+        assert "읽지 못했다" in got, got
+
+    def test_다른_리뷰어의_슬롯은_말려들지_않는다(self, gated, phases):
+        """교착의 핵심은 남의 잘못으로 내가 못 빠져나가는 것이었다."""
+        repo, paths, s = gated
+        self._at_05(repo, paths, s)
+        self._submit(repo, paths, dict(self._bad(), reviewer="arch"), "arch")
+        got = self._submit(repo, paths, _sub(reviewer="sec"), "sec")
+        _p, after = st.load(repo, paths.run_id)
+        node = after["phases"]["05-code-review"]
+        assert node.get("attempts", {}).get("1", {}).get("sec") is None, node
+        assert got["exit"] != 8 or "taxonomy" not in json.dumps(
+            got, ensure_ascii=False), got
+
+
 class TestReview05Truncation:
 
     def test_over_findings_max_keeps_only_blocking(self, repo):

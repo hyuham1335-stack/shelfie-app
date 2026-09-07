@@ -1184,6 +1184,29 @@ def _excluded_render(root):
             + "\n".join("- `%s`" % c for c in codes))
 
 
+def _vocabulary_render(root):
+    """쓸 수 있는 `category` 전부. **봉투가 규약을 먼저 말한다** (M46 · M20).
+
+    이 절이 없으면 리뷰어는 어휘를 모른 채 제출하고, 틀리면 exit 8 을 받는다 —
+    "리뷰어가 모르면 exit 8 이고 메인이 사후에 맞추는 것이 유일한 길이 된다"
+    가 M20 이 고친 바로 그 모양이다.
+    """
+    import ledger
+
+    cats = ledger.categories(root)
+    if not cats:
+        return ("## 원장 어휘\n\n**어휘를 읽지 못했다** (`%s`). 이 상태에서는 "
+                "어떤 `category` 도 원장에 들어가지 못한다 — 리뷰어의 문제가 "
+                "아니라 설정의 문제다. `doctor` 를 먼저 돌린다."
+                % ledger.TAXONOMY_REL)
+    usable = sorted(c for c, v in cats.items()
+                    if (v.get("status") or "") != "retired")
+    return ("## 원장 어휘 — `category` 는 이 안에서 고른다\n\n"
+            + "\n".join("- `%s`" % c for c in usable)
+            + "\n\n밖의 코드를 **지어내지 마라** — 제출이 exit 8 로 되돌아온다. "
+              "맞는 것이 없으면 `OTHER` 로 내고 무엇이 없는지를 evidence 에 적는다. "
+              "어휘를 늘리는 것은 승격의 일이지 제출의 일이 아니다.")
+
 def _contract_drift_lines(node, s):
     """계약이 바뀌어 프로파일이 다시 정해졌다는 것과, 파서가 흘린 줄.
 
@@ -1282,6 +1305,7 @@ def render_packet(root, phase, ctx, s, checks=None):
         rv_render = _review_render(s)
         if rv_render:
             parts.append(rv_render)
+        parts.append(_vocabulary_render(root))
         parts.append(_excluded_render(root))
     warns = [c for c in (checks or []) if c.get("warn")]
     if warns:
@@ -2172,7 +2196,7 @@ def _record_05(root, paths, s, phase_item, ctx, file, reviewer, round_):
     prev_open = _previous_open(rounds, round_, reviewer)
     excluded = ledger.excluded_categories(root)
     got = review_mod.check(root, ctx["config"], payload, raw_text, prev_open,
-                           excluded=excluded)
+                           excluded=excluded, known=ledger.categories(root))
     if not got["ok"]:
         st.append_event(paths, "check_fail", cmd="record", phase="05-code-review",
                         reviewer=reviewer, errors=len(got["errors"]))

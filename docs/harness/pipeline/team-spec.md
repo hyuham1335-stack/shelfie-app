@@ -559,6 +559,10 @@ stateDiagram-v2
 
 #### 제출 형식
 
+**제출 검사는 두 층이고, 리뷰어를 벌하는 것은 앞 층뿐이다** (M46). 제출 하나가 들어올 때 도는 검사(`review.check`)에는 `attempts` 2회 예산과 강등 경로가 있고, 전원이 모여 병합된 뒤 도는 검사(`ledger.append`)에는 없다. **리뷰어가 고칠 수 있는 것은 전부 앞 층에서 잡는다** — `category` 어휘가 그렇다. 뒤 층에 남겨 두면 exit 8 이 마지막 제출자에게 가고, 그 제출자는 남의 findings 를 고칠 수 없어 **빠져나가는 유일한 길이 리뷰 회차 예산을 태우는 것**이 된다. 뒤 층의 검사는 지우지 않는다 — 05 밖 경로(07·`contract-trace`)의 마지막 방어선이다.
+
+**그리고 봉투가 어휘를 먼저 말한다.** 05 지시문은 `## 원장 어휘` 절로 쓸 수 있는 `category` 전부를 싣는다. 리뷰어가 모르는 규약으로 튕기는 것은 리뷰어의 잘못이 아니다 (M20).
+
 ```json
 {"reviewer":"{code}","round":1,"status":"ok",
  "by_checklist":{"{checklist}":[{"id":"F-1","category":"AUTHZ_MISSING_RULE","severity":"critical",

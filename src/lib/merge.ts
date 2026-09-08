@@ -44,14 +44,51 @@ type ExtractedCandidate = z.infer<typeof extractedCandidateSchema>;
 export const CONFIDENCE_FLOOR = 0.3;
 
 /**
+ * 후보와 그 병합 키를 함께 나르는 쌍.
+ *
+ * 키는 `reduceBeforeLookup`이 **한 번** 계산하고 그 뒤로 아무도 다시 계산하지
+ * 않는다. 병합도 정렬 tie-break도 호출부의 계측도 전부 이 값을 그대로 쓴다 —
+ * 같은 후보에 `mergeKey`를 두 번 부르는 자리가 없으면 두 키가 갈릴 수도 없다.
+ *
+ * **내보내지 않는다.** 검사를 위해 내부 타입을 공개하면 그 이름이 계약이 되어
+ * 다음 리팩터링을 막는다. `reduceBeforeLookup`의 반환 타입에 구조적으로
+ * 나타나므로 호출부는 이름 없이도 쓸 수 있다.
+ */
+interface KeyedCandidate {
+  candidate: ExtractedCandidate;
+  key: string;
+}
+
+/**
  * ① 알라딘 조회 전 축소.
  *
  * 강등된 후보도 사용자에게 미확인으로 보여야 하므로 조용히 버리지 않는다
- * (ADR-002 — 왜 빠졌는지 보여준다). 다만 **세 바구니의 합은 입력 건수와 같지
- * 않다.** `mergeByNormalizedKey`가 사진 간 중복을 하나로 접으므로 합은 입력
- * 건수 **이하**다. 접혀서 사라지는 것은 같은 책의 다른 판독본뿐이고 대표는
- * 남으므로, 화면에서 통째로 사라지는 책은 없다 — 보존되는 것은 건수가 아니라
- * **책**이다.
+ * (ADR-002 — 왜 빠졌는지 보여준다).
+ *
+ * ## 바구니는 넷이고 가르는 순서가 곧 계약이다
+ * ① `confidence < CONFIDENCE_FLOOR` → `lowConfidence`
+ * ② `mergeKey(candidate) === null`(정규화하면 제목이 빈 후보) → `blankTitle`
+ * ③ 그 밖 → 키와 짝지어 병합·정렬을 거쳐 `toLookup`과 `capped`로 갈린다
+ *
+ * **확신도를 먼저 가르는 순서를 뒤집지 마라.** 뒤집으면 확신도가 낮으면서 제목도
+ * 빈 후보가 `low_confidence` 대신 `blank_title`로 세어진다. 계측 분해가 코드 한
+ * 줄로 조용히 움직이면 지표의 시계열이 끊긴다.
+ *
+ * ②의 판정은 `mergeKey`를 **한 번 불러 그 반환값으로만** 한다.
+ * `normalizeTitle(title) === ""`를 여기서 다시 묻지 않는다 — 같은 판정에 기준이
+ * 둘이면 `key: string`만 받도록 만든 병합에 `null`이 새어 든다.
+ *
+ * ## 왜 `blankTitle`을 병합에서 빼는가
+ * 빼지 않으면 제목이 빈 후보들이 **전부 같은 키**(구분자 하나, 또는 구분자 뒤에
+ * 저자만)를 갖는다. 서로 다른 책인데도 한 그룹으로 접혀 대표 하나만 남고 나머지는
+ * 화면에서 통째로 사라진다 — "왜 빠졌는지 보여준다"는 약속이 정확히 그 자리에서
+ * 깨진다. 제목을 못 읽었는데 저자가 같다는 것은 "같은 저자의 어떤 책"이지 "같은
+ * 책"이 아니고, 접힘의 축은 책이므로 축이 없는 후보는 접지 않는다.
+ *
+ * 그래서 **접혀서 사라지는 것은 같은 책의 다른 판독본뿐**이라는 말은 ②를 갈라
+ * 낸 뒤에야 참이 된다. 그 판독본들도 대표 하나로 줄어 화면에는 하나만 남는다 —
+ * 보존되는 것은 건수가 아니라 **책**이고, 네 바구니의 합이 입력 건수와 같지 않은
+ * 이유도 그것이다(합은 입력 건수 **이하**다).
  *
  * ## 왜 `lowConfidence`와 `capped`를 나누는가
  * 응답에서 둘은 같은 사유(`unreadable`)로 접힌다. 사용자가 할 수 있는 일이
@@ -59,7 +96,7 @@ export const CONFIDENCE_FLOOR = 0.3;
  * 입력)도 동일하고, 상한에 밀린 쪽은 **확신도 오름차순으로 가장 약하게 읽힌
  * 후보들**이라 그 문구가 사실과 어긋나지도 않는다. (`lookup_failed`로 표시하면
  * 조회한 적도 없는 책에 "잠시 후 다시 시도해 주세요"라고 말하게 되어 ADR-005를
- * 어긴다.)
+ * 어긴다.) `blankTitle`도 같은 문장으로 접힌다.
  *
  * 그런데 **지표에서는 갈라야 한다.** `capped`는 프롬프트 품질이 아니라 우리가 건
  * 조회 상한 때문에 밀린 것이라, 미확인 비율 가드레일의 분자에 넣으면 "상한을
@@ -68,16 +105,24 @@ export const CONFIDENCE_FLOOR = 0.3;
  * 한 번 접힌 것은 다시 나눌 수 없기 때문이다.
  */
 export function reduceBeforeLookup(candidates: readonly ExtractedCandidate[]): {
-  toLookup: ExtractedCandidate[];
+  toLookup: KeyedCandidate[];
   lowConfidence: ExtractedCandidate[];
-  capped: ExtractedCandidate[];
+  blankTitle: ExtractedCandidate[];
+  capped: KeyedCandidate[];
 } {
   const lowConfidence: ExtractedCandidate[] = [];
-  const readable: ExtractedCandidate[] = [];
+  const blankTitle: ExtractedCandidate[] = [];
+  const readable: KeyedCandidate[] = [];
 
   for (const candidate of candidates) {
-    if (candidate.confidence < CONFIDENCE_FLOOR) lowConfidence.push(candidate);
-    else readable.push(candidate);
+    if (candidate.confidence < CONFIDENCE_FLOOR) {
+      lowConfidence.push(candidate);
+      continue;
+    }
+
+    const key = mergeKey(candidate);
+    if (key === null) blankTitle.push(candidate);
+    else readable.push({ candidate, key });
   }
 
   const merged = mergeByNormalizedKey(readable);
@@ -86,6 +131,7 @@ export function reduceBeforeLookup(candidates: readonly ExtractedCandidate[]): {
   return {
     toLookup: ranked.slice(0, MAX_CANDIDATES_FOR_LOOKUP),
     lowConfidence,
+    blankTitle,
     capped: ranked.slice(MAX_CANDIDATES_FOR_LOOKUP),
   };
 }
@@ -97,6 +143,11 @@ export function reduceBeforeLookup(candidates: readonly ExtractedCandidate[]): {
  * 소리 없이 어긋나 — 병합은 됐는데 대조는 안 되거나 그 반대가 — 원인을 찾기
  * 어려운 결함이 된다.
  *
+ * **`mergeKey`를 부르지 않는다.** 키는 이미 `reduceBeforeLookup`이 계산해
+ * 쌍으로 실어 보냈고, 그 자리에서 `null`인 후보는 `blankTitle`로 갈라져 여기까지
+ * 오지 않는다. 그래서 `null`을 볼 일이 없고 도달 불가 분기가 애초에 생기지
+ * 않는다 — 안 흐르는 자리에 방어 분기를 두면 그 분기는 영원히 검증되지 않는다.
+ *
  * 대표를 고르는 규칙:
  * - **본문은 확신도가 가장 높은 후보**를 쓴다. 같은 책을 여러 장에서 읽었다면
  *   가장 또렷하게 읽힌 판을 알라딘에 던지는 편이 맞고, 낮은 확신도를 물려받으면
@@ -104,23 +155,29 @@ export function reduceBeforeLookup(candidates: readonly ExtractedCandidate[]): {
  * - **`photoIndex`는 그룹의 최솟값**으로 덮는다. "최초 등장 사진 인덱스를
  *   유지한다"는 FR-004의 요구는 조회 후 중복 제거만이 아니라 여기에도 걸린다.
  * - 확신도가 동점이면 먼저 등장한 후보가 대표다(입력 순서 보존).
+ *
+ * 대표가 바뀌어도 **키는 그룹의 키 그대로**다. 같은 그룹의 후보는 정의상 같은
+ * 키를 가지므로 고를 필요가 없다.
  */
-function mergeByNormalizedKey(candidates: readonly ExtractedCandidate[]): ExtractedCandidate[] {
-  const groups = new Map<string, ExtractedCandidate>();
+function mergeByNormalizedKey(candidates: readonly KeyedCandidate[]): KeyedCandidate[] {
+  const groups = new Map<string, KeyedCandidate>();
 
-  for (const candidate of candidates) {
-    const key = mergeKey(candidate);
+  for (const { candidate, key } of candidates) {
     const seen = groups.get(key);
 
     if (seen === undefined) {
-      groups.set(key, candidate);
+      groups.set(key, { candidate, key });
       continue;
     }
 
-    const representative = candidate.confidence > seen.confidence ? candidate : seen;
+    const representative =
+      candidate.confidence > seen.candidate.confidence ? candidate : seen.candidate;
     groups.set(key, {
-      ...representative,
-      photoIndex: Math.min(seen.photoIndex, candidate.photoIndex),
+      candidate: {
+        ...representative,
+        photoIndex: Math.min(seen.candidate.photoIndex, candidate.photoIndex),
+      },
+      key,
     });
   }
 
@@ -135,6 +192,20 @@ function mergeByNormalizedKey(candidates: readonly ExtractedCandidate[]): Extrac
  * 구분자는 제목·저자 정규화 결과에 절대 나타나지 않는 문자여야 한다. 정규화가
  * 글자와 숫자만 남기므로(`match.ts`) 제어 문자를 쓴다.
  *
+ * ## `null`은 "물을 근거가 없다"는 뜻이다
+ * 제목을 정규화한 결과가 빈 문자열이면 키를 만들지 않고 `null`을 낸다. 실패가
+ * 아니라 **"같은 책인지 물을 축이 없다"**는 판정이다 — 접힘이 세는 단위는 책이고
+ * 책을 가리키는 것은 제목이라, 제목이 비면 무엇을 접을지 정할 수가 없다.
+ *
+ * **저자가 있어도 `null`이다.** 제목을 못 읽었는데 저자만 같다는 것은 "같은
+ * 저자의 어떤 책"이지 "같은 책"이 아니다. 저자로 접으면 서로 다른 책들이 한
+ * 덩어리가 되어 화면에서 통째로 사라진다 (ADR-002).
+ *
+ * 새 판단이 아니다. `titleSimilarity`가 "어느 한쪽이라도 정규화 결과가 비면 0"을
+ * 이미 지키고 있고(`match.ts`), 그 근거도 같다 — 빈 문자열끼리 일치로 세면 판독
+ * 실패가 확인으로 승격된다. 이 모듈은 정규화를 `match.ts`에서 그대로 가져다 쓰며
+ * 두 모듈의 키가 어긋나지 않는다고 선언하므로, 어긋나 있던 쪽(이 함수)을 맞춘다.
+ *
  * ## 왜 내보내는가
  * 계측(`lib/unidentified.ts`)도 "같은 책인가"를 물어야 하는데, 그 판단이 병합과
  * 다른 키를 쓰면 **한 요청 안에서 같은 책의 정의가 둘**이 된다 — 병합은 접었는데
@@ -145,20 +216,23 @@ function mergeByNormalizedKey(candidates: readonly ExtractedCandidate[]): Extrac
  * 후보(`AladinCandidate`)에도 같은 키를 물을 수 있게 하기 위해서다. 키가 보는
  * 것은 그 둘뿐이라 좁혀도 잃는 정보가 없다.
  */
-export function mergeKey(candidate: { title: string; author: string | null }): string {
+export function mergeKey(candidate: { title: string; author: string | null }): string | null {
+  const title = normalizeTitle(candidate.title);
+  if (title === "") return null;
+
   const author = candidate.author === null ? "" : normalizeAuthor(candidate.author);
-  return `${normalizeTitle(candidate.title)}\u0000${author}`;
+  return `${title}\u0000${author}`;
 }
 
 /**
  * 조회 순위 비교. 확신도 내림차순이 1순위이고, 동점 tie-break는 결정성을 위해서만
  * 존재한다 — 입력 순서에 기대면 사진 처리 순서가 바뀔 때 조회 대상이 달라진다.
  */
-function compareByConfidence(a: ExtractedCandidate, b: ExtractedCandidate): number {
+function compareByConfidence(a: KeyedCandidate, b: KeyedCandidate): number {
   return (
-    b.confidence - a.confidence ||
-    a.photoIndex - b.photoIndex ||
-    compareStrings(mergeKey(a), mergeKey(b))
+    b.candidate.confidence - a.candidate.confidence ||
+    a.candidate.photoIndex - b.candidate.photoIndex ||
+    compareStrings(a.key, b.key)
   );
 }
 

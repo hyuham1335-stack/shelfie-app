@@ -4,6 +4,7 @@ import {
   capIdentified,
   capUnidentified,
   dedupeByIsbn,
+  mergeKey,
   reduceBeforeLookup,
 } from "./merge";
 import {
@@ -38,6 +39,29 @@ type 확인된책 = { isbn13: string; aladinRating: number | null; photoIndex: n
 function 확인(overrides: Partial<확인된책> & { isbn13: string }): 확인된책 {
   return { aladinRating: null, photoIndex: 0, ...overrides };
 }
+
+/**
+ * `toLookup`·`capped`의 원소 모양.
+ *
+ * `merge.ts`의 `KeyedCandidate`는 **내보내지 않는다** — 내부 타입을 검사가
+ * import하면 그 이름이 계약이 되어 다음 리팩터링을 막는다. 반환 타입에 구조적으로
+ * 나타나므로 여기서는 이름 없이 같은 모양을 적어 쓴다.
+ */
+type 키달린후보 = { candidate: ExtractedCandidate; key: string };
+
+/** 키 달린 바구니에서 후보만 꺼낸다. 네 바구니를 나란히 세는 자리에서 쓴다 */
+function 후보만(keyed: readonly 키달린후보[]): ExtractedCandidate[] {
+  return keyed.map((entry) => entry.candidate);
+}
+
+/**
+ * 정규화하면 제목이 통째로 사라지는 원문들.
+ *
+ * `match.ts`의 정규화가 글자와 숫자만 남기므로 기호뿐인 제목은 빈 문자열이 된다.
+ * 서로 **다른 문자열**인 것이 요점이다 — 같은 키로 접히면 안 되는 후보들이
+ * 실제로 서로 다른 판독본임을 픽스처가 먼저 보여야 한다.
+ */
+const 기호뿐인_제목 = ["!!!", "···", "???", "———", "@@@"] as const;
 
 /**
  * 세션당 알라딘 호출 상한 — **이 describe는 지우지 않는다.**
@@ -99,7 +123,9 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
       추출({ title: "간신히", confidence: CONFIDENCE_FLOOR }),
     ]);
 
-    expect(toLookup.map((c) => c.title)).toEqual(["간신히"]);
+    // `toLookup`의 원소는 이제 후보와 키를 함께 나른다 — 키를 라우트가 다시
+    // 계산하지 않게 하려는 변경이고, 그래서 후보를 한 겹 들어가서 읽는다.
+    expect(toLookup.map((c) => c.candidate.title)).toEqual(["간신히"]);
     expect(lowConfidence.map((c) => c.title)).toEqual(["아슬아슬"]);
     // 상한에 밀린 것이 아니다. 두 강등을 한 바구니에 뭉치면 이 구분이 사라진다.
     expect(capped).toEqual([]);
@@ -109,16 +135,23 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
     expect(CONFIDENCE_FLOOR).toBe(0.3);
   });
 
-  it("강등된 후보를 조용히 버리지 않는다 — 전량이 두 바구니 중 하나에 남는다", () => {
+  it("강등된 후보를 조용히 버리지 않는다 — 전량이 세 바구니 중 하나에 남는다", () => {
+    // 바구니가 넷이 되면서 이 세 후보가 걸릴 수 있는 곳도 하나 늘었다. 제목이 빈
+    // 후보를 세지 않으면 `blankTitle`로 간 판독본이 어느 칸에도 잡히지 않은 채
+    // 합이 맞아 버린다 — 조용히 버리지 않는다는 이 테스트의 주장이 거짓이 된다.
     const 입력 = [
       추출({ title: "가", confidence: 0.1 }),
       추출({ title: "나", confidence: 0.5 }),
       추출({ title: "다", confidence: 0.0 }),
+      추출({ title: "!!!", confidence: 0.7 }),
     ];
 
-    const { toLookup, lowConfidence, capped } = reduceBeforeLookup(입력);
+    const { toLookup, lowConfidence, blankTitle, capped } = reduceBeforeLookup(입력);
 
-    expect(toLookup.length + lowConfidence.length + capped.length).toBe(입력.length);
+    expect(toLookup.length + lowConfidence.length + blankTitle.length + capped.length).toBe(
+      입력.length,
+    );
+    expect(blankTitle.map((c) => c.title)).toEqual(["!!!"]);
   });
 
   it("제목+저자가 정규화 후 같은 후보 3건이 1건으로 병합된다", () => {
@@ -138,9 +171,9 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
     ]);
 
     expect(toLookup).toHaveLength(1);
-    expect(toLookup[0].confidence).toBe(0.95);
-    expect(toLookup[0].rawText).toBe("소년이 온다");
-    expect(toLookup[0].photoIndex).toBe(1);
+    expect(toLookup[0].candidate.confidence).toBe(0.95);
+    expect(toLookup[0].candidate.rawText).toBe("소년이 온다");
+    expect(toLookup[0].candidate.photoIndex).toBe(1);
   });
 
   it("제목이 같아도 저자가 다르면 병합하지 않는다", () => {
@@ -199,8 +232,10 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
 
     const { toLookup } = reduceBeforeLookup(후보들);
 
-    const 최저 = Math.min(...toLookup.map((c) => c.confidence));
-    const 최고강등 = Math.max(...reduceBeforeLookup(후보들).capped.map((c) => c.confidence));
+    const 최저 = Math.min(...toLookup.map((c) => c.candidate.confidence));
+    const 최고강등 = Math.max(
+      ...reduceBeforeLookup(후보들).capped.map((c) => c.candidate.confidence),
+    );
     expect(최저).toBeGreaterThanOrEqual(최고강등);
   });
 
@@ -230,20 +265,31 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
   });
 
   it("빈 입력은 빈 결과를 낸다", () => {
-    expect(reduceBeforeLookup([])).toEqual({ toLookup: [], lowConfidence: [], capped: [] });
+    // 바구니가 셋에서 넷이 되었으므로 정확 일치가 하드하게 깨진다. `blankTitle`을
+    // 빠뜨린 채 통과하는 형태를 남기지 않으려고 `toEqual`을 그대로 둔다.
+    expect(reduceBeforeLookup([])).toEqual({
+      toLookup: [],
+      lowConfidence: [],
+      blankTitle: [],
+      capped: [],
+    });
   });
 
-  it("세 바구니가 입력을 분할한다 — 각 후보가 정확히 한 바구니에만 든다", () => {
+  it("네 바구니가 입력을 분할한다 — 각 후보가 정확히 한 바구니에만 든다", () => {
+    // 이름과 단언이 함께 움직였다. 제목이 빈 후보가 `blankTitle`로 갈라진 뒤로는
+    // "셋이 분할한다"가 거짓이다 — 셋만 세면 빈 제목 판독본이 어디에도 없는데도
+    // 합이 맞아, 조용히 사라진 상태가 초록불로 기록된다.
     const 미달 = Array.from({ length: 4 }, (_, i) =>
       추출({ title: `흐릿 ${i}`, confidence: 0.1 }),
     );
+    const 빈제목 = 기호뿐인_제목.map((title) => 추출({ title, confidence: 0.8 }));
     const 또렷 = Array.from({ length: MAX_CANDIDATES_FOR_LOOKUP + 6 }, (_, i) =>
       추출({ title: `또렷 ${i}`, confidence: 0.5 + (i % 40) / 100, photoIndex: i % MAX_PHOTOS }),
     );
-    const 입력 = [...미달, ...또렷];
+    const 입력 = [...미달, ...빈제목, ...또렷];
 
-    const { toLookup, lowConfidence, capped } = reduceBeforeLookup(입력);
-    const 전체 = [...toLookup, ...lowConfidence, ...capped];
+    const { toLookup, lowConfidence, blankTitle, capped } = reduceBeforeLookup(입력);
+    const 전체 = [...후보만(toLookup), ...lowConfidence, ...blankTitle, ...후보만(capped)];
 
     expect(전체).toHaveLength(입력.length);
     // 제목이 전부 달라 사전 병합이 일어나지 않으므로 원소 동일성으로 셀 수 있다.
@@ -255,6 +301,7 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
 
     expect(toLookup).toHaveLength(MAX_CANDIDATES_FOR_LOOKUP);
     expect(lowConfidence).toHaveLength(미달.length);
+    expect(blankTitle).toHaveLength(기호뿐인_제목.length);
     expect(capped).toHaveLength(6);
   });
 
@@ -271,9 +318,132 @@ describe("reduceBeforeLookup — ① 알라딘 조회 전 축소 (FR-012)", () =
     // 하한 미만은 조회조차 시도되지 않은 판독 실패이고, 상한에 밀린 것은 우리가
     // 스스로 건 제한이다. 둘을 한 이름으로 부르면 후자가 판독 품질로 계상된다.
     expect(lowConfidence.every((c) => c.confidence < CONFIDENCE_FLOOR)).toBe(true);
-    expect(capped.every((c) => c.confidence >= CONFIDENCE_FLOOR)).toBe(true);
+    expect(capped.every((c) => c.candidate.confidence >= CONFIDENCE_FLOOR)).toBe(true);
     expect(lowConfidence).toHaveLength(7);
     expect(capped).toHaveLength(3);
+  });
+
+  /* --- 빈 키를 접지 않는다 (② 접힘 규칙 재설계) --------------------- */
+
+  it("확신도가 충분해도 제목이 빈 후보는 조회 대상이 아니라 blankTitle이다", () => {
+    // ②-응답-분기. 알라딘에 던질 질의가 없는 후보를 조회에 태우면 확실한
+    // `no_match` 하나를 일일 한도에서 빼 쓰는 것이고, 화면에는 "알라딘에 없는 책"
+    // 이라는 사실이 아닌 설명이 남는다.
+    const 빈제목 = 기호뿐인_제목.map((title) => 추출({ title, confidence: 0.95 }));
+
+    const { toLookup, blankTitle, lowConfidence, capped } = reduceBeforeLookup(빈제목);
+
+    expect(toLookup).toEqual([]);
+    // N=3이 아니라 다섯을 넣는다. 서로 다른 판독본이 **하나로 접히지 않고**
+    // 전부 남는지를 보려면 둘로는 "두 번째만 세는 실수"를 가를 수 없다.
+    expect(blankTitle).toHaveLength(기호뿐인_제목.length);
+    expect(blankTitle.map((c) => c.title)).toEqual([...기호뿐인_제목]);
+    // 확신도 하한에 걸린 것도, 조회 상한에 밀린 것도 아니다. 세 기전을 한
+    // 바구니에 뭉치면 지표에서 다시 나눌 수 없다.
+    expect(lowConfidence).toEqual([]);
+    expect(capped).toEqual([]);
+  });
+
+  it("확신도를 먼저 가른다 — 확신도도 낮고 제목도 빈 후보는 lowConfidence다", () => {
+    const { lowConfidence, blankTitle } = reduceBeforeLookup([
+      추출({ title: "!!!", confidence: 0.1 }),
+      추출({ title: "???", confidence: 0.9 }),
+    ]);
+
+    // 순서를 뒤집으면 저확신 판독이 `blank_title`로 세어져 계측 분해의 시계열이
+    // 코드 한 줄로 조용히 끊긴다.
+    expect(lowConfidence.map((c) => c.title)).toEqual(["!!!"]);
+    expect(blankTitle.map((c) => c.title)).toEqual(["???"]);
+  });
+
+  it("빈 제목은 병합에 도달하지 않는다 — 저자가 같아도 서로 접히지 않는다", () => {
+    // ②-병합 미도달. 옛 키는 빈 제목 후보 전부를 `"\u0000조남주"` 하나로 만들어
+    // 서로 다른 책을 한 그룹으로 접었고, 대표 하나만 남아 나머지는 화면에서
+    // 통째로 사라졌다. `mergeByNormalizedKey`는 export되지 않으므로 직접 부르지
+    // 않고, 바구니가 갈린 결과로 그 사실을 잰다.
+    const 입력 = [
+      추출({ title: "!!!", author: "조남주" }),
+      추출({ title: "???", author: "조남주" }),
+      추출({ title: "82년생 김지영", author: "조남주", photoIndex: 0 }),
+      추출({ title: "82년생김지영", author: "조남주 (지은이)", photoIndex: 2 }),
+    ];
+
+    const { toLookup, blankTitle } = reduceBeforeLookup(입력);
+
+    // 빈 쪽은 둘 다 남고,
+    expect(blankTitle.map((c) => c.title)).toEqual(["!!!", "???"]);
+    // 읽히는 쪽만 접힌다.
+    expect(toLookup).toHaveLength(1);
+    expect(toLookup[0].candidate.title).toBe("82년생 김지영");
+    expect(toLookup[0].candidate.photoIndex).toBe(0);
+  });
+
+  it("제목이 있는 같은 책은 여전히 접힌다 — 고치면서 접힘 자체를 끄지 않았다", () => {
+    // ②-대칭. 빈 제목을 병합에서 빼는 변경이 "아무것도 안 접는다"로 미끄러지면
+    // 같은 책이 사진 수만큼 조회돼 알라딘 일일 한도를 그대로 축낸다.
+    const { toLookup, blankTitle } = reduceBeforeLookup([
+      추출({ title: "소년이 온다", author: "한강", photoIndex: 3 }),
+      추출({ title: "소년이온다!", author: "한강 (지은이)", photoIndex: 1 }),
+      추출({ title: "《소년이 온다》", author: "한강", photoIndex: 4 }),
+    ]);
+
+    expect(toLookup).toHaveLength(1);
+    expect(toLookup[0].candidate.photoIndex).toBe(1);
+    expect(blankTitle).toEqual([]);
+  });
+
+  it("나르는 키가 mergeKey의 계산과 같고, 동점 정렬이 그 키로 결정된다", () => {
+    // 키 계산 단일. 축소가 키를 한 번 계산해 들고 다니는 것이 이 변경의 요지이고,
+    // 그 키가 `mergeKey`가 지금 내는 값과 갈리면 병합이 접은 책과 계측이 접는
+    // 책이 소리 없이 달라진다.
+    const 입력 = [
+      추출({ title: "C", confidence: 0.5, photoIndex: 2 }),
+      추출({ title: "A", confidence: 0.5, photoIndex: 2 }),
+      추출({ title: "b", confidence: 0.5, photoIndex: 2 }),
+    ];
+
+    const { toLookup } = reduceBeforeLookup(입력);
+
+    for (const 원소 of toLookup) {
+      expect(원소.key).toBe(mergeKey(원소.candidate));
+    }
+    // 확신도도 photoIndex도 동점이라 남은 것은 키 순서뿐이다. 여기서 입력 순서에
+    // 기대면 사진 처리 순서가 바뀔 때 조회 대상이 달라진다.
+    expect(toLookup.map((c) => c.key)).toEqual(["a\u0000", "b\u0000", "c\u0000"]);
+    expect(toLookup.map((c) => c.candidate.title)).toEqual(["A", "b", "C"]);
+  });
+});
+
+describe("mergeKey — 접힘의 축 (빈 제목에는 축이 없다)", () => {
+  it("정규화한 제목과 저자를 제어 문자로 이어 붙인다", () => {
+    // 구분자는 제목·저자 정규화 결과에 절대 나타나지 않는 문자여야 한다.
+    expect(mergeKey({ title: "82년생 김지영!", author: "조남주 (지은이)" })).toBe(
+      "82년생김지영\u0000조남주",
+    );
+  });
+
+  it("저자를 읽어내지 못하면 저자부가 빈 문자열이다 — 저자가 있는 후보와 합치지 않는다", () => {
+    expect(mergeKey({ title: "채식주의자", author: null })).toBe("채식주의자\u0000");
+    expect(mergeKey({ title: "채식주의자", author: null })).not.toBe(
+      mergeKey({ title: "채식주의자", author: "한강" }),
+    );
+  });
+
+  it("정규화하면 제목이 비는 후보는 null이다 — **저자가 있어도** null이다", () => {
+    for (const title of 기호뿐인_제목) {
+      expect(mergeKey({ title, author: null })).toBeNull();
+      // 저자가 같다는 것은 "같은 저자의 어떤 책"이지 "같은 책"이 아니다. 여기서
+      // 저자만으로 키를 만들면 서로 다른 책이 한 그룹으로 접힌다.
+      expect(mergeKey({ title, author: "조남주" })).toBeNull();
+    }
+  });
+
+  it("제목 전체가 괄호에 감싸여 있으면 내용을 살려 키를 만든다 — null이 아니다", () => {
+    // 정규화가 괄호 구간을 지우고도 비면 괄호 문자만 벗긴다 (`match.ts`).
+    // 이 회수 경로가 없으면 《채식주의자》가 판독 실패로 강등된다.
+    expect(mergeKey({ title: "《채식주의자》", author: "한강" })).toBe(
+      mergeKey({ title: "채식주의자", author: "한강" }),
+    );
   });
 });
 

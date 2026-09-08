@@ -77,19 +77,43 @@ export interface MeasuredUnidentified {
    * 계측이 판독본이 아니라 **책**을 세게 하는 값이다. 호출부가 채워 넣는 이유는
    * 원본 후보의 제목·저자를 아는 쪽이 호출부이기 때문이고, 여기서 다시 만들면
    * 키가 두 벌이 된다.
+   *
+   * **`null`이 실제로 흐른다.** 제목을 정규화하면 빈 문자열인 후보는 키가 없다 —
+   * "같은 책인지 물을 축이 없다"는 뜻이고 `mergeKey`가 그렇게 정의한다. 확신도
+   * 하한에 먼저 걸린 후보가 그 상태로 여기 도착하므로 이 자리는 비어 있을 수
+   * 있고, 그래서 타입이 넓다. 키 없는 항목을 **접지 않는 것**이 `measureUnidentified`의
+   * 규칙이다 — 축이 없는 것들을 한 덩어리로 접으면 서로 다른 책이 하나로 세어진다.
    */
-  mergeKey: string;
+  mergeKey: string | null;
 }
 
 /** 미확인 계측 결과. 전부 표시 상한 절단 **전**의 값이다 */
 export interface UnidentifiedMeasurement {
-  /** 미확인 비율 가드레일의 **분자**. 중복을 접은 뒤의 수다 */
+  /**
+   * 미확인 비율 가드레일의 **분자**. 중복을 접은 뒤의 수다.
+   *
+   * 접힘은 미확인 목록 안에서만 일어나지 않는다 — **확인된 책과 같은 키를 가진
+   * 미확인 항목도 접힌다.** 같은 책이 사진 한 장에서는 또렷하게 읽혀 확인으로
+   * 올라가고 다른 장에서는 흐릿하게 읽혀 미확인으로 떨어졌다면, 그 책은 이미
+   * 분모의 확인 쪽에 한 번 세어져 있다. 미확인 쪽에서 또 세면 한 책이 분자와
+   * 분모 양쪽에 동시에 앉아 비율이 실제보다 나쁘게 나온다.
+   *
+   * 반대로 접히지 **않는** 갈래가 있다 — `mergeKey`가 `null`인 항목은 서로 접지
+   * 않는다. 정규화하면 제목이 비어 "같은 책인가"를 물을 근거가 없기 때문이고, 그래서
+   * 이 수는 고유 미확인 책 수의 **상한**이다. 근거 없이 접으면 판독이 가장 나쁜
+   * 세션에서 분자가 가장 작게 나온다 (`byMeasurement` 참조).
+   */
   guardrailCount: number;
   /**
    * 가드레일의 **분모** — 확인된 책 수 + `guardrailCount`.
    *
    * 분자와 **같은 모집단**만 센다. 조회하지 않았거나(`lookup_capped`) 하지 못한
    * (`search_failed`·`facts_failed`) 책은 여기에도 들어가지 않는다.
+   *
+   * 확인 쪽은 **키 집합의 크기가 아니라 책 수**를 쓴다. 호출부가 키를 모으는
+   * 시점이 ISBN 중복 제거 **전**이라 서로 다른 두 후보 키가 같은 ISBN에 달릴 수
+   * 있고, 그때 집합 크기가 책 수보다 크다. 그 큰 값을 분모에 넣으면 분모만 부풀어
+   * 비율이 실제보다 좋게 나온다.
    */
   guardrailDenominator: number;
   /**
@@ -97,9 +121,29 @@ export interface UnidentifiedMeasurement {
    *
    * `byMeasurement.lookup_capped`와 같은 값이고 그 칸에서 그대로 읽어 온다 —
    * 따로 세면 두 수가 갈릴 수 있다.
+   *
+   * **"상한에 밀린 판독본 수"가 아니다.** 접힘이 일곱 칸 전부에 균일하게 걸리므로
+   * 확인된 책과 같은 키를 가진 몫만큼 이 수도 줄어든다. 접힘이 묻는 것은 "같은
+   * 책인가" 하나이고 사유는 그 질문에 답하지 않아, 칸마다 다른 규칙을 두면 분해표의
+   * 합과 분자가 서로 다른 규칙 위에 서게 된다. 줄어드는 것을 **알고 고른 동작**이고,
+   * 이 수는 "조회했더라면 새로 알 수 있었을 책이 몇 권인가"로 읽어야 한다.
    */
   lookupCapped: number;
-  /** 계측 사유 일곱의 분해. 접은 뒤의 수이고, 합이 곧 고유 미확인 책 수다 */
+  /**
+   * 계측 사유 일곱의 분해. 접은 뒤의 수이고, 합은 "확인 목록에 없는 고유 미확인
+   * 책 수"의 **상한**이다 — 등호가 아니다.
+   *
+   * 접히는 갈래와 접히지 않는 갈래가 갈린다.
+   * 1. `mergeKey`가 `null`인 항목은 서로 접히지 않는다. 정규화하면 제목이 비어
+   *    "같은 책인가"를 물을 **근거가 없기** 때문이다. 그래서 같은 책의 빈 제목
+   *    판독본 열 건은 여기서 10으로 세어진다 — 합이 등호가 아닌 이유가 이것뿐이다.
+   * 2. 그 밖의 항목은 키로 접히고, 그중 **확인된 책과 같은 키**를 가진 것은 아예
+   *    세어지지 않는다. 그 책은 이미 분모의 확인 쪽에 한 번 앉아 있다.
+   *
+   * 1은 결함이 아니라 이 런이 **고른 동작**이다. 빈 키는 "같은 책"의 증거가 아니라
+   * 증거의 부재이고, 근거 없이 접으면 판독이 가장 나쁜 세션에서 분자가 가장 작게
+   * 나온다 — 그것이 이 런이 닫은 결함이다. 접을 근거가 없는 것을 접는 쪽이 더 나쁘다.
+   */
   byMeasurement: Record<MeasurementReason, number>;
 }
 
@@ -127,13 +171,25 @@ export const RESPONSE_REASON: Record<MeasurementReason, UnidentifiedReason> = {
  * `judge`가 낸 응답 사유를 계측 사유로 승격시키는 어댑터.
  *
  * **`RESPONSE_REASON`의 역함수가 아니다.** 역함수는 존재하지 않는다 — 셋이 하나로
- * 접히기 때문이다. 이 표가 성립하는 이유는 정의역이 `judge`의 출력 넷뿐이라는
- * 좁은 사실에 있다. `judge`는 `unreadable`을 제목이 빈 경우에만 내고
+ * 접히기 때문이다. 이 표가 성립하는 근거는 각 응답 사유마다 `judge`가 그것을 내는
+ * 기전이 하나뿐이라는 데 있다. `judge`는 `unreadable`을 제목이 빈 경우에만 내고
  * (`match.ts` — 확신도는 보지 않는다), `lookup_failed`는 ItemSearch 실패에서만
  * 낸다. 그래서 이 자리에서는 각 응답 사유가 기전 하나로 되돌아간다.
  *
- * `judge`의 판정 순서가 바뀌면 이 표가 조용히 거짓이 되므로, 왕복 항등식
- * `RESPONSE_REASON[MEASURED_FROM_VERDICT[r]] === r`을 테스트가 못으로 박는다.
+ * ## `unreadable` 칸은 이제 이 경로에서 공허하다 — 그래도 지운다는 뜻이 아니다
+ * 조회 전 축소가 제목이 빈 후보를 `blankTitle` 바구니로 먼저 갈라 내므로, 그런
+ * 후보는 `judge`에 도달하지 않는다. 즉 이 표의 `unreadable` 칸은 실제 요청에서는
+ * 쓰이지 않는다.
+ *
+ * 그래도 칸을 지우지 않는다. `judge`는 **export된 순수 함수**이고 자기 호출자가
+ * 무엇을 걸러 냈는지 가정하지 않는다 — 빈 제목을 받으면 `unreadable`을 낸다. 그
+ * 분기를 지우면 판독 실패가 `no_match`로 새는데, 그것은 **우리 인식 한계를
+ * "알라딘에 그 책이 없다"로 바꿔 적는 것**이고 ADR-005가 막는 오독이다. 여기 칸도
+ * 같은 이유로 남는다: 방어가 아니라 `judge`의 계약을 그대로 받아 적은 것이다.
+ *
+ * 왕복 항등식 `RESPONSE_REASON[MEASURED_FROM_VERDICT[r]] === r`은 두 상수만의
+ * 성질이라 정의역이 좁아져도 여전히 참이고, 테스트가 그것을 못으로 박는다.
+ * `judge`의 판정 순서가 바뀌면 이 표가 조용히 거짓이 되는 것도 그대로다.
  */
 export const MEASURED_FROM_VERDICT: Record<UnidentifiedReason, MeasurementReason> = {
   unreadable: "blank_title",
@@ -182,24 +238,53 @@ const COUNTS_TOWARD_GUARDRAIL: Record<MeasurementReason, boolean> = {
  * 한 오독과 같은 방향이다.
  *
  * 접힘은 **첫 항목이 대표**다. 호출부가 쌓는 순서가 결정적이므로(판정 → 사실
- * 조회 실패 → 저확신 → 상한 절단) 같은 입력이면 같은 수가 나온다.
+ * 조회 실패 → 저확신 → 빈 제목 → 상한 절단) 같은 입력이면 같은 수가 나온다.
+ *
+ * ## 접힘은 확인 경계를 가로지른다
+ * `seen`을 빈 집합이 아니라 **확인된 책들의 키로 채워서 연다.** 같은 책이 사진
+ * 한 장에서는 또렷하게 읽혀 확인으로 올라가고 다른 장에서는 흐릿하게 읽혀 미확인으로
+ * 떨어지는 일이 실제로 일어나는데, 그때 그 책을 미확인 쪽에서 또 세면 한 책이
+ * 분자와 분모 양쪽에 동시에 앉는다. 목록 안에서만 접고 경계를 넘지 않으면 접힘이
+ * 하려던 일(단위를 책으로 맞추는 것)이 절반만 된다.
+ *
+ * 차감은 **일곱 칸 전부에 균일하다.** 접힘이 묻는 것은 "같은 책인가" 하나이고
+ * 사유는 그 질문에 답하지 않는다. `lookup_capped`도 확인된 책과 겹치는 만큼
+ * 줄어들며, 그것은 알고 고른 동작이다 — 칸마다 규칙을 달리 두면 분해표의 합과
+ * 분자가 서로 다른 규칙 위에 서서 로그를 대조할 수 없게 된다.
+ *
+ * ## 키가 없는 항목은 접지 않는다
+ * `mergeKey`가 `null`인 항목은 `seen`을 **보지도 않고** 그대로 센다. `null`은
+ * "같은 책인지 물을 축이 없다"는 뜻이라 접힘의 전제가 서지 않기 때문이다.
+ * 가드가 `seen` 검사보다 **앞에** 있어야 한다 — 뒤에 두면 `seen`이 `null` 하나를
+ * 삼키고 두 번째 빈 제목부터 스킵되어, 서로 다른 책들이 하나로 세어진다.
  *
  * **응답 목록은 접지 않는다.** 접는 것은 세는 자리뿐이고, 사용자는 자기가 올린
  * 사진마다 왜 빠졌는지를 그대로 봐야 한다 (ADR-002).
  *
- * `identifiedCount`는 분모의 나머지 절반이다. 기본값 `0`은 "확인된 책이 없는
- * 모집단"이라는 뜻이고 거짓말이 아니다 — 그 경우 분모는 분자와 같아진다.
+ * ## `keys`와 `count`를 왜 갈라 받는가
+ * `keys`는 **분자에서 빼는 데만** 쓰고 분모의 확인 쪽은 `count`를 쓴다. 호출부가
+ * 키를 모으는 시점이 ISBN 중복 제거 **전**이라 서로 다른 두 후보 키가 같은 ISBN에
+ * 달릴 수 있고, 그때 `keys.size > count`다. 집합 크기를 분모에 쓰면 분모만 부풀어
+ * 비율이 실제보다 좋게 나온다.
+ *
+ * 기본값 `{ keys: 빈 집합, count: 0 }`은 "확인된 책이 없는 모집단"이라는 뜻이고
+ * 거짓말이 아니다 — 그 경우 뺄 키가 없고 분모는 분자와 같아진다.
  *
  * 입력을 변형하지 않고 외부를 건드리지 않는다.
  */
 export function measureUnidentified(
   entries: readonly MeasuredUnidentified[],
-  identifiedCount = 0,
+  identified: { keys: ReadonlySet<string>; count: number } = { keys: new Set(), count: 0 },
 ): UnidentifiedMeasurement {
   const byMeasurement = emptyByMeasurement();
-  const seen = new Set<string>();
+  // 복사본이다. 호출부의 집합을 건드리지 않으며, `Set<string>`이라 `null`이 들어갈 수 없다.
+  const seen = new Set<string>(identified.keys);
 
   for (const entry of entries) {
+    if (entry.mergeKey === null) {
+      byMeasurement[entry.measured] += 1;
+      continue;
+    }
     if (seen.has(entry.mergeKey)) continue;
     seen.add(entry.mergeKey);
     byMeasurement[entry.measured] += 1;
@@ -212,7 +297,7 @@ export function measureUnidentified(
 
   return {
     guardrailCount,
-    guardrailDenominator: identifiedCount + guardrailCount,
+    guardrailDenominator: identified.count + guardrailCount,
     lookupCapped: byMeasurement.lookup_capped,
     byMeasurement,
   };

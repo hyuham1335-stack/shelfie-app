@@ -8,7 +8,10 @@
     {"kind": "json_key", "path": "package.json", "pointer": "scripts.test"}
   ],
 
-  "runner": {"bin": "npm", "common_args": [], "cwd": "."},
+  "runner": {
+    "bin": "npm", "common_args": [], "cwd": ".",
+    "script_manifest": {"file": "package.json", "pointer": "scripts", "verb": "run"}
+  },
 
   "stages": {
     "compile": {"cmd": ["run", "typecheck"], "timeout_sec": 300},

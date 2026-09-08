@@ -558,41 +558,64 @@ def _check_runner_bin(root, adapter, report):
                    "runner.bin %r 를 PATH 에서도 리포 루트에서도 찾을 수 없다." % binary)
 
 
-NODE_RUNNERS = ("npm", "pnpm", "yarn")
+def _load_script_manifest(root, adapter):
+    """어댑터가 선언한 스크립트 매니페스트를 읽는다.
+
+    어느 파일의 어느 키에 스크립트가 선언돼 있고 러너가 그것을 어떤 동사로 부르는가는
+    스택의 사실이다. 코어가 그 목록을 들면 같은 지식이 스키마 enum 과 코드 두 곳에
+    살게 되고 한쪽만 고쳐지는 날이 온다 (ADR-H031).
+
+    (scripts, verb, note) 를 돌려준다. 읽지 못했으면 scripts 는 None 이고 note 가
+    왜 못 읽었는지 말한다 — 조용한 통과가 아니라 '검사 안 함'으로 드러내기 위한 값이다.
+    """
+    manifest = adapter["runner"].get("script_manifest")
+    if not manifest:
+        return None, None, ("어댑터에 runner.script_manifest 선언이 없다. "
+                            "이 러너가 매니페스트의 스크립트를 부르는지 코어는 모른다")
+    rel, pointer, verb = manifest["file"], manifest["pointer"], manifest["verb"]
+    target = root / rel
+    if not target.is_file():
+        return None, verb, "script_manifest.file %s 가 리포에 없다" % rel
+    try:
+        data = _read_json(target)
+    except ValueError:
+        return None, verb, "%s 를 JSON 으로 읽을 수 없다" % rel
+    node = _json_pointer(data, pointer)
+    if not isinstance(node, dict):
+        return None, verb, "%s 의 %s 가 없거나 스크립트 맵이 아니다" % (rel, pointer)
+    return node, verb, None
 
 
 def _check_stage_commands(root, adapter, report):
-    binary = adapter["runner"]["bin"]
+    scripts, verb, note = _load_script_manifest(root, adapter)
     problems = []
     checked = 0
-    scripts = {}
-    if binary in NODE_RUNNERS:
-        pkg = root / "package.json"
-        if pkg.is_file():
-            try:
-                scripts = _read_json(pkg).get("scripts", {}) or {}
-            except ValueError:
-                scripts = {}
     for name in sorted(adapter["stages"]):
         stage = adapter["stages"][name]
         cmd = stage.get("cmd")
         if not cmd:
             continue
         checked += 1
-        if binary in NODE_RUNNERS and cmd[0] == "run":
+        if scripts is None:
+            continue
+        if cmd[0] == verb:
             if len(cmd) < 2:
-                problems.append("stages.%s.cmd 가 `run` 뒤에 스크립트명이 없다" % name)
+                problems.append("stages.%s.cmd 가 `%s` 뒤에 스크립트명이 없다" % (name, verb))
             elif cmd[1] not in scripts:
                 problems.append(
-                    "stages.%s.cmd 가 package.json 에 없는 스크립트 %r 를 참조한다 (있는 것: %s)"
+                    "stages.%s.cmd 가 매니페스트에 없는 스크립트 %r 를 참조한다 (있는 것: %s)"
                     % (name, cmd[1], ", ".join(sorted(scripts)) or "없음"))
         baseline = stage.get("baseline_cmd")
-        if baseline and binary in NODE_RUNNERS and baseline[0] == "run" and len(baseline) > 1:
+        if baseline and baseline[0] == verb and len(baseline) > 1:
             if baseline[1] not in scripts:
                 problems.append("stages.%s.baseline_cmd 가 없는 스크립트 %r 를 참조한다"
                                 % (name, baseline[1]))
     if problems:
         report.add("스테이지 명령", "FAIL", "\n".join("- " + p for p in problems))
+    elif scripts is None:
+        report.add("스테이지 명령", "WARN",
+                   "스테이지 %d개의 명령이 실물 스크립트를 가리키는지 검사 안 함 — %s. "
+                   "검사하지 않은 것이지 통과한 것이 아니다." % (checked, note))
     else:
         report.add("스테이지 명령", "PASS", "실행 가능한 스테이지 %d개 전부 실물과 일치" % checked)
 

@@ -209,6 +209,106 @@ class BrokenConfigRejectedTest(DoctorTestBase):
         self.assertIn("src/orphan/stray.ts", self.doctor().text())
 
 
+class StageCommandDeclarationTest(DoctorTestBase):
+    """스테이지 명령 검사는 어댑터 선언을 읽는다 — 코어가 스택 이름을 알지 않는다.
+
+    러너가 `<verb> <script>` 문법을 쓰는지, 스크립트가 어디에 선언돼 있는지는
+    스택의 사실이지 실행기의 사실이 아니다. 코어에 그 목록을 두면 같은 지식이
+    스키마 enum 과 코드 두 곳에 살고 한쪽만 고쳐지는 날이 온다 (ADR-H031).
+    """
+
+    STAGE_CHECK = u"스테이지 명령"
+
+    def _check(self, report, name):
+        for c in report.checks:
+            if c.name == name:
+                return c
+        self.fail("검사 %r 가 리포트에 없다 — %s" % (name, report.text()))
+
+    def test_declared_manifest_still_catches_missing_script(self):
+        """회귀 — 선언으로 옮긴 뒤에도 없는 스크립트를 FAIL 로 잡는다."""
+        ad = self.adapter()
+        ad["stages"]["compile"]["cmd"] = ["run", "nonexistent"]
+        self.save_adapter(ad)
+        self.assertRejected(self.doctor(), "nonexistent")
+
+    def test_declared_manifest_still_catches_missing_baseline_script(self):
+        """회귀 — baseline_cmd 도 같은 규칙으로 대조된다."""
+        ad = self.adapter()
+        ad["stages"]["lint"]["baseline_cmd"] = ["run", "no-such-baseline"]
+        self.save_adapter(ad)
+        self.assertRejected(self.doctor(), "no-such-baseline")
+
+    def test_verb_mismatch_is_left_alone(self):
+        """check 의 `audit` 은 verb 가 run 이 아니므로 대조 대상이 아니다 — 지금 동작 그대로."""
+        report = self.doctor()
+        self._check(report, self.STAGE_CHECK)
+        self.assertEqual("PASS", self._check(report, self.STAGE_CHECK).status, report.text())
+
+    def test_missing_manifest_warns_not_fails(self):
+        """선언이 없으면 '검사 안 함'이다 — 조용한 통과가 아니고 FAIL 도 아니다."""
+        ad = self.adapter()
+        del ad["runner"]["script_manifest"]
+        self.save_adapter(ad)
+        report = self.doctor()
+        check = self._check(report, self.STAGE_CHECK)
+        self.assertEqual("WARN", check.status, report.text())
+        self.assertIn(u"검사 안 함", check.message, report.text())
+        self.assertEqual([], report.failures, report.text())
+
+    def test_manifest_pointing_at_missing_file_warns_with_the_name(self):
+        """선언은 있는데 그 파일이 없으면, 무엇을 못 읽었는지가 리포트에 뜬다."""
+        ad = self.adapter()
+        ad["runner"]["script_manifest"]["file"] = "does-not-exist.json"
+        self.save_adapter(ad)
+        report = self.doctor()
+        check = self._check(report, self.STAGE_CHECK)
+        self.assertEqual("WARN", check.status, report.text())
+        self.assertIn("does-not-exist.json", check.message, report.text())
+        self.assertEqual([], report.failures, report.text())
+
+    def test_manifest_pointing_at_missing_pointer_warns(self):
+        """파일은 있는데 그 안의 키가 없으면 같은 처리다."""
+        ad = self.adapter()
+        ad["runner"]["script_manifest"]["pointer"] = "no.such.key"
+        self.save_adapter(ad)
+        report = self.doctor()
+        check = self._check(report, self.STAGE_CHECK)
+        self.assertEqual("WARN", check.status, report.text())
+        self.assertIn("no.such.key", check.message, report.text())
+        self.assertEqual([], report.failures, report.text())
+
+    def test_non_manifest_runner_needs_no_code_change(self):
+        """매니페스트 개념이 없는 스택으로 갈아도 코어를 고칠 일이 없다.
+
+        runner.bin 이 이 머신 PATH 에 있는지는 별개의 검사이므로 여기서는
+        스테이지 명령 검사만 본다 — 그것이 이 테스트가 재는 것이다.
+        """
+        ad = self.adapter()
+        ad["runner"]["bin"] = "make"
+        del ad["runner"]["script_manifest"]
+        ad["stages"]["compile"]["cmd"] = ["build"]
+        self.save_adapter(ad)
+        report = self.doctor()
+        check = self._check(report, self.STAGE_CHECK)
+        self.assertEqual("WARN", check.status, report.text())
+        self.assertNotIn(self.STAGE_CHECK, [c.name for c in report.failures], report.text())
+
+
+class CoreHasNoStackNamesTest(unittest.TestCase):
+    """ADR-H013 승격 게이트 1번의 자물쇠 — 코어에 스택 고유명사를 되돌려 놓지 못한다."""
+
+    def test_node_runners_list_is_not_in_scripts(self):
+        hits = []
+        for path in sorted((ROOT / "scripts").rglob("*.py")):
+            if path.name == "test_harness.py":
+                continue
+            if "NODE_RUNNERS" in path.read_text(encoding="utf-8"):
+                hits.append(str(path.relative_to(ROOT)))
+        self.assertEqual([], hits,
+                         "스택 이름 목록이 실행기 코드로 돌아왔다 — 선언은 어댑터가 든다 (ADR-H031)")
+
+
 class SchemaValidatorTest(unittest.TestCase):
     """스키마에 적었는데 검사되지 않는 규칙 = 이 계층에서 가장 위험한 조용한 통과."""
 

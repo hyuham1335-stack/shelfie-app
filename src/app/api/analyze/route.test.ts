@@ -9,8 +9,10 @@ import {
   MAX_OUTPUT_BYTES_PER_IMAGE,
   MAX_OUTPUT_BYTES_TOTAL,
   MAX_UNIDENTIFIED_BOOKS,
+  RATE_LIMIT_MAX_REQUESTS,
 } from "@/lib/env";
 import { CONFIDENCE_FLOOR } from "@/lib/merge";
+import { resetRateLimit } from "@/lib/rate-limit";
 import { verifyProof } from "@/lib/proof";
 import { RESPONSE_REASON } from "@/lib/unidentified";
 import { analyzeResponseSchema, unidentifiedReasonSchema } from "@/lib/schemas";
@@ -180,6 +182,10 @@ function eventsOf(name: string): Record<string, unknown>[] {
 }
 
 beforeEach(() => {
+  // 레이트 리밋 상태는 globalThis에 있어 테스트 사이에 살아남는다. 이것이 없으면
+  // 이 파일의 다른 테스트들이 공유 버킷 예산을 서로 갉아먹고, 실행 순서에 따라
+  // 간헐적으로 깨진다 (교차검증 F-10).
+  resetRateLimit();
   vi.stubEnv("BOOK_PROOF_SECRET", "test-book-proof-secret-0123456789abcdef");
   vi.stubEnv("SERVICE_ENABLED", undefined);
   searchOptionsSeen.length = 0;
@@ -1404,5 +1410,64 @@ describe("미확인 계측을 응답과 갈라 센다 (raw_ 넷)", () => {
     // 일곱 칸이 전부 0이다 — 미확인이 없는데 어느 칸이든 값이 있으면 어딘가에서
     // 확인된 책이 미확인으로도 세어지고 있다는 뜻이다.
     expect(Object.values(사유별_계측(event)).every((n) => n === 0)).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 레이트 리밋 (INV-1 · INV-2 · AC-1 · ADR-012)
+ *
+ * 순수 판정은 `lib/rate-limit.test.ts`가 전부 덮는다. 여기서는 **라우트가
+ * 그 판정을 어디에 걸었는가**만 본다 — 차단이 본문을 읽기 전에 일어나고,
+ * 응답이 기존 에러 규약을 그대로 따르는가.
+ * ------------------------------------------------------------------ */
+
+describe("레이트 리밋", () => {
+  /** 같은 IP에서 온 요청. `requestOf`는 헤더를 못 실어 여기서 따로 만든다 */
+  function requestFromSameIp(): Request {
+    return new Request("http://localhost/api/analyze", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "203.0.113.7",
+      },
+      body: JSON.stringify({ sessionId: SESSION_ID, images: [IMAGE] }),
+    });
+  }
+
+  /** IP별 상한만큼 태운다. 상한 값을 여기 리터럴로 적지 않는다 (AC-4) */
+  async function fillIpBudget(): Promise<void> {
+    setExtract([[]]);
+    for (let sent = 0; sent < RATE_LIMIT_MAX_REQUESTS; sent += 1) {
+      await POST(requestFromSameIp());
+    }
+  }
+
+  it("상한을 넘긴 요청이 429 RATE_LIMITED와 Retry-After 헤더를 받는다", async () => {
+    await fillIpBudget();
+
+    const response = await POST(requestFromSameIp());
+    const body = await response.json();
+
+    expect(response.status).toBe(429);
+    expect(body.code).toBe("RATE_LIMITED");
+    expect(body.requestId).toBe(response.headers.get("X-Request-Id"));
+    expect(body.error).toMatch(/\S/);
+    // 본문은 **기존 에러 스키마 그대로**다. 같은 값을 본문에 한 번 더 싣지 않는다 —
+    // 두 곳에 두면 한쪽만 고쳐지는 날이 온다 (교차검증 F-24).
+    expect(Object.keys(body).sort()).toEqual(["code", "error", "requestId"]);
+    // `Retry-After`는 정수 초여야 한다. 소수나 0이 나가면 규격 위반이다.
+    expect(response.headers.get("Retry-After")).toMatch(/^[1-9][0-9]*$/);
+  });
+
+  it("차단된 요청은 Anthropic을 부르지 않는다 — 차단이 비용을 쓰지 않는다", async () => {
+    await fillIpBudget();
+    extractMock.mockClear();
+    notesMock.mockClear();
+
+    const response = await POST(requestFromSameIp());
+
+    expect(response.status).toBe(429);
+    expect(extractMock).not.toHaveBeenCalled();
+    expect(notesMock).not.toHaveBeenCalled();
   });
 });

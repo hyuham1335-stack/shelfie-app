@@ -1085,6 +1085,32 @@ describe("세션 셸", () => {
       expect(screen.queryByText(/뒤에 다시 시도할게요/)).toBeNull();
     });
 
+    /**
+     * 429는 상류(Anthropic·알라딘)에 닿지 않는다 — 우리 서버가 본문을 읽기 전에
+     * 막은 것이다 (ADR-012). FR-010 예산의 목적이 상류 보호이므로 `OFFLINE`과
+     * 같은 자리에 둔다. 이 예외가 없으면 429를 받은 사용자가 0초·5초·15초 세 번을
+     * 20초 안에 태우고 **아직 윈도가 안 지났는데** 버튼을 잃는다 (07 리뷰 G-1).
+     */
+    it("RATE_LIMITED 재시도는 예산을 쓰지 않아 3회 뒤에도 버튼이 남는다", async () => {
+      analyzeMock.mockResolvedValue({
+        ok: false,
+        code: "RATE_LIMITED",
+        requestId: "req-429",
+        status: 429,
+      });
+      render(<Home />);
+      fireEvent.click(screen.getByRole("button", { name: "사진 2장 분석" }));
+      await screen.findByText("요청이 몰렸어요. 잠시 후 다시 시도해 주세요");
+      vi.useFakeTimers();
+
+      await retryOnce(0);
+      await retryOnce(5_000);
+      await retryOnce(15_000);
+
+      // 같은 자리에서 502는 여기서 버튼이 사라진다 (바로 위 테스트).
+      expect(screen.getByRole("button", { name: "다시 시도" })).toBeInTheDocument();
+    });
+
     it("부분 실패 배너의 '이 사진만 다시 시도'도 같은 간격을 따른다", async () => {
       analyzeMock.mockResolvedValue(ok(makeAnalyze({ failedPhotoCount: 1, failedPhotoIndexes: [1] })));
       render(<Home />);

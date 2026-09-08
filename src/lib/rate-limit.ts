@@ -65,7 +65,6 @@ interface RateLimitState {
 declare global {
   // 개발 서버의 HMR은 모듈을 다시 평가한다. 모듈 스코프에 두면 리로드마다
   // 카운터가 리셋되어 로컬에서 이 코드의 동작을 확인할 수 없다.
-  // eslint-disable-next-line no-var
   var __shelfieRateLimitState: RateLimitState | undefined;
 }
 

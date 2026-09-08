@@ -296,8 +296,13 @@ export default function Home() {
     // 그대로 들고 있어야 그 인덱스로 다시 사진을 찾을 수 있다.
     const runId = beginRun();
     setFiles(sources);
-    // 단절은 상류에 닿지 않으므로 예산을 쓰지 않는다 (FR-010 의 목적은 상류 보호다).
-    if (state.errorCode !== "OFFLINE") setAnalyzeAttempts((count) => count + 1);
+    // 상류에 닿지 않은 실패는 예산을 쓰지 않는다 (FR-010 의 목적은 상류 보호다).
+    // `OFFLINE` 은 요청이 나가지도 못한 경우이고, `RATE_LIMITED` 는 우리 서버가
+    // 본문을 읽기 전에 막은 경우다 (ADR-012) — 둘 다 Anthropic·알라딘에 닿지 않는다.
+    // 이것이 없으면 429 를 받은 사용자가 0s·5s·15s 세 번을 20초 안에 태워
+    // **아직 막혀 있는 동안** 재시도 버튼을 잃는다 (07 리뷰 G-1).
+    if (state.errorCode !== "OFFLINE" && state.errorCode !== "RATE_LIMITED")
+      setAnalyzeAttempts((count) => count + 1);
     // 예산과 무관하게 이번 분석은 재시도다. 위 가드가 예산을 건너뛰어도 화면은
     // 진행 표시를 그려야 한다 (PRD 5번 표 — 재시도 중 진행 표시).
     setIsRetryingAnalyze(true);

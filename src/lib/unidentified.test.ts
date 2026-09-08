@@ -92,12 +92,58 @@ let 쌍_일련번호 = 0;
 function 쌍(
   measured: MeasurementReason,
   mergeKey = `키-${(쌍_일련번호 += 1)}`,
-): { book: UnidentifiedBook; measured: MeasurementReason; mergeKey: string } {
+): { book: UnidentifiedBook; measured: MeasurementReason; mergeKey: string | null } {
   return {
     book: { rawText: `원문 ${mergeKey}`, reason: RESPONSE_REASON[measured], candidates: [] },
     measured,
     mergeKey,
   };
+}
+
+/**
+ * 제목을 정규화하면 비어 **접힘의 축이 없는** 항목. `mergeKey`가 `null`이다.
+ *
+ * 원문을 서로 다르게 받는 것이 요점이다 — 이것들이 실제로 다른 판독본임을
+ * 픽스처가 먼저 보여야 "빈 키 여럿이 하나로 접히지 않는다"는 단언이 공허하지
+ * 않다. 제목을 못 읽었는데 저자가 같다는 것은 "같은 저자의 어떤 책"이지 "같은
+ * 책"이 아니므로, 축이 없는 후보는 접지 않는다 (`lib/merge.ts`).
+ *
+ * `measured`를 인자로 여는 이유: `null` 가드는 `measured`를 **보지 않으므로**
+ * 빈 키 비접힘은 `blank_title` 한 칸이 아니라 일곱 칸 전부에서 일어난다.
+ * 픽스처가 사유를 `blank_title`로 못 박아 두면 그중 분자에 드는 칸이 접히는
+ * 회귀를 이 파일이 통째로 놓친다.
+ *
+ * 이 함수를 `.map(빈키쌍)`으로 바로 넘기지 말 것 — `Array.prototype.map`이
+ * 둘째 인자로 **인덱스**를 넘겨 사유가 숫자로 오염된다. 호출부는 화살표로 감싼다.
+ */
+function 빈키쌍(
+  rawText: string,
+  measured: MeasurementReason = "blank_title",
+): {
+  book: UnidentifiedBook;
+  measured: MeasurementReason;
+  mergeKey: string | null;
+} {
+  return {
+    book: { rawText, reason: RESPONSE_REASON[measured], candidates: [] },
+    measured,
+    mergeKey: null,
+  };
+}
+
+/**
+ * `measureUnidentified`의 둘째 인자. 숫자 하나에서 **확인 키 집합과 책 수 둘**이 됐다.
+ *
+ * 두 값을 하나로 뭉치지 않는 이유가 이 런의 핵심이다. 키 집합은 **분자에서 빼는
+ * 데만** 쓰고 분모의 확인 쪽은 `count`를 쓴다 — `dedupeByIsbn`이 버린 쪽 키까지
+ * 차감하려면 키가 책보다 많아야 하는데(같은 ISBN에 후보 키 둘), 그 키 수를
+ * 분모에도 쓰면 확인된 책 하나가 분모를 둘 올려 비율이 조용히 낮아진다.
+ */
+function 확인쪽(
+  count: number,
+  keys: readonly string[] = [],
+): { keys: ReadonlySet<string>; count: number } {
+  return { keys: new Set(keys), count };
 }
 
 /* ------------------------------------------------------------------ *
@@ -260,7 +306,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
   });
 
   it("빈 입력이면 분자·상한 강등이 0이고 분해 일곱 칸이 전부 0이다", () => {
-    expect(measureUnidentified([], 0)).toEqual({
+    expect(measureUnidentified([], 확인쪽(0))).toEqual({
       guardrailCount: 0,
       guardrailDenominator: 0,
       lookupCapped: 0,
@@ -269,7 +315,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
   });
 
   it("미확인이 없으면 분모가 확인된 책 수 그대로다", () => {
-    expect(measureUnidentified([], 12)).toMatchObject({
+    expect(measureUnidentified([], 확인쪽(12))).toMatchObject({
       guardrailCount: 0,
       guardrailDenominator: 12,
     });
@@ -280,7 +326,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
 
     // 상한에 밀린 책은 분자에서만 빠지는 것이 아니라 **분모에서도 빠진다.**
     // 분모에만 남기면 비율이 희석돼, 사진을 많이 올릴수록 성적이 좋아진다.
-    expect(measureUnidentified(밀린것, 20)).toEqual({
+    expect(measureUnidentified(밀린것, 확인쪽(20))).toEqual({
       guardrailCount: 0,
       guardrailDenominator: 20,
       lookupCapped: 3,
@@ -290,7 +336,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
 
   it("분자에 드는 넷은 하나씩 넣으면 각각 분자와 분모를 함께 1 올린다", () => {
     for (const measured of 분자에_드는_계측사유) {
-      expect(measureUnidentified([쌍(measured)], 9)).toMatchObject({
+      expect(measureUnidentified([쌍(measured)], 확인쪽(9))).toMatchObject({
         guardrailCount: 1,
         // 분자에 들어간 항목은 반드시 분모에도 들어간다. 한쪽만 오르면 비율이
         // 1을 넘거나 영원히 0에 붙는다.
@@ -301,7 +347,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
 
   it("빠지는 셋은 하나씩 넣어도 분자도 분모도 움직이지 않는다", () => {
     for (const measured of 분자에서_빠지는_계측사유) {
-      expect(measureUnidentified([쌍(measured)], 9)).toMatchObject({
+      expect(measureUnidentified([쌍(measured)], 확인쪽(9))).toMatchObject({
         guardrailCount: 0,
         guardrailDenominator: 9,
         lookupCapped: measured === "lookup_capped" ? 1 : 0,
@@ -312,7 +358,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
   it("계측 사유 일곱이 한 번씩 섞이면 분자 4 · 분모는 확인 + 4 · 분해는 일곱 칸 1씩이다", () => {
     const 전부 = 계측사유들.map((measured) => 쌍(measured));
 
-    expect(measureUnidentified(전부, 30)).toEqual({
+    expect(measureUnidentified(전부, 확인쪽(30))).toEqual({
       guardrailCount: 분자에_드는_계측사유.length,
       guardrailDenominator: 30 + 분자에_드는_계측사유.length,
       lookupCapped: 1,
@@ -333,7 +379,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
       쌍("blank_title"),
     ];
 
-    const { byMeasurement } = measureUnidentified(입력, 4);
+    const { byMeasurement } = measureUnidentified(입력, 확인쪽(4));
     const 합 = Object.values(byMeasurement).reduce((sum, n) => sum + n, 0);
 
     // mergeKey가 전부 다르므로 접힘이 없다 — 합이 곧 입력 건수다.
@@ -350,7 +396,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
       쌍("lookup_capped"),
     ];
 
-    expect(measureUnidentified(입력, 0)).toMatchObject({
+    expect(measureUnidentified(입력, 확인쪽(0))).toMatchObject({
       guardrailCount: 3,
       guardrailDenominator: 3,
       lookupCapped: 2,
@@ -360,12 +406,12 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
   /* --- 중복 접기 (05 델타 ②) --------------------------------------- */
 
   it("같은 mergeKey를 가진 저확신 항목 다섯이면 분자에 1만 더한다", () => {
-    const 같은_책 = Array.from({ length: 5 }, () => 쌍("low_confidence", "82년생김지영 조남주"));
+    const 같은_책 = Array.from({ length: 5 }, () => 쌍("low_confidence", "82년생김지영\u0000조남주"));
 
     // 같은 책이 다섯 장에 흐릿하게 찍혔다. 이것을 5로 세면, 또렷하게 읽혀 분모에
     // 1만 더하는 같은 책과 **단위가 달라진다** — 사진을 여러 장 올릴수록 판독
     // 품질이 나빠 보이는 오독이고, 이 런이 막겠다고 선언한 것과 같은 방향이다.
-    expect(measureUnidentified(같은_책, 0)).toEqual({
+    expect(measureUnidentified(같은_책, 확인쪽(0))).toEqual({
       guardrailCount: 1,
       guardrailDenominator: 1,
       lookupCapped: 0,
@@ -375,21 +421,21 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
 
   it("mergeKey가 다르면 접지 않는다 — 접힘은 같은 책에만 걸린다", () => {
     const 서로_다른_책 = [
-      쌍("low_confidence", "가 "),
-      쌍("low_confidence", "나 "),
-      쌍("low_confidence", "다 "),
+      쌍("low_confidence", "가\u0000"),
+      쌍("low_confidence", "나\u0000"),
+      쌍("low_confidence", "다\u0000"),
     ];
 
-    expect(measureUnidentified(서로_다른_책, 0)).toMatchObject({
+    expect(measureUnidentified(서로_다른_책, 확인쪽(0))).toMatchObject({
       guardrailCount: 3,
       byMeasurement: 계측분해({ low_confidence: 3 }),
     });
   });
 
   it("상한에 밀린 같은 책도 접어 센다 — 분자 밖이어도 단위는 같아야 한다", () => {
-    const 밀린_같은_책 = Array.from({ length: 4 }, () => 쌍("lookup_capped", "같은키 저자"));
+    const 밀린_같은_책 = Array.from({ length: 4 }, () => 쌍("lookup_capped", "같은키\u0000저자"));
 
-    expect(measureUnidentified(밀린_같은_책, 0)).toMatchObject({
+    expect(measureUnidentified(밀린_같은_책, 확인쪽(0))).toMatchObject({
       guardrailCount: 0,
       lookupCapped: 1,
       byMeasurement: 계측분해({ lookup_capped: 1 }),
@@ -404,7 +450,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
     // 확보하지 못한 세션은 프롬프트 품질을 판정할 근거가 없으므로, 좋은 성적을
     // 받는 것이 아니라 **모집단에서 빠져야** 한다.
     const 장애 = Array.from({ length: 8 }, () => 쌍("search_failed"));
-    const 결과 = measureUnidentified(장애, 0);
+    const 결과 = measureUnidentified(장애, 확인쪽(0));
 
     expect(결과.guardrailCount).toBe(0);
     expect(결과.guardrailDenominator).toBe(0);
@@ -422,7 +468,7 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
       쌍("facts_failed"),
     ];
 
-    const { guardrailCount, guardrailDenominator } = measureUnidentified(입력, 2);
+    const { guardrailCount, guardrailDenominator } = measureUnidentified(입력, 확인쪽(2));
 
     expect(guardrailCount).toBe(2);
     expect(guardrailDenominator).toBe(4);
@@ -433,18 +479,146 @@ describe("measureUnidentified — 가드레일 분자·분모와 사유별 분�
     const 입력 = 계측사유들.flatMap((measured) => [쌍(measured), 쌍(measured)]);
 
     for (const 확인된_책_수 of [0, 1, 50]) {
-      const { guardrailCount, guardrailDenominator } = measureUnidentified(입력, 확인된_책_수);
+      const { guardrailCount, guardrailDenominator } = measureUnidentified(
+        입력,
+        확인쪽(확인된_책_수),
+      );
       expect(guardrailCount).toBeLessThanOrEqual(guardrailDenominator);
       expect(guardrailDenominator - guardrailCount).toBe(확인된_책_수);
     }
   });
 
+  /* --- 빈 키는 접힘의 축이 없다 (② 접힘 규칙 재설계) ---------------- */
+
+  it("제목이 빈 서로 다른 항목 셋이 분자에 셋으로 든다 — 하나로 접히지 않는다", () => {
+    // 셋 이상이어야 한다. 둘이면 "구현이 첫 항목만 세는 실수"와 "두 번째만 세는
+    // 실수"를 가르지 못한 채 1이라는 같은 답이 나오는 조합이 있다.
+    // 화살표로 감싸는 이유는 `빈키쌍` 주석에 있다 — `map`의 인덱스가 사유 자리로 샌다.
+    const 빈키들 = ["!!!", "···", "???"].map((rawText) => 빈키쌍(rawText));
+
+    expect(measureUnidentified(빈키들, 확인쪽(0))).toEqual({
+      guardrailCount: 3,
+      guardrailDenominator: 3,
+      lookupCapped: 0,
+      byMeasurement: 계측분해({ blank_title: 3 }),
+    });
+  });
+
+  it("미확인 쪽 키가 null이면 차감 검사를 건너뛴다 — 확인된 책과도 접히지 않는다", () => {
+    // 키가 없다는 것은 "같은 책인지 판단할 축이 없다"는 뜻이지 "아무 책과도 같다"가
+    // 아니다. `seen`을 먼저 물으면 `null`이 한 번 들어간 뒤 나머지 빈 키 전부가
+    // 이미 본 것으로 취급돼, 서로 다른 판독본 셋이 화면에는 셋인데 지표에는 하나로
+    // 남는다 — 응답과 계측이 다른 이야기를 하는 상태다.
+    // 화살표로 감싸는 이유는 `빈키쌍` 주석에 있다 — `map`의 인덱스가 사유 자리로 샌다.
+    const 빈키들 = ["!!!", "···", "???"].map((rawText) => 빈키쌍(rawText));
+
+    const 결과 = measureUnidentified(빈키들, 확인쪽(2, ["키A", "키B"]));
+
+    expect(결과.byMeasurement.blank_title).toBe(3);
+    expect(결과.guardrailCount).toBe(3);
+    expect(결과.guardrailDenominator).toBe(2 + 3);
+  });
+
+  it("키가 null인 저확신 항목 셋도 접히지 않는다 — 빈 키 비접힘은 blank_title 한 칸의 일이 아니다", () => {
+    // 이 검사가 위의 `blank_title` 검사와 별개로 있어야 하는 이유: `null` 가드는
+    // `entry.measured`를 보지 않으므로 빈 키 비접힘은 **일곱 칸 전부**에서 일어난다.
+    // 그리고 실제로 가장 크게 움직이는 칸은 `blank_title`이 아니라 `low_confidence`다 —
+    // `reduceBeforeLookup`이 확신도 하한을 **먼저** 가르기 때문에, 확신도가 낮으면서
+    // 제목도 빈 후보는 `blankTitle`이 아니라 저확신 바구니로 가고 라우트가 그것을
+    // `low_confidence`로 강등하며 그 항목의 `mergeKey`는 `null`이다.
+    //
+    // `low_confidence`는 `COUNTS_TOWARD_GUARDRAIL`이 `true`인 칸이라, 이 경로가
+    // 되돌아가면 분해표 한 칸이 아니라 **분자와 분모가 함께** 접혀 비율 자체가
+    // 거짓이 된다. 그래서 셋을 다 문다.
+    //
+    // 셋 이상인 이유도 위와 같다 — 둘이면 "첫 항목만 센다"와 "두 번째만 센다"가
+    // 같은 답(1)을 내는 조합이 있어 갈리지 않는다.
+    const 빈키_저확신 = ["!!!", "···", "???"].map((rawText) => 빈키쌍(rawText, "low_confidence"));
+
+    expect(measureUnidentified(빈키_저확신, 확인쪽(0))).toEqual({
+      guardrailCount: 3,
+      guardrailDenominator: 3,
+      lookupCapped: 0,
+      byMeasurement: 계측분해({ low_confidence: 3 }),
+    });
+
+    // 확인된 책이 있는 세션에서도 셋이 그대로 분자에 들고, 분모가 그만큼 함께 오른다.
+    // 접히면 분자와 분모가 같이 2씩 내려가 비율이 조용히 좋아 보인다.
+    const 확인_있는_세션 = measureUnidentified(빈키_저확신, 확인쪽(2, ["키A", "키B"]));
+
+    expect(확인_있는_세션.byMeasurement.low_confidence).toBe(3);
+    expect(확인_있는_세션.guardrailCount).toBe(3);
+    expect(확인_있는_세션.guardrailDenominator).toBe(2 + 3);
+  });
+
+  /* --- 확인된 책과 겹치는 키는 차감한다 (① 회계) -------------------- */
+
+  it("같은 키가 확인·미확인 양쪽에 있으면 분자에서 빠진다 — 그 책은 이미 분모에 있다", () => {
+    // 흐릿하게 한 번, 또렷하게 한 번 읽힌 같은 책이다. 또렷한 쪽이 확인으로
+    // 올라가 분모에 1을 더했는데 흐릿한 쪽이 분자에도 1을 더하면, 한 권이 성공과
+    // 실패로 동시에 세어져 비율이 사진 장수를 따라 움직인다.
+    const 결과 = measureUnidentified(
+      [쌍("low_confidence", "소년이온다-한강")],
+      확인쪽(1, ["소년이온다-한강"]),
+    );
+
+    expect(결과.guardrailCount).toBe(0);
+    expect(결과.byMeasurement.low_confidence).toBe(0);
+    expect(결과.guardrailDenominator).toBe(1);
+  });
+
+  it("dedupe가 버린 쪽 키를 가진 판독본도 차감된다 — 키는 둘, 책은 하나다", () => {
+    // 저자를 읽어낸 판독본과 못 읽은 판독본은 병합 키가 갈리지만 알라딘이 같은
+    // ISBN을 돌려주면 `dedupeByIsbn`이 한 권으로 접는다. 확인 키를 dedupe **뒤**의
+    // 목록에서 모으면 버려진 쪽 키가 집합에 없어, 같은 책의 흐릿한 판독본이
+    // 차감되지 않고 분자에 남는다.
+    const 대표키 = "소년이온다-한강";
+    const 버려진키 = "소년이온다-저자없음";
+
+    const 결과 = measureUnidentified([쌍("no_match", 버려진키)], 확인쪽(1, [대표키, 버려진키]));
+
+    expect(결과.guardrailCount).toBe(0);
+    expect(결과.byMeasurement.no_match).toBe(0);
+    // 분모의 확인 쪽은 **책 수(1)**다. 키 개수(2)를 쓰면 2가 되어 여기서 깨진다.
+    expect(결과.guardrailDenominator).toBe(1);
+  });
+
+  it("분모의 확인 쪽은 키 개수가 아니라 책 수를 따른다", () => {
+    // 키 셋이 한 권을 가리키는 경우다. 집합 크기를 분모에 쓰면 확인된 책이
+    // 부풀어 미확인 비율이 실제보다 좋아 보인다.
+    const 결과 = measureUnidentified([쌍("no_match", "겹치지않는키")], 확인쪽(1, ["가", "나", "다"]));
+
+    expect(결과.guardrailCount).toBe(1);
+    expect(결과.guardrailDenominator).toBe(1 + 1);
+  });
+
+  it("차감은 일곱 칸 전부에 균일하다 — lookup_capped도 확인된 책과 겹치면 줄어든다", () => {
+    // 이 성질을 무는 검사가 여기 하나뿐이다. `lookup_capped`는 분자 밖이라
+    // 차감해도 비율이 안 움직이고, 그래서 예외를 두고 싶어지는 자리다. 예외를
+    // 두면 차감 규칙이 둘이 되고 어느 칸이 어느 규칙을 따르는지 로그만 보고는 알
+    // 수 없게 된다 — 사람이 알고 고른 균일 동작이다.
+    const 결과 = measureUnidentified(
+      [쌍("lookup_capped", "겹치는키"), 쌍("lookup_capped", "안겹치는키")],
+      확인쪽(1, ["겹치는키"]),
+    );
+
+    expect(결과.byMeasurement.lookup_capped).toBe(1);
+    // 상한 강등 수는 분해표의 그 칸에서 그대로 읽어 온다 — 따로 세면 두 수가 갈린다.
+    expect(결과.lookupCapped).toBe(1);
+    expect(결과.guardrailCount).toBe(0);
+    expect(결과.guardrailDenominator).toBe(1);
+  });
+
   it("입력 배열과 원소를 변형하지 않는다 (부수효과 없음)", () => {
     const 원본 = 계측사유들.map((measured) => 쌍(measured));
     const 스냅샷 = structuredClone(원본);
+    // 확인 키 집합도 호출자의 것이다. 루프가 여기에 직접 넣으면 호출부가 나중에
+    // 같은 집합을 다시 쓰는 날 미확인 키가 확인 키인 척하게 된다.
+    const 확인키 = new Set(["키A", "키B"]);
 
-    measureUnidentified(원본, 3);
+    measureUnidentified(원본, { keys: 확인키, count: 3 });
 
     expect(원본).toEqual(스냅샷);
+    expect([...확인키]).toEqual(["키A", "키B"]);
   });
 });

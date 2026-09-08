@@ -266,6 +266,24 @@ describe("judge — 확인/미확인 판정 (FR-003, TR-004)", () => {
   it("판독 불가는 조회 실패보다 먼저 판정된다 — 우리 쪽 한계를 시스템 장애로 보고하지 않는다", () => {
     expect(judge(추출({ title: "###" }), failed)).toMatchObject({ reason: "unreadable" });
   });
+
+  it("빈 제목을 직접 주면 여전히 unreadable이다 — 라우팅이 안 보낸다는 사실과 별개다", () => {
+    // 조회 전 축소가 제목이 빈 후보를 `blankTitle`로 갈라내면서 라우트는 이제
+    // 이런 후보를 `judge`에 넘기지 않는다. 그렇다고 이 순수 함수의 계약이
+    // 사라지는 것은 아니다 — 골든 하네스도, 앞으로 생길 다른 호출부도 같은
+    // 입력을 줄 수 있고, 그때 `no_match`나 `lookup_failed`가 나오면 판독 실패가
+    // "알라딘에 없는 책" 또는 "지금 확인 못 함"으로 잘못 설명된다 (ADR-005).
+    //
+    // 도달 경로가 줄었다는 이유로 이 검사를 지우면, 나중에 판정 순서를 바꿔도
+    // 아무 검사도 실패하지 않는 상태가 된다.
+    for (const 빈제목 of ["!!!", "···", "???", "———"]) {
+      expect(judge(추출({ title: 빈제목 }), ok([]))).toEqual({
+        kind: "unidentified",
+        reason: "unreadable",
+        candidates: [],
+      });
+    }
+  });
 });
 
 describe("판정 결과는 unidentifiedBookSchema를 그대로 통과한다 (계약 정합성)", () => {

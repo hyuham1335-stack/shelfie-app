@@ -10,6 +10,7 @@ import {
   MAX_OUTPUT_BYTES_TOTAL,
   MAX_UNIDENTIFIED_BOOKS,
 } from "@/lib/env";
+import { CONFIDENCE_FLOOR } from "@/lib/merge";
 import { verifyProof } from "@/lib/proof";
 import { RESPONSE_REASON } from "@/lib/unidentified";
 import { analyzeResponseSchema, unidentifiedReasonSchema } from "@/lib/schemas";
@@ -1235,6 +1236,11 @@ describe("미확인 계측을 응답과 갈라 센다 (raw_ 넷)", () => {
     const body = await (await POST(analyzeRequest())).json();
     const event = 유일한_완료이벤트();
 
+    // 이 단언들은 접힘 규칙 재설계 **전후로 똑같이 통과한다.** 그런데 재는
+    // 경로가 다르다 — 옛 경로는 이 후보를 알라딘에 던져 `judge`가 `unreadable`을
+    // 냈고, 새 경로는 조회 전에 `blankTitle`로 갈라낸다. 어느 경로인지 드러나지
+    // 않으면 "질의가 빈 후보를 알라딘에 태우지 않는다"가 회귀해도 여기는 초록불이다.
+    expect(searchManyMock).toHaveBeenCalledWith([], expect.anything());
     expect(body.unidentified).toEqual([{ rawText: "!!!", reason: "unreadable", candidates: [] }]);
     expect(event).toMatchObject({
       unidentified_by_reason: { unreadable: 1, no_match: 0, ambiguous: 0, lookup_failed: 0 },
@@ -1244,6 +1250,141 @@ describe("미확인 계측을 응답과 갈라 센다 (raw_ 넷)", () => {
     });
     expect(사유별_계측(event).blank_title).toBe(1);
     expect(사유별_계측(event).lookup_capped).toBe(0);
+  });
+
+  /* --- 빈 키를 알라딘에 태우지 않는다 (② 접힘 규칙 재설계) ---------- */
+
+  /** 정규화하면 제목이 통째로 사라지는 원문들. 서로 **다른 문자열**인 것이 요점이다 */
+  const 빈제목_원문 = ["!!!", "···", "???"];
+
+  it("제목이 빈 후보는 카드로 전부 남되 알라딘 질의에는 하나도 실리지 않는다", async () => {
+    setExtract([
+      [...빈제목_원문.map((title) => extractedOf(title)), extractedOf("소년이 온다")],
+    ]);
+    searchByExactTitle(["소년이 온다"]);
+    factsForAll();
+
+    const body = await (await POST(analyzeRequest())).json();
+
+    expect(body.identified).toHaveLength(1);
+    // 셋이 서로 다른 카드로 남는다. 옛 키는 이 셋을 `"\u0000"` 하나로 만들어
+    // 병합에서 접었고, 대표 하나만 조회에 실려 나머지 둘은 화면에서 사라졌다.
+    expect(body.unidentified).toHaveLength(빈제목_원문.length);
+    expect(응답_사유_분포(body.unidentified)).toEqual({ unreadable: 빈제목_원문.length });
+    expect(body.unidentified.map((book: { rawText: string }) => book.rawText).sort()).toEqual(
+      [...빈제목_원문].sort(),
+    );
+
+    // 알라딘에 던질 문자가 없는 후보를 조회에 태우면, 확실한 `no_match` 하나를
+    // 일일 한도에서 빼 쓰고 화면에는 "알라딘에 없는 책"이라는 사실이 아닌
+    // 설명이 남는다. 질의 배열을 통째로 못 박아 그 후보가 새는 길을 막는다.
+    const 질의 = searchManyMock.mock.calls[0][0] as { title: string; author: string | null }[];
+    expect(질의).toEqual([{ title: "소년이 온다", author: null }]);
+    for (const 원문 of 빈제목_원문) {
+      expect(질의.some((q) => q.title === 원문)).toBe(false);
+    }
+  });
+
+  it("65 절단 뒤쪽에 놓일 빈 제목 후보가 blank_title이고 분자·분모에 든다", async () => {
+    // 모집단 이동. 옛 규칙에서 이 후보들은 **하나로 접힌 뒤**(키가 전부 같다)
+    // 확신도 오름차순 꼴찌라 65 절단 뒤로 밀려 `lookup_capped`가 됐다 — 분자에도
+    // 분모에도 들어가지 않았고, 접힌 나머지 하나는 응답에서도 사라졌다. 판독이
+    // 무너진 책이 "우리가 건 상한 때문에 밀린 책"으로 기록되면 프롬프트를 고쳐야
+    // 할 신호가 상한을 올려야 할 신호로 뒤바뀐다.
+    const 또렷 = Array.from(
+      { length: MAX_CANDIDATES_FOR_LOOKUP },
+      (_, index) => `책${String(index + 1).padStart(3, "0")}`,
+    );
+    const 빈제목 = ["!!!", "···"];
+    setExtract([
+      [
+        ...또렷.map((title) => extractedOf(title)),
+        // 확신도는 하한 바로 위다 — 강등 사유가 확신도가 아님을 픽스처가 못 박는다.
+        ...빈제목.map((title) => extractedOf(title, 0, { confidence: CONFIDENCE_FLOOR + 0.01 })),
+      ],
+    ]);
+    searchByExactTitle(또렷);
+    factsForAll();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    // 조회는 또렷한 65건뿐이고 절단이 실제로 일어난 세션이다.
+    expect(searchManyMock.mock.calls[0][0]).toHaveLength(MAX_CANDIDATES_FOR_LOOKUP);
+    expect(body.identified).toHaveLength(MAX_IDENTIFIED_BOOKS);
+    expect(응답_사유_분포(body.unidentified)).toEqual({ unreadable: 빈제목.length });
+
+    expect(사유별_계측(event).blank_title).toBe(빈제목.length);
+    expect(사유별_계측(event).lookup_capped).toBe(0);
+    expect(사유별_계측(event).low_confidence).toBe(0);
+    // 분자·분모 **둘 다**에 든다. 오늘은 둘 다 밖이다.
+    expect(event.raw_unidentified_guardrail_count).toBe(빈제목.length);
+    expect(event.raw_guardrail_denominator).toBe(MAX_CANDIDATES_FOR_LOOKUP + 빈제목.length);
+  });
+
+  /* --- 확인된 책과 겹치는 판독본은 분자에서 뺀다 (① 회계) ----------- */
+
+  it("흐릿한 판독본이 또렷한 판독본과 같은 책이면 분자에서 빠진다", async () => {
+    // ①-종단. 같은 책을 두 번 읽었고 한 번은 확인으로 올라갔다. 흐릿한 쪽까지
+    // 분자에 세면 한 권이 성공과 실패로 동시에 세어져, 사진을 여러 장 올릴수록
+    // 판독 품질이 나빠 보이는 뒤집힌 지표가 된다.
+    setExtract([
+      [
+        extractedOf("82년생 김지영", 0, { author: "조남주", confidence: 0.1 }),
+        extractedOf("82년생김지영", 0, { author: "조남주 (지은이)", confidence: 0.9 }),
+        extractedOf("없는 책", 0),
+      ],
+    ]);
+    setSearch((query) =>
+      query.title === "82년생김지영"
+        ? { status: "ok", candidates: [candidateOf(1, "82년생김지영")] }
+        : { status: "ok", candidates: [] },
+    );
+    factsForAll();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    expect(body.identified).toHaveLength(1);
+    // 접는 것은 세는 자리뿐이다 — 흐릿한 판독본도 카드로 그대로 남는다 (ADR-002).
+    expect(응답_사유_분포(body.unidentified)).toEqual({ unreadable: 1, no_match: 1 });
+
+    // 분자는 `no_match` 하나뿐이다.
+    expect(event.raw_unidentified_guardrail_count).toBe(1);
+    expect(사유별_계측(event).low_confidence).toBe(0);
+    expect(사유별_계측(event).no_match).toBe(1);
+    // 분모 = 확인된 책 1 + 분자 1.
+    expect(event.raw_guardrail_denominator).toBe(2);
+  });
+
+  it("dedupe가 버린 쪽 키를 가진 흐릿한 판독본도 분자에서 빠진다", async () => {
+    // ①-dedupe 누수. 저자를 읽어낸 판독본과 못 읽은 판독본은 병합 키가 갈리지만
+    // 알라딘이 같은 ISBN을 돌려주면 `dedupeByIsbn`이 한 권으로 접는다. 확인 키를
+    // dedupe **뒤**의 목록에서 모으면 버려진 쪽 키가 집합에 없어, 그 키를 가진
+    // 흐릿한 판독본이 차감되지 않고 분자에 남는다.
+    setExtract([
+      [
+        extractedOf("소년이 온다", 0, { author: "한강" }),
+        extractedOf("소년이 온다", 0),
+        extractedOf("소년이 온다", 0, { confidence: 0.1 }),
+      ],
+    ]);
+    setSearch(() => ({ status: "ok", candidates: [candidateOf(1, "소년이 온다")] }));
+    factsForAll();
+
+    const body = await (await POST(analyzeRequest())).json();
+    const event = 유일한_완료이벤트();
+
+    // 저자 유무로 키가 갈려 조회는 둘, 그런데 승격 결과는 같은 ISBN이다.
+    expect(searchManyMock.mock.calls[0][0]).toHaveLength(2);
+    expect(lookupFactsManyMock.mock.calls[0][0]).toEqual([isbnOf(1)]);
+    expect(body.identified).toHaveLength(1);
+    expect(응답_사유_분포(body.unidentified)).toEqual({ unreadable: 1 });
+
+    expect(event.raw_unidentified_guardrail_count).toBe(0);
+    expect(사유별_계측(event).low_confidence).toBe(0);
+    // 분모의 확인 쪽은 **책 수(1)**다. 키 둘을 세면 2가 되어 여기서 깨진다.
+    expect(event.raw_guardrail_denominator).toBe(1);
   });
 
   it("미확인이 하나도 없으면 분자가 0이고 분모가 확인된 책 수다", async () => {

@@ -168,9 +168,14 @@ export async function POST(request: Request): Promise<Response> {
 
   // 조회 **전**에 줄인다. 확신도 하한과 65건 상한이 여기서 걸리지 않으면
   // 판독 한 번의 이상 동작이 알라딘 일일 한도를 한 요청에 소진시킨다 (FR-012).
-  // 강등된 두 바구니는 응답에서 같은 사유로 접히지만 지표에서는 갈라야 하므로
-  // 나뉜 채로 받는다 (`lib/merge.ts` · `lib/unidentified.ts`).
-  const { toLookup, lowConfidence, capped } = reduceBeforeLookup(candidates);
+  // 강등된 세 바구니는 응답에서 같은 사유(`unreadable`)로 접히지만 지표에서는
+  // 갈라야 하므로 나뉜 채로 받는다 (`lib/merge.ts` · `lib/unidentified.ts`).
+  //
+  // `toLookup`과 `capped`는 후보가 아니라 **후보와 그 병합 키의 쌍**이다. 키는
+  // `reduceBeforeLookup`이 한 번 계산했고, 이 파일은 그것을 나르기만 한다 —
+  // 여기서 `mergeKey`를 다시 부르면 같은 후보에 키를 만드는 자리가 둘이 되고,
+  // 그 둘이 갈리는 날 병합이 접은 책과 계측이 접는 책이 달라진다.
+  const { toLookup, lowConfidence, blankTitle, capped } = reduceBeforeLookup(candidates);
 
   // 브레이커도 데드라인도 **요청 하나**가 ItemSearch와 ItemLookUp에 나눠 준다.
   // 각자 12s를 잡으면 합이 24s가 되어 총 예산이 깨지고, 브레이커를 따로 두면
@@ -179,7 +184,7 @@ export async function POST(request: Request): Promise<Response> {
   const lookupDeadlineAt = Date.now() + budget.deadlineFor("lookup");
 
   const searchOutcomes = await searchMany(
-    toLookup.map((candidate) => ({ title: candidate.title, author: candidate.author })),
+    toLookup.map(({ candidate }) => ({ title: candidate.title, author: candidate.author })),
     { deadlineMs: lookupDeadlineAt - Date.now(), breaker },
   );
 
@@ -189,24 +194,31 @@ export async function POST(request: Request): Promise<Response> {
   const unidentified: MeasuredUnidentified[] = [];
   const promoted: PromotedBook[] = [];
 
-  toLookup.forEach((candidate, index) => {
+  toLookup.forEach(({ candidate, key }, index) => {
     const verdict = judge(candidate, searchOutcomes[index]);
     if (verdict.kind === "identified") {
       promoted.push({
         isbn13: verdict.candidate.isbn13,
         photoIndex: candidate.photoIndex,
         rawText: candidate.rawText,
-        // 계측 키는 **추출 후보**에서 만든다. 알라딘 후보의 제목·저자로 만들면
-        // 같은 책인데 다른 바구니의 항목과 키가 어긋난다.
-        mergeKey: mergeKey(candidate),
+        // 계측 키는 **추출 후보**에서 만든 것을 그대로 나른다. 알라딘 후보의
+        // 제목·저자로 다시 만들면 같은 책인데 다른 바구니의 항목과 키가 어긋난다.
+        // 여기까지 온 후보는 `reduceBeforeLookup`이 키 있는 쪽으로 갈라 놓은
+        // 것들뿐이라 `key`는 항상 문자열이고, 좁히는 분기가 필요 없다.
+        mergeKey: key,
         candidate: verdict.candidate,
       });
       return;
     }
     // 사유는 끝까지 다른 값으로 나른다 — no_match와 lookup_failed는 화면에서 다른 문장이다.
-    // `judge`가 낸 응답 사유를 기전으로 되돌린 뒤(정의역이 넷뿐이라 성립한다)
-    // 응답 사유를 다시 유도한다. 왕복이므로 사용자가 보는 값은 그대로다.
-    demote(unidentified, keyed(candidate), MEASURED_FROM_VERDICT[verdict.reason], verdict.candidates);
+    // `judge`가 낸 응답 사유를 기전으로 되돌린 뒤(각 사유마다 기전이 하나뿐이라
+    // 성립한다) 응답 사유를 다시 유도한다. 왕복이므로 사용자가 보는 값은 그대로다.
+    demote(
+      unidentified,
+      { rawText: candidate.rawText, mergeKey: key },
+      MEASURED_FROM_VERDICT[verdict.reason],
+      verdict.candidates,
+    );
   });
 
   // 사실 조회 **전에** ISBN 중복을 없앤다. 같은 책을 두 번 조회하면 알라딘 일일
@@ -248,9 +260,39 @@ export async function POST(request: Request): Promise<Response> {
   });
 
   // 조회 전에 강등된 후보도 숨기지 않는다. 왜 빠졌는지 보여주는 편이 신뢰를 지킨다.
-  // 응답에서는 둘 다 같은 문장으로 접히고(`RESPONSE_REASON`), 갈라지는 곳은 지표뿐이다.
+  // 응답에서는 셋 다 같은 문장으로 접히고(`RESPONSE_REASON`), 갈라지는 곳은 지표뿐이다.
+  //
+  // 쌓는 순서가 곧 기전의 우선순위다: 저확신 → 빈 제목 → 상한 절단. `lib/merge.ts`가
+  // 확신도 하한을 먼저 가르므로 확신도가 낮으면서 제목도 빈 후보는 `low_confidence`로
+  // 세어지고, 그 항목의 `mergeKey`는 `null`이다 — 여기는 `null`이 실제로 흐른다.
   for (const candidate of lowConfidence) demote(unidentified, keyed(candidate), "low_confidence");
-  for (const candidate of capped) demote(unidentified, keyed(candidate), "lookup_capped");
+  for (const candidate of blankTitle) demote(unidentified, keyed(candidate), "blank_title");
+  for (const { candidate, key } of capped) {
+    demote(unidentified, { rawText: candidate.rawText, mergeKey: key }, "lookup_capped");
+  }
+
+  // 확인된 책의 계측 키를 모은다. **`dedupeByIsbn` 전의 `promoted`에서** 모으는
+  // 이유는 같은 ISBN에 서로 다른 후보 키가 달릴 수 있기 때문이다 — 중복 제거 뒤에는
+  // 대표 하나의 키만 남아, 접혀 사라진 판독본의 키가 미확인 쪽에서 다시 세어진다.
+  //
+  // 다만 `promoted` 전체가 아니라 `identifiedFacts`와의 **교집합**이다. 사실 조회에
+  // 실패해 강등된 책(`facts_failed`)은 확인 목록에 없으므로 그 키가 남의 분자를
+  // 깎으면 안 된다 — 그 강등은 `uniquePromoted` 단위로 떨어지고, 그러면 그 ISBN
+  // 아래 키가 전부 배제된다.
+  const keysByIsbn = new Map<string, string[]>();
+  for (const book of promoted) {
+    const keys = keysByIsbn.get(book.isbn13);
+    if (keys === undefined) keysByIsbn.set(book.isbn13, [book.mergeKey]);
+    else keys.push(book.mergeKey);
+  }
+  const identifiedKeys = new Set<string>();
+  for (const book of identifiedFacts) {
+    // `identifiedFacts ⊆ uniquePromoted ⊆ promoted`가 구성상 성립하므로 조회가
+    // 빗나갈 수 없다. 그래도 폴백을 둔다 — 그 포함 관계를 지키는 것은 몇 줄 떨어진
+    // 코드라 리팩터링 한 번에 깨지고, 깨진 자리에서 던지면 요청 전체가 500이 된다.
+    // 빈 배열이 도는 일이 실제로 있으면 그것은 회귀이지 정상 경로가 아니다.
+    for (const key of keysByIsbn.get(book.isbn13) ?? []) identifiedKeys.add(key);
+  }
 
   // 계측은 **표시 상한 절단 전에** 센다. 절단 뒤에 세면 후보가 쏟아진 요청일수록
   // 미확인 비율이 낮게 나오는 뒤집힌 지표가 된다 (`lib/analytics.ts`의 `raw_` 규칙).
@@ -258,7 +300,14 @@ export async function POST(request: Request): Promise<Response> {
   // 확인 쪽 모집단은 `identifiedFacts`다 — `dedupeByIsbn`을 지나 **책 단위**이고,
   // 미확인 쪽도 `mergeKey`로 접혀 같은 단위가 된다. 둘의 단위가 다르면 흐릿한
   // 사진을 여러 장 넣을수록 지표가 나빠 보인다.
-  const measurement = measureUnidentified(unidentified, identifiedFacts.length);
+  //
+  // 키 집합과 책 수를 **따로** 넘긴다. 키는 분자에서 빼는 데만 쓰고 분모의 확인
+  // 쪽은 `identifiedFacts.length`를 쓴다 — 위에서 본 대로 한 ISBN에 키가 여럿일 수
+  // 있어 집합 크기가 책 수보다 클 수 있고, 그것을 분모에 넣으면 분모만 부푼다.
+  const measurement = measureUnidentified(unidentified, {
+    keys: identifiedKeys,
+    count: identifiedFacts.length,
+  });
   // 규모 관측값이다. 분모가 아니므로 `measurement`와 나누지 않는다.
   const rawCandidateCount = identifiedFacts.length + unidentified.length;
 
@@ -341,9 +390,16 @@ interface PromotedBook {
   /** 강등될 경우 사용자에게 보여 줄 원문. 확인으로 끝나면 쓰이지 않는다 */
   rawText: string;
   /**
-   * 강등될 경우 쓸 계측 키. 추출 후보에서 미리 만들어 들고 온다 — 여기서
-   * `candidate`(알라딘 후보)로 다시 만들면 같은 책인데 다른 바구니의 항목과
-   * 키가 어긋나 계측에서 접히지 않는다.
+   * 계측 키. 추출 후보에서 미리 만들어 들고 온다 — 여기서 `candidate`(알라딘
+   * 후보)로 다시 만들면 같은 책인데 다른 바구니의 항목과 키가 어긋나 계측에서
+   * 접히지 않는다.
+   *
+   * 강등될 때만이 아니라 **확인으로 끝날 때도 쓰인다**: 확인된 책의 키는 미확인
+   * 계측의 `seen`을 여는 데 들어가, 같은 책이 분자와 분모 양쪽에 앉는 것을 막는다.
+   *
+   * `string | null`이 아니라 `string`인 이유는 여기까지 오는 후보가 `toLookup`뿐이고,
+   * `reduceBeforeLookup`이 키 없는 후보를 그 앞에서 `blankTitle`로 갈라 냈기
+   * 때문이다. 안 흐르는 `null`을 위해 타입을 넓히면 검증할 수 없는 분기가 생긴다.
    */
   mergeKey: string;
   candidate: AladinCandidate;
@@ -365,7 +421,7 @@ interface PromotedBook {
  */
 function demote(
   into: MeasuredUnidentified[],
-  source: { rawText: string; mergeKey: string },
+  source: { rawText: string; mergeKey: string | null },
   measured: MeasuredUnidentified["measured"],
   candidates: AladinCandidate[] = [],
 ): void {
@@ -381,8 +437,14 @@ function demote(
  *
  * 키는 `lib/merge.ts`의 것을 그대로 쓴다. 여기에 다시 구현하면 병합이 접은 책과
  * 계측이 접는 책이 소리 없이 갈린다.
+ *
+ * 쓰이는 곳은 키를 **나르지 않는** 두 바구니(`lowConfidence`·`blankTitle`)뿐이다.
+ * `toLookup`과 `capped`는 `reduceBeforeLookup`이 만든 키를 이미 들고 있어 다시
+ * 만들 이유가 없다. 여기서 `mergeKey`가 `null`을 내는 것은 정상이다 —
+ * `blankTitle`은 정의상 전부 `null`이고, `lowConfidence`도 확신도 하한을 먼저
+ * 가르므로 제목이 빈 후보를 품을 수 있다.
  */
-function keyed(candidate: ExtractedCandidate): { rawText: string; mergeKey: string } {
+function keyed(candidate: ExtractedCandidate): { rawText: string; mergeKey: string | null } {
   return { rawText: candidate.rawText, mergeKey: mergeKey(candidate) };
 }
 

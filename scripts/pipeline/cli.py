@@ -159,6 +159,30 @@ def warn(text):
 
 # ------------------------------------------------------------- 페이즈 파서
 
+def _headings(lines):
+    """(index, line) — **펜스 밖의** `## ` 헤딩만.
+
+    페이즈 파일의 역할 프롬프트 템플릿·제출 형식은 코드 블록 안에 `## 네 소유
+    경계` 같은 줄을 담는다. 그것을 헤딩으로 세면 두 곳이 동시에 망가진다 (M45):
+
+    - `_section` 이 **여는 펜스 직후에서 절을 자른다.** 봉투가 소유권 표도
+      제출 규약도 없이, 게다가 **닫히지 않은 펜스**를 실어 보낸다. 비는 것보다
+      나쁘다 — 뒤따르는 절의 렌더가 그 안으로 빨려 들어간다.
+    - `parse_phase_file` 의 `sections` 에 유령 절이 들어가, `lint-phases` 의
+      "필수 절이 있는가" 가 **코드 블록 안의 글자로 통과할 수 있다.**
+
+    한 곳에서 판정해 둘이 갈라지지 않게 한다.
+    """
+    out, in_fence = [], False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line.startswith("## "):
+            out.append((i, line))
+    return out
+
+
 def parse_phase_file(path):
     """(front, body, sections). 프론트매터는 `---` 로 감싼 **JSON** 이다.
 
@@ -179,8 +203,7 @@ def parse_phase_file(path):
         raise ValueError("프론트매터 JSON 파싱 실패: %s" % exc)
     if not isinstance(front, dict):
         raise ValueError("프론트매터가 객체가 아니다")
-    sections = [line.strip() for line in body.splitlines()
-                if line.startswith("## ")]
+    sections = [line.strip() for _i, line in _headings(body.splitlines())]
     return front, body.lstrip("\r\n"), sections
 
 
@@ -690,6 +713,13 @@ def lint_phases(root, phases_dir=None):
         if missing:
             add(name, "sections", "FAIL", "필수 절이 없다: %s" % ", ".join(missing))
 
+        # 펜스가 안 닫히면 `_headings` 가 그 뒤의 헤딩을 못 보고, 절 하나가
+        # 파일 끝까지 삼킨다. 봉투에서 알게 되면 이미 그 페이즈의 지시가
+        # 틀린 채로 나간 뒤다 — 런 전에 잡는 것이 싸다 (M45).
+        if item["body"].count("```") % 2:
+            add(name, "fences", "FAIL",
+                "코드 펜스(```)가 홀수다 — 안 닫힌 블록이 절 경계를 삼킨다")
+
         # ── 게이트
         gate = front.get("gate") or {}
         runner = gate.get("runner")
@@ -1154,6 +1184,29 @@ def _excluded_render(root):
             + "\n".join("- `%s`" % c for c in codes))
 
 
+def _vocabulary_render(root):
+    """쓸 수 있는 `category` 전부. **봉투가 규약을 먼저 말한다** (M46 · M20).
+
+    이 절이 없으면 리뷰어는 어휘를 모른 채 제출하고, 틀리면 exit 8 을 받는다 —
+    "리뷰어가 모르면 exit 8 이고 메인이 사후에 맞추는 것이 유일한 길이 된다"
+    가 M20 이 고친 바로 그 모양이다.
+    """
+    import ledger
+
+    cats = ledger.categories(root)
+    if not cats:
+        return ("## 원장 어휘\n\n**어휘를 읽지 못했다** (`%s`). 이 상태에서는 "
+                "어떤 `category` 도 원장에 들어가지 못한다 — 리뷰어의 문제가 "
+                "아니라 설정의 문제다. `doctor` 를 먼저 돌린다."
+                % ledger.TAXONOMY_REL)
+    usable = sorted(c for c, v in cats.items()
+                    if (v.get("status") or "") != "retired")
+    return ("## 원장 어휘 — `category` 는 이 안에서 고른다\n\n"
+            + "\n".join("- `%s`" % c for c in usable)
+            + "\n\n밖의 코드를 **지어내지 마라** — 제출이 exit 8 로 되돌아온다. "
+              "맞는 것이 없으면 `OTHER` 로 내고 무엇이 없는지를 evidence 에 적는다. "
+              "어휘를 늘리는 것은 승격의 일이지 제출의 일이 아니다.")
+
 def _contract_drift_lines(node, s):
     """계약이 바뀌어 프로파일이 다시 정해졌다는 것과, 파서가 흘린 줄.
 
@@ -1252,7 +1305,12 @@ def render_packet(root, phase, ctx, s, checks=None):
         rv_render = _review_render(s)
         if rv_render:
             parts.append(rv_render)
+        parts.append(_vocabulary_render(root))
         parts.append(_excluded_render(root))
+    if pid == "07-pr-review":
+        # 07 이 05 와 같은 결함에 다른 이름을 붙이면 새 것으로 세어진다.
+        # 목록을 봉투가 직접 준다 — 모델이 재구성하면 그 재구성이 곧 결함이다 (M48).
+        parts.append(_open_from_05_render(_open_from_05(s)))
     warns = [c for c in (checks or []) if c.get("warn")]
     if warns:
         parts.append("## 경고\n\n" + "\n".join("- %s" % c["message"] for c in warns))
@@ -1345,17 +1403,14 @@ def render_header(config, s):
 
 
 def _section(body, heading):
+    """절 하나를 통째로. **경계 판정은 `_headings` 하나뿐이다** (M45)."""
     lines = body.splitlines()
-    try:
-        start = next(i for i, l in enumerate(lines) if l.strip() == heading)
-    except StopIteration:
+    heads = _headings(lines)
+    start = next((i for i, l in heads if l.strip() == heading), None)
+    if start is None:
         return ""
-    out = [lines[start]]
-    for line in lines[start + 1:]:
-        if line.startswith("## "):
-            break
-        out.append(line)
-    return "\n".join(out).rstrip()
+    end = next((i for i, _l in heads if i > start), len(lines))
+    return "\n".join(lines[start:end]).rstrip()
 
 
 def _prescan(root, loaded, ctx, s):
@@ -1786,6 +1841,38 @@ def _previous_open(rounds, round_, reviewer=None):
     return out
 
 
+def _open_from_05(s):
+    """05 가 열어 둔 채 07 에 넘긴 지적. 07 의 dedup 선언이 가리킬 대상이다.
+
+    라운드 번호를 마지막보다 크게 잡아 **모든 회차**를 훑는다 — 05 는 이미
+    끝났고, 남은 물음은 "무엇이 열린 채로 왔나" 하나다 (M48).
+    """
+    node = (s.get("phases") or {}).get("05-code-review") or {}
+    rounds = node.get("rounds") or {}
+    if not rounds:
+        return []
+    return _previous_open(rounds, max(int(r) for r in rounds) + 1)
+
+
+def _open_from_05_render(open_):
+    """봉투가 목록을 직접 준다 — 모델이 재구성하면 그 재구성이 곧 결함이다."""
+    if not open_:
+        return ("## 05 가 이미 낸 지적\n\n(없다) — 05 가 연 채로 넘긴 것이 없다. "
+                "여기서 잡는 것은 전부 새 것이다.")
+    lines = ["## 05 가 이미 낸 지적 — 같은 것이면 가리켜라", "",
+             "아래는 05 가 **열어 둔 채** 넘긴 것이다. 같은 결함에 다른 이름을 "
+             "붙이면 기계는 새 것으로 세고, 그러면 `escaped_05` 가 05 를 실제보다 "
+             "나쁘게 적는다 (M48). 같은 것이면 그 finding 에 "
+             '`"reraised_from_previous": "<키>"` 를 단다.', ""]
+    for k in open_:
+        lines.append("- `%s` (`%s`, `%s`) — %s"
+                     % (k.get("key"), k.get("severity"), k.get("reviewer"),
+                        k.get("title_norm") or k.get("title") or "제목 없음"))
+    lines += ["", "**목록에 없는 키를 가리키면 exit 8 이다.** 새 것이면 아무것도 "
+                  "달지 않는다 — 안 다는 것이 기본이고, 다는 것이 주장이다."]
+    return "\n".join(lines)
+
+
 def _note_cross_verify_gap(s):
     """폴백으로 돈 회차가 있으면 등급이 그것을 말한다.
 
@@ -1820,12 +1907,14 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
         # 검사가 근거로 삼는 이전 회차 지적이 사라졌다. 정수를 읽는
         # 소비자는 어디에도 없었다 — 순수한 손실이다 (P3).
         s["phases"]["01-plan"]["converged_at_round"] = round_
-        st.counter_inc(s, _loop_counter(phase_item["front"]), max_rounds)
+        st.counter_inc(s, _loop_counter(phase_item["front"]), max_rounds,
+                       "converged", paths=paths)
         _note_cross_verify_gap(s)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 
     used, _max, exceeded = st.counter_inc(
-        s, _loop_counter(phase_item["front"]), max_rounds)
+        s, _loop_counter(phase_item["front"]), max_rounds,
+        "not_converged", paths=paths)
     if exceeded:
         _loop_on_exceed(phase_item["front"])
         st.escalate(paths, s,
@@ -1911,7 +2000,8 @@ def _record_02(root, paths, s, phase_item, ctx, file, reviewer, round_):
         # 그때 처음으로 뜻이 갈린다. 그 갈림이 없던 것이 M36 이다.
         max_decl = _loop_max(front)
         return_to = _loop_return_to(front)
-        used, max_, _exceeded = st.counter_inc(s, _loop_counter(front), max_decl)
+        used, max_, _exceeded = st.counter_inc(s, _loop_counter(front), max_decl,
+                                              "xverify_critical", paths=paths)
         if used > max_:
             _loop_on_exceed(front)
             st.escalate(paths, s, "02 가 %d회를 넘겨 Critical 을 냈다" % max_,
@@ -2145,7 +2235,7 @@ def _record_05(root, paths, s, phase_item, ctx, file, reviewer, round_):
     prev_open = _previous_open(rounds, round_, reviewer)
     excluded = ledger.excluded_categories(root)
     got = review_mod.check(root, ctx["config"], payload, raw_text, prev_open,
-                           excluded=excluded)
+                           excluded=excluded, known=ledger.categories(root))
     if not got["ok"]:
         st.append_event(paths, "check_fail", cmd="record", phase="05-code-review",
                         reviewer=reviewer, errors=len(got["errors"]))
@@ -2369,7 +2459,8 @@ def _judge_05(root, paths, s, phase_item, ctx, round_, slot, node):
     if blocking:
         front = phase_item["front"]
         max_decl = _loop_max(front)
-        used, _max, exceeded = st.counter_inc(s, _loop_counter(front), max_decl)
+        used, _max, exceeded = st.counter_inc(s, _loop_counter(front), max_decl,
+                                              "review_blocking", paths=paths)
         if exceeded:
             _loop_on_exceed(front)
             st.escalate(paths, s,
@@ -2534,6 +2625,14 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
             errors.append("finding %s: severity 가 어휘 밖이다 (%r)"
                           % (f.get("id"), f.get("severity")))
 
+    # 가리킨 대상이 실재해야 선언이 대조 가능한 사실이 된다 (M48).
+    errors += rv7.check_reraise(findings, _open_from_05(s))
+
+    # "고쳤다" 는 git 으로 확인 가능하므로 확인한다 (M49 · 불변식 8).
+    head_sha = (s.get("pr") or {}).get("head_sha")
+    res_errors, res_unverified = rv7.check_resolution(root, findings, head_sha)
+    errors += res_errors
+
     if payload.get("change_requested") and not findings:
         errors.append("`change_requested` 가 참인데 findings 가 비었다 — "
                       "무엇을 고치라는 것인지 없이 차단만 하는 제출이다.")
@@ -2543,11 +2642,25 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
                                      + ["- %s" % e for e in errors]),
                            None)
 
-    got = rv7.escaped(root, findings, s["run_id"])
+    open05 = _open_from_05(s)
+    got = rv7.escaped(root, findings, s["run_id"], previous_open=open05)
     # **dedup 은 버리는 것이 아니라 세는 것이다** — 여기서 처음 잡힌
     # Critical/Major 가 05 라우팅이 놓친 것이다.
-    ledger.append(root, s["run_id"], "07",
-                  [dict(f, resolution="deferred") for f in got["findings"]])
+    # **하드코딩된 `deferred` 를 걷었다** (M49). 고쳐진 지적이 `deferred` 로
+    # 굳으면 `EXCLUDED_FROM_COUNT` 밖이라 "반복되는 미해결" 로 승격 집계에
+    # 학습된다. 다만 대조가 불가능하면 주장을 받지 않고 갭으로 드러낸다 —
+    # 확인할 수 없는 것을 확인한 것처럼 적지 않는다.
+    if res_unverified:
+        gap = "repair_unverified"
+        if gap not in s.setdefault("gaps", []):
+            s["gaps"].append(gap)
+    rows = []
+    for f in got["findings"]:
+        res = f.get("resolution") or "deferred"
+        if res == "repaired" and res_unverified:
+            res = "deferred"
+        rows.append(dict(f, resolution=res))
+    ledger.append(root, s["run_id"], "07", rows)
 
     s.setdefault("review07", {}).update(
         {"external": dict(decided),
@@ -2559,7 +2672,9 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
     if payload.get("change_requested"):
         used, max_, exceeded = st.counter_inc(s,
                                               _loop_counter(phase_item["front"]),
-                                              _loop_max(phase_item["front"]))
+                                              _loop_max(phase_item["front"]),
+                                              "external_change_requested",
+                                              paths=paths)
         st.save(paths, s)
         if exceeded:
             _loop_on_exceed(phase_item["front"])
@@ -2788,7 +2903,8 @@ def _gate_fail(root, paths, s, phase_item, ctx, report, dispatch, round_no):
 
     used, max_, exceeded = st.counter_inc(s,
                                           _loop_counter(phase_item["front"]),
-                                          _loop_max(phase_item["front"]))
+                                          _loop_max(phase_item["front"]),
+                                          "gate_failure", paths=paths)
     # **쌍을 쌓는다** — `owner|sig`. 시그니처만 쌓으면 flip 이 배정한 다음 역할이
     # 지시를 받기 전에 정체 감지가 먼저 멈춘다 (M33).
     s.setdefault("sig_chain", []).extend(dispatch.get("pairs") or [])
@@ -3590,9 +3706,17 @@ def run_pr(root, run_id=None):
     removed = _drop_contract(root, paths, s, build_context(root, paths, s))
     data["contract_removed"] = removed
 
+    # **07 이 대조할 기준점이다** (M49). 07 에서 메인이 "고쳤다"고 신고하면
+    # 그 주장은 `<head_sha>..HEAD` 에 그 파일을 건드린 변경이 실재해야 사실이
+    # 된다. 기준점이 없으면 확인할 수 없고, 확인할 수 없는 것을 확인한 것처럼
+    # 적지 않는다.
+    head_sha = harness._git(root, "rev-parse", "HEAD")
     s.setdefault("pr", {}).update({
         "head": branch, "pushed": True, "pushed_at": st.stamp(),
         "remote": rs["remote"],
+        "head_sha": (head_sha.stdout.strip()
+                     if head_sha is not None and head_sha.returncode == 0
+                     else None),
     })
     req = pr_mod.build_request(s, config, branch, paths.rel(body_path),
                               rs["remote"])
@@ -3905,9 +4029,8 @@ def run_retry(root, phase, counter, reason, run_id=None):
         max_ = _loop_max(loaded[pid]["front"], profile)
     except ConfigDeclarationError as exc:
         return _declaration_envelope("retry", s, exc)
-    used, _m, exceeded = st.counter_inc(s, counter, max_)
-    st.append_event(paths, "counter_inc", cmd="retry", phase=pid,
-                    counter=counter, used=used, reason=reason)
+    used, _m, exceeded = st.counter_inc(s, counter, max_, "manual",
+                                        paths=paths, note=reason)
     if exceeded:
         try:
             _loop_on_exceed(loaded[pid]["front"])

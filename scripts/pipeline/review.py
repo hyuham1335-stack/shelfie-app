@@ -209,7 +209,8 @@ def flatten(payload):
     return out
 
 
-def check(root, config, payload, raw_text, previous_open, excluded=None):
+def check(root, config, payload, raw_text, previous_open, excluded=None,
+          known=None):
     """05 리뷰 제출의 판정. 01 의 `check_review` + 05 특화 넷.
 
     반환: {"ok","exit","errors","keys","closed","blocking","findings",
@@ -241,6 +242,25 @@ def check(root, config, payload, raw_text, previous_open, excluded=None):
                       "않은 리뷰어의 제출은 받지 않는다" % who)
 
     findings = flatten(payload)
+
+    # ②-b **어휘 밖 category 는 여기서 잡는다** (M46). 이 검사는 원래
+    #     `ledger.append` 에만 있었고 그것은 **리뷰어 전원이 모여 병합된 뒤**
+    #     에 돈다 — 셋 중 하나가 어휘 밖을 내면 exit 8 이 마지막 제출자에게
+    #     가고, 그 제출자는 남의 findings 를 고칠 수 없어 스스로 빠져나올 수
+    #     없다. 빠져나가는 유일한 길이 리뷰 회차 예산을 태우는 것이었다.
+    #     제출자 층에는 이미 `attempts` 예산과 강등 경로가 있으므로,
+    #     검사를 여기로 내리면 위반한 리뷰어가 그 기계를 그대로 탄다.
+    #     `ledger.append` 의 검사는 **지우지 않는다** — 05 밖 경로(07·trace)의
+    #     마지막 방어선이다.
+    if known:
+        allowed = ", ".join(sorted(known))
+        for f in findings:
+            code = f.get("category")
+            if code not in known:
+                errors.append(
+                    "finding %s: taxonomy 에 없는 category 다 (%r). 쓸 수 있는 "
+                    "것: %s" % (f.get("id"), code, allowed))
+
     if errors:
         return _fail(errors)
 

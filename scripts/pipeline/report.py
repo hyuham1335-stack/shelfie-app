@@ -110,6 +110,17 @@ def _counter_cell(node):
         cell = "%s (왕복 뒤 %d 지급: %s)" % (
             cell, sum(g.get("extra") or 0 for g in grants),
             "; ".join(g.get("reason") or "" for g in grants))
+    # **무엇에 썼는지가 드러나야 한다** (M47). `used` 만 적으면 "수리 2회로
+    # 안 됐다"와 "형식으로 2회 튕겼다"가 보고서에서 같은 칸이 된다 — P6 이
+    # 정확히 그랬고, 실제로는 수리를 한 번도 시도하기 전에 에스컬레이션했다.
+    spent = node.get("spent") or []
+    if spent:
+        counts = {}
+        for e in spent:
+            r = e.get("reason") or "?"
+            counts[r] = counts.get(r, 0) + 1
+        cell = "%s — %s" % (cell, " · ".join(
+            "%s %d" % (r, n) for r, n in sorted(counts.items())))
     return cell
 
 
@@ -185,6 +196,8 @@ def build(state, data, calibration, promotions):
         # 라운드를 쓰고 둘을 더 받은 런이 같아 보인다 (M32).
         ("라운드", _counter_cell((state.get("counters") or {}).get("round"))),
         ("수리", _counter_cell((state.get("counters") or {}).get("repair"))),
+        ("리뷰 수리",
+         _counter_cell((state.get("counters") or {}).get("review_repair"))),
         ("테스트 실행 수", tests.get("ran")),
         ("테스트 상태", tests.get("status")),
     ])
@@ -202,7 +215,12 @@ def build(state, data, calibration, promotions):
         ("맥락 부족 요청", len(r05.get("need_more_context") or []) or 0),
         ("외부 리뷰", (r07.get("external") or {}).get("status")),
         ("내장 리뷰", r07.get("code_review")),
-        ("escaped_05", r07.get("escaped_05")),
+        # **이 지표를 그대로 읽으면 안 된다** (M48). 대조는 키 일치와 07 의
+        # 선언 둘이고, 07 이 같은 결함에 다른 이름을 붙이고 선언도 안 하면
+        # 여전히 새 것으로 세어진다. 접힌 수를 함께 적어 그 성격을 드러낸다.
+        ("escaped_05", "%s (05 와 접힘 %s · 키 일치 + 선언 대조)"
+         % (r07.get("escaped_05"), r07.get("deduped"))
+         if r07.get("escaped_05") is not None else None),
         ("감사 런", audit.get("is_audit_run")),
         # **01 의 관측 품질이 이 표에 없었다.** 05·07 만 적어서, 교차검증이
         # 다섯 라운드 내내 폴백이어도 보고서는 아무 말도 하지 않았다 (P3).

@@ -192,6 +192,7 @@ def _parse_contract(root, config, state, replay):
     parsed["entrypoint_resolver"] = sel["entrypoint_resolver"]
     parsed["scope"] = {"selected": sel.get("selected"),
                        "test_files": sel.get("test_files"),
+                       "repo_files": sel.get("repo_files"),
                        "ratio": sel.get("selected_ratio"),
                        "degenerate": bool(sel.get("degenerate"))}
     return parsed
@@ -255,7 +256,9 @@ def attribute(root, config, adapter, report, state, replay=None, log_text="",
             (Path(replay) / "manifest.json").read_text(encoding="utf-8"))
         repo_files = manifest.get("repo_files")
     else:
-        repo_files = harness.list_files(root)
+        # 03 이 방금 만든 파일도 프레임으로 센다 — 추적분만 보면 이 런이
+        # 새로 쓴 코드가 귀속에서 통째로 빠진다 (M50).
+        repo_files = harness.list_files_with_untracked(root)
 
     text = log_text or failed.get("output") or ""
     failures = attr.attribute_compile(adapter, config, symbols, text)

@@ -18,6 +18,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent))
 
+import harness  # noqa: E402
 import ledger  # noqa: E402
 import verdict  # noqa: E402
 
@@ -163,11 +164,24 @@ def decide(state, external, config, audit=False):
             "reasons": reasons, "gaps": gaps}
 
 
-def escaped(root, findings, run_id):
+def escaped(root, findings, run_id, previous_open=None):
     """05 가 이미 낸 것을 뺀 나머지. **05 라우팅 품질의 지표다.**
 
     dedup 이 목적이 아니라 **세는 것**이 목적이다 — 여기서 처음 잡힌
     Critical/Major 가 05 의 리뷰어 라우팅이 놓친 것이다.
+
+    대조는 둘이다.
+
+    ① **키 대조** — `sha1(category|target_role|title)`. 07 이 05 와 같은
+       이름을 붙였을 때만 맞는다.
+    ② **선언 대조** — 07 이 `reraised_from_previous` 로 05 의 열린 지적을
+       가리키면 그것도 dupe 다. 키만 보면 **07 이 같은 결함에 다른 이름을
+       붙였을 때 새 것으로 세고**, 그러면 지표가 05 를 실제보다 나쁘게 적는다
+       (M48). M21 이 05 라운드 안에서 고친 것과 같은 어휘를 경계에 둔다.
+
+    **자동 의미 dedup 이 아니다.** 07 이 선언하면 기계가 검증하는 것이고,
+    선언하지 않으면 여전히 새 것으로 센다. 자동으로 하려면 모델 호출이 하나
+    더 들고 그 비용의 근거가 아직 없다 — 보고서가 "선언 기반"임을 적는다.
     """
     seen = set()
     for row in ledger.read_all(root):
@@ -176,12 +190,98 @@ def escaped(root, findings, run_id):
         if row.get("finding_key"):
             seen.add(row["finding_key"])
 
+    open_keys = {k.get("key") for k in (previous_open or []) if k.get("key")}
+
     fresh, dupes = [], 0
     for f in findings or []:
         key = ledger.finding_key(f)
-        if key in seen:
+        if key in seen or f.get("reraised_from_previous") in open_keys:
             dupes += 1
             continue
         fresh.append(dict(f, finding_key=key))
     n = sum(1 for f in fresh if f.get("severity") in ("critical", "major"))
     return {"findings": fresh, "deduped": dupes, "escaped_05": n}
+
+
+def check_reraise(findings, previous_open):
+    """[오류 문자열]. 열려 있지 않은 것을 가리키면 그것은 회계가 아니다.
+
+    `verdict.check_review` 가 05 에서 하는 검사와 같은 형태다 — 가리킨 대상이
+    실재해야 선언이 대조 가능한 사실이 된다.
+    """
+    open_keys = {k.get("key") for k in (previous_open or []) if k.get("key")}
+    errors = []
+    for f in findings or []:
+        ref = f.get("reraised_from_previous")
+        if ref and ref not in open_keys:
+            errors.append(
+                "finding %s: `reraised_from_previous` 가 05 의 열린 지적을 "
+                "가리키지 않는다 (%r). 봉투의 「05 가 이미 낸 지적」 절에 있는 "
+                "키만 쓸 수 있다 — 없는 것을 가리키면 dedup 이 검증되지 않는다."
+                % (f.get("id"), ref))
+    return errors
+
+
+# 07 에서 수리하는 주체는 메인뿐이다 — 절차에 역할 호출이 없다 (§E7).
+REPAIRED_BY = ("main",)
+
+
+def check_resolution(root, findings, head_sha):
+    """([오류], 확인 불가 여부). `repaired` 주장을 **git 으로 대조한다**.
+
+    `_record_07` 이 `resolution="deferred"` 를 하드코딩해서, 메인이 실제로
+    고친 지적도 `deferred` 로 굳었다 (M49). `deferred` 는
+    `EXCLUDED_FROM_COUNT` 에 없으므로 **고쳐진 결함이 "반복되는 미해결" 로
+    승격 집계에 학습된다** — P2 의 G-6 이 07 경로에서 재발한 것이다.
+
+    그렇다고 자진 신고를 그대로 받지도 않는다. "고쳤다" 는 git 으로 확인
+    가능하므로 확인한다(불변식 8) — 05 가 `closed` 를 단조성 검사로 검증한
+    뒤에야 `repaired` 로 승계하는 것과 같은 규율이다.
+
+    기준점(`pr.head_sha`)이 없으면 **대조가 불가능하다.** 그때는 주장을 받지
+    않고(`deferred` 로 남긴다) 그 사실을 갭으로 드러낸다 — 확인할 수 없는
+    것을 확인한 것처럼 적지 않는 것이 이 함수의 요점이다.
+    """
+    errors, unverified = [], False
+    for f in findings or []:
+        res = f.get("resolution")
+        if res is not None and res not in ledger.RESOLUTIONS:
+            errors.append("finding %s: `resolution` 이 어휘 밖이다 (%r) — %s"
+                          % (f.get("id"), res, " · ".join(ledger.RESOLUTIONS)))
+            continue
+        if res != "repaired":
+            continue
+        by = f.get("repaired_by")
+        if by not in REPAIRED_BY:
+            errors.append(
+                "finding %s: 07 에서 수리하는 주체는 %s 뿐이다 (받은 값: %r) — "
+                "이 페이즈의 절차에 역할 호출이 없다"
+                % (f.get("id"), " · ".join("`%s`" % r for r in REPAIRED_BY), by))
+            continue
+        path_ = f.get("path")
+        if not path_:
+            errors.append(
+                "finding %s: `path` 없이 `repaired` 를 주장할 수 없다 — "
+                "무엇이 고쳐졌는지 대조할 자리가 없다"
+                % f.get("id"))
+            continue
+        if not head_sha:
+            unverified = True
+            continue
+        if not _touched_since(root, head_sha, path_):
+            errors.append(
+                "finding %s: `repaired` 라는데 `%s` 를 건드린 변경이 PR push "
+                "이후에 없다. 고친 뒤 커밋하고 다시 제출하거나, 안 고쳤으면 "
+                "`deferred` 로 낸다 — 자진 신고 중 기계로 확인 가능한 것은 "
+                "기계로 확인한다." % (f.get("id"), path_))
+    return errors, unverified
+
+
+def _touched_since(root, head_sha, path_):
+    """커밋된 것과 워킹트리 둘 다 본다 — 아직 안 커밋한 수리도 수리다."""
+    r = harness._git(root, "log", "--format=%H", "%s..HEAD" % head_sha,
+                     "--", path_)
+    if r is not None and r.returncode == 0 and r.stdout.strip():
+        return True
+    r = harness._git(root, "status", "--porcelain", "--", path_)
+    return bool(r is not None and r.returncode == 0 and r.stdout.strip())

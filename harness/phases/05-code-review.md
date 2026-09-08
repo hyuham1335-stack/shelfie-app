@@ -161,6 +161,10 @@ python scripts/pipeline/cli.py contract-trace --run-id {run_id}
 - **`by_checklist` 는 0건인 체크리스트도 명시한다.** 빈 배열로 적는다. 안 적으면
   "안 봤다"와 "보고 아무것도 없었다"가 같은 침묵이 된다
 - `reviewer` 가 작성자 역할이면 거부된다. 자기 코드를 리뷰한 것은 독립 관측이 아니다
+- **`category` 는 원장 어휘(`taxonomy.json`) 안이어야 한다.** 밖이면 그 제출이
+  exit 8 로 되돌아오고 **어느 finding 이 무엇을 썼는지와 쓸 수 있는 코드 전부**를
+  봉투가 보여 준다. 어휘는 아래 「원장 어휘」 절에 있다 — 새 코드가 필요하면
+  지어내지 말고 `CONTRACT_DEFECT` 나 `OTHER` 로 내고 그 사실을 evidence 에 적는다
 - `config.reviewers` 에 없는 `code` 도 거부된다 — 라우팅이 부르지 않은 리뷰어의
   제출은 받지 않는다. **`next` 가 확정한 `planned` 밖이면 exit 8 이다**(델타
   라운드에서는 지목된 한 명 밖이면 그렇다). 분모를 제출자에서 유도하면 누가

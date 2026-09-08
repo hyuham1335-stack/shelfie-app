@@ -147,7 +147,8 @@ def test_selectors(root, config, adapter, parsed, repo_files=None):
     스택 지식은 전부 `adapter.attribution.test_file_globs` 라는 **데이터**에
     있다. 코어에 확장자도 네이밍 규칙도 없다.
     """
-    files = repo_files if repo_files is not None else harness.list_files(root)
+    files = (repo_files if repo_files is not None
+             else harness.list_files_with_untracked(root))
     tests = [f for f in files
              if harness.glob_any(
                  (adapter.get("attribution") or {}).get("test_file_globs") or [], f)]
@@ -193,6 +194,10 @@ def test_selectors(root, config, adapter, parsed, repo_files=None):
     ratio = (float(len(paths)) / len(tests)) if tests else 0.0
     return {"paths": sorted(paths), "unmatched": unmatched,
             "entrypoint_resolver": resolver,
+            # 04 와 05 가 **같은 목록을 봤는지**가 사후에 보여야 한다. P6 에서
+            # 04 는 추적분만, 05 는 미추적까지 봐서 같은 계약에 다른 말을 했다
+            # (M50). 지금은 같은 함수를 쓰므로 두 수가 같아야 한다.
+            "repo_files": len(files),
             "selected": len(paths), "test_files": len(tests),
             "selected_ratio": round(ratio, 3),
             "degenerate": bool(tests) and ratio >= DEGENERATE_RATIO}

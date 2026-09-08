@@ -60,6 +60,25 @@ DONE = "done"
 
 COUNTERS = ("round", "repair", "xverify_return", "review_repair", "pr_repair")
 
+# 예산을 **무엇에 썼는가**. 카운터는 "몇 번 썼나"만 세므로, 사유가 없으면
+# "수리 2회로 안 됐다"와 "형식으로 2회 튕겼다"가 원장에서 같은 줄로 보인다
+# (M47). P6 이 정확히 그랬다 — M46 의 교착으로 예산을 태워 **수리를 한 번도
+# 시도하기 전에** 05 에스컬레이션에 닿았는데 원장은 그것을 말하지 못했다.
+#
+# **어휘를 닫는 이유**: 호출처마다 문자열을 지어내면 집계가 불가능해지고,
+# 그러면 사유를 남기는 목적 자체가 사라진다. 늘리려면 여기와 team-spec 을
+# 함께 고친다.
+COUNTER_REASONS = (
+    "converged",              # 01 이 수렴해 라운드를 닫았다
+    "not_converged",          # 01 이 한 라운드를 더 쓴다
+    "xverify_critical",       # 02 의 Critical 이 01 로 되돌렸다
+    "gate_failure",           # 04 게이트가 실패해 수리로 간다
+    "review_blocking",        # 05 의 Critical/Major 를 수리한다
+    "format_reject",          # 제출이 규약을 어겨 되돌아왔다 — 수리가 아니다
+    "external_change_requested",  # 07 의 외부 변경 요청
+    "manual",                 # `retry` — 사람이 사유를 따로 적는다
+)
+
 # 닫힌 어휘다. budget.model_calls 가 봉투의 지시에서 유도되므로, 어휘가
 # 열려 있으면 그 값의 정의가 조용히 흔들린다.
 EVENT_KINDS = (
@@ -388,13 +407,33 @@ def set_phase_status(s, phase_id, status, now=None, **fields):
     return node
 
 
-def counter_inc(s, name, max_):
-    """(used, max, exceeded). 어휘 밖 카운터는 예외."""
+def counter_inc(s, name, max_, reason, paths=None, now=None, note=None):
+    """(used, max, exceeded). 어휘 밖 카운터·사유는 예외.
+
+    **`reason` 은 필수다.** 기본값을 두면 그 기본값이 곧 새 하드코딩이고,
+    "무엇에 썼는지 모른다" 가 조용히 통과한다 ([[ADR-H025]] 의 교훈).
+
+    `paths` 를 주면 `counter_inc` 이벤트도 남긴다. 상태는 마지막 모습이고
+    이벤트는 순서다 — 어느 라운드가 무엇으로 탔는지는 순서에만 있다.
+    """
     if name not in COUNTERS:
         raise ValueError("알 수 없는 카운터: %r (%s)" % (name, ", ".join(COUNTERS)))
+    if reason not in COUNTER_REASONS:
+        raise ValueError("예산 소모 사유가 어휘 밖이다: %r (%s) — 무엇에 썼는지 "
+                         "없이 예산을 태우면 원장이 그 런을 설명하지 못한다"
+                         % (reason, ", ".join(COUNTER_REASONS)))
     node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": max_})
     node["max"] = max_
     node["used"] = node.get("used", 0) + 1
+    entry = {"n": node["used"], "reason": reason, "ts": stamp(now)}
+    if note:
+        # `manual` 의 사람 사유처럼 어휘로 담을 수 없는 것. 어휘를 늘리는 대신
+        # 자유 텍스트를 옆 칸에 둔다 — 집계는 `reason` 이, 서술은 `note` 가 한다.
+        entry["note"] = note
+    node.setdefault("spent", []).append(entry)
+    if paths is not None:
+        append_event(paths, "counter_inc", counter=name, used=node["used"],
+                     max=max_, reason=reason, note=note, now=now)
     return node["used"], max_, node["used"] >= max_ if max_ is not None else False
 
 

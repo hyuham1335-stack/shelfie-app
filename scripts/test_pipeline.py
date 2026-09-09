@@ -3025,6 +3025,150 @@ def _ledger_lines(root):
     return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
 
 
+class TestRunCost:
+    """런 비용은 **읽는 시점**에 원장 + 트랜스크립트로 집계한다.
+
+    훅에서 못 한다: `cost-state` 는 트랜스크립트의 **마지막 줄**로 써지고
+    그것은 `SessionEnd` 훅보다 늦다 — 세션은 자기 비용을 영원히 못 적는다.
+    반대로 읽는 시점에는 잘 된다: 실물 원장 46줄 중 트랜스크립트가 남은
+    32줄은 **100%** 그 레코드를 갖고 있다.
+
+    그리고 **`run_id` 만으로 합산하면 안 된다.** `session_log._latest_run` 이
+    가장 최근 런 디렉터리를 무조건 집으므로, 런이 닫힌 뒤 시작한 세션도 그
+    `run_id` 를 단다 (M59). 실물 원장에 그 두 줄이 나란히 있다.
+    """
+
+    def _ledger(self, repo, rows):
+        p = repo / "docs" / "pipeline-ledger.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n"
+                             for r in rows), encoding="utf-8")
+        return p
+
+    def _transcript(self, root, sid, usd):
+        d = root / "C--slug"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ("%s.jsonl" % sid)).write_text(
+            json.dumps({"type": "cost-state", "totalCostUSD": usd,
+                        "totalDuration": 1000, "hasUnknownModelCost": False,
+                        "modelUsage": {"m": {"inputTokens": 1, "outputTokens": 2,
+                                             "thinkingTokens": 0,
+                                             "cacheReadInputTokens": 3,
+                                             "cacheCreationInputTokens": 4,
+                                             "costUSD": usd}}},
+                       ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def _run(self, repo, request_file, updated_at):
+        paths, s = st.create_run(repo, "demo", request_file)
+        s["updated_at"] = updated_at
+        st._write_json(paths.state, s)
+        return paths.run_id
+
+    def test_런을_만진_세션만_합산한다(self, repo, request_file, tmp_path):
+        """`touched` 는 세션 창 안에 런의 `updated_at` 이 있다는 뜻이다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-08T16:51:21+0900", "session_id": "s0"},
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T10:21:20+0900", "session_id": "s2",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 4.34)
+        self._transcript(troot, "s2", 20.29)
+
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert out["ok"] is True
+        d = out["data"]
+        assert d["cost_usd"] == 4.34, "닫힌 뒤 시작한 s2 는 빠진다"
+        assert [x["session_id"] for x in d["sessions"] if x["basis"] == "touched"] \
+            == ["s1"]
+        assert [x["session_id"] for x in d["sessions"]
+                if x["basis"] == "latest_only"] == ["s2"]
+
+    def test_latest_only_임을_봉투가_말한다(self, repo, request_file, tmp_path):
+        """뺀 것을 조용히 빼지 않는다 — 왜 뺐는지가 화면에 남아야 한다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T10:21:20+0900", "session_id": "s2",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 1.0)
+        self._transcript(troot, "s2", 2.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert "latest_only" in out["render"]
+
+    def test_트랜스크립트가_없는_세션은_수로_적힌다(self, repo, request_file,
+                                                    tmp_path):
+        """빠진 것을 세지 않으면 합계가 얼마나 모자란지 알 수 없다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T09:30:00+0900", "session_id": "gone",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 1.25)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert out["data"]["cost_usd"] == 1.25
+        assert out["data"]["unread_sessions"] == 1
+        assert "1" in out["render"]
+
+    def test_읽은_세션이_하나도_없으면_합계를_주장하지_않는다(
+            self, repo, request_file, tmp_path):
+        """0 달러와 '못 읽었다' 는 다른 것이다 (ADR-H007)."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "gone",
+             "run": {"run_id": rid}},
+        ])
+        out = cli.run_cost(repo, run_id=rid, transcript_root=tmp_path / "없음")
+        assert "cost_usd" not in out["data"]
+        assert out["data"]["unread_sessions"] == 1
+
+    def test_사각을_봉투가_그대로_인쇄한다(self, repo, request_file, tmp_path):
+        """`BUDGET_BLIND_SPOTS` 와 같은 규율 — 양방향으로 틀리므로
+        "하한" 이라고 부르지 않는다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 3.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        for spot in cli.COST_BLIND_SPOTS:
+            assert spot in out["render"], spot
+
+    def test_원장에_그_런이_없으면_exit_3(self, repo, request_file, tmp_path):
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [{"ts": "2026-09-09T09:05:38+0900",
+                             "session_id": "s1"}])
+        out = cli.run_cost(repo, run_id=rid, transcript_root=tmp_path)
+        assert out["exit"] == 3
+
+    def test_토큰도_같이_나온다(self, repo, request_file, tmp_path):
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T09:40:00+0900", "session_id": "s1b",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 1.0)
+        self._transcript(troot, "s1b", 2.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        # 창이 [09:05, 09:40] 인 s1b 는 updated_at 01:08 을 안 담는다.
+        assert out["data"]["cost_usd"] == 1.0
+        assert out["data"]["output_tokens"] == 2
+
+
 class TestSessionLedger:
     """훅은 셸이라 해석을 못 쓴다. **그래서 사실만 쌓는다.**
 

@@ -945,6 +945,103 @@ class StepExecutor:
         return sid if isinstance(sid, str) and sid else None
 
     @staticmethod
+    def _read_cost_state(session_id: Optional[str], *,
+                         transcript_root: Optional[Path] = None) -> dict:
+        """세션 **누적** 비용을 트랜스크립트의 `cost-state` 레코드에서 읽는다.
+
+        **`_extract_usage` 와 뜻이 다르다.** 그쪽은 `claude -p` **한 번**의
+        비용이고 이쪽은 **세션 전체**(서브에이전트 포함)다. 그래서 키에
+        `session_` 을 붙여 **구조적으로** 겹치지 않게 했다 — `_record_run` 의
+        `entry.update` 가 둘을 겹쳐 쓰면 뒤엣것이 조용히 이긴다. 그 함수에
+        배선하지도 않는다. `_session_id` 를 `_extract_usage` 에서 갈라 둔 것과
+        같은 이유다. 런 단위 합계 이름으로 옮기는 것은 `cli.run_cost` 가 한다.
+
+        **서브에이전트를 포함한다** — 43개 트랜스크립트로 갈랐다.
+        서브에이전트가 0개인 세션 다섯에서 메인 트랜스크립트만으로
+        `modelUsage` 와 정확히 일치하고, 있는 세션에서는 메인만으로 크게
+        모자란다. 포함하지 않는다면 뒤쪽도 일치해야 한다.
+
+        **트랜스크립트 재구성으로 대조하지 않는다.** 서브에이전트 jsonl 은
+        `apiBlockIndex` 로 쪼갠 부분 usage 를 담고, `modelUsage` 에는
+        트랜스크립트에 레코드조차 없는 haiku 부수 호출이 있다 — 재구성값은
+        신뢰할 수 없는 하한이다.
+
+        **마지막 레코드가 이긴다.** 한 파일에 두 건인 경우가 실물 43개 중
+        6건이고, 누적값은 같고 `totalDuration` 만 다르다.
+
+        레코드는 트랜스크립트의 **마지막 줄**로 써진다 — 그 세션 자신의
+        `SessionEnd` 훅은 이 값을 볼 수 없다. 그래서 런 비용은 훅이 아니라
+        **읽는 시점**에 집계한다 (`cli.run_cost`).
+
+        못 재면 키를 만들지 않는다 (ADR-H007). `hasUnknownModelCost` 면
+        `cost_usd` 대신 그 플래그를 적는다 — 값을 모르는 모델이 섞인 합계는
+        비용이 아니다.
+        """
+        if not session_id:
+            return {}
+        root = TRANSCRIPT_ROOT if transcript_root is None else Path(transcript_root)
+        try:
+            paths = sorted(root.glob(f"*/{session_id}.jsonl"))
+        except OSError:
+            return {}
+        if not paths:
+            return {}
+
+        latest = None
+        try:
+            with paths[0].open(encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if '"cost-state"' not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        # 쓰이는 중이면 마지막 줄이 잘려 있을 수 있다.
+                        continue
+                    if isinstance(rec, dict) and rec.get("type") == "cost-state":
+                        latest = rec
+        except OSError:
+            return {}
+        if latest is None:
+            return {}
+
+        out: dict = {"session_id": session_id}
+        unknown = latest.get("hasUnknownModelCost")
+        if unknown is True:
+            out["unknown_model_cost"] = True
+        else:
+            cost = latest.get("totalCostUSD")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                out["session_cost_usd"] = round(float(cost), 4)
+        for src_key, dst_key in (("totalDuration", "duration_ms"),
+                                 ("totalAPIDuration", "api_duration_ms")):
+            val = latest.get(src_key)
+            if isinstance(val, int) and not isinstance(val, bool):
+                out[dst_key] = val
+
+        usage = latest.get("modelUsage")
+        if isinstance(usage, dict):
+            totals = {}
+            models = {}
+            for name, cell in usage.items():
+                if not isinstance(cell, dict):
+                    continue
+                models[name] = cell.get("costUSD")
+                for s_key, d_key in (("inputTokens", "session_input_tokens"),
+                                     ("outputTokens", "session_output_tokens"),
+                                     ("thinkingTokens", "session_thinking_tokens"),
+                                     ("cacheReadInputTokens", "session_cache_read"),
+                                     ("cacheCreationInputTokens",
+                                      "session_cache_write")):
+                    val = cell.get(s_key)
+                    if isinstance(val, int) and not isinstance(val, bool):
+                        totals[d_key] = totals.get(d_key, 0) + val
+            out.update(totals)
+            if models:
+                out["models"] = models
+        return out
+
+    @staticmethod
     def _read_session_metrics(session_id: Optional[str], *,
                               transcript_root: Optional[Path] = None) -> dict:
         """세션이 접두부 **밖에서** 끌어온 양을 트랜스크립트에서 잰다 (ROADMAP 29).

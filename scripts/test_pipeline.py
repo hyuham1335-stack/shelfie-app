@@ -3058,8 +3058,11 @@ class TestRunCost:
                                              "costUSD": usd}}},
                        ensure_ascii=False) + "\n", encoding="utf-8")
 
-    def _run(self, repo, request_file, updated_at):
+    def _run(self, repo, request_file, updated_at,
+             created_at="2026-09-08T17:20:01+0900"):
+        """런은 **구간**을 갖는다. P8 은 17:20 에 시작해 다음날 01:08 에 닫혔다."""
         paths, s = st.create_run(repo, "demo", request_file)
+        s["created_at"] = created_at
         s["updated_at"] = updated_at
         st._write_json(paths.state, s)
         return paths.run_id
@@ -3087,6 +3090,30 @@ class TestRunCost:
         assert [x["session_id"] for x in d["sessions"]
                 if x["basis"] == "latest_only"] == ["s2"]
 
+    def test_여러_세션에_걸친_런은_앞_세션도_합산한다(self, repo, request_file,
+                                                      tmp_path):
+        """**P8 의 실제 모양이다** — 17:20 에 시작해 다음날 01:08 에 닫혔고
+        세션 둘이 걸쳐 있다. `updated_at` 한 시점만 보면 앞 세션이 통째로 빠진다.
+        """
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900",
+                        created_at="2026-09-08T17:20:01+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-08T16:51:21+0900", "session_id": "s0"},
+            # 17:20~24:00 을 담당한 세션.
+            {"ts": "2026-09-08T23:00:00+0900", "session_id": "early",
+             "run": {"run_id": rid}},
+            # 00:00~01:08 을 담당하고 런을 닫은 세션.
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "late",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "early", 10.0)
+        self._transcript(troot, "late", 4.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert out["data"]["cost_usd"] == 14.0
+        assert [x["basis"] for x in out["data"]["sessions"]] == \
+            ["touched", "touched"]
+
     def test_latest_only_임을_봉투가_말한다(self, repo, request_file, tmp_path):
         """뺀 것을 조용히 빼지 않는다 — 왜 뺐는지가 화면에 남아야 한다."""
         rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
@@ -3107,9 +3134,10 @@ class TestRunCost:
         """빠진 것을 세지 않으면 합계가 얼마나 모자란지 알 수 없다."""
         rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
         self._ledger(repo, [
-            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+            # 둘 다 런 구간(17:20~01:08)과 겹친다. 뒤엣것만 트랜스크립트가 없다.
+            {"ts": "2026-09-08T23:00:00+0900", "session_id": "gone",
              "run": {"run_id": rid}},
-            {"ts": "2026-09-09T09:30:00+0900", "session_id": "gone",
+            {"ts": "2026-09-09T00:30:00+0900", "session_id": "s1",
              "run": {"run_id": rid}},
         ])
         troot = tmp_path / "projects"
@@ -3164,7 +3192,7 @@ class TestRunCost:
         self._transcript(troot, "s1", 1.0)
         self._transcript(troot, "s1b", 2.0)
         out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
-        # 창이 [09:05, 09:40] 인 s1b 는 updated_at 01:08 을 안 담는다.
+        # 창이 [09:05, 09:40] 인 s1b 는 런 구간(~01:08)과 안 겹친다.
         assert out["data"]["cost_usd"] == 1.0
         assert out["data"]["output_tokens"] == 2
 

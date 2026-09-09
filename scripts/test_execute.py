@@ -1935,7 +1935,7 @@ class TestCostState:
             _cost_state(usd=1.0), _tool_use("Bash", "t1"), _cost_state(usd=3.25),
         ])
         c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
-        assert c["cost_usd"] == 3.25
+        assert c["session_cost_usd"] == 3.25
 
     def test_cost_state_가_없으면_빈_dict_다(self, transcripts):
         """실물 43개 중 9개가 이 경우다 — 아직 안 끝난 세션이다.
@@ -1956,9 +1956,9 @@ class TestCostState:
             _cost_state(usd=9.0, hasUnknownModelCost=True),
         ])
         c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
-        assert "cost_usd" not in c
+        assert "session_cost_usd" not in c
         assert c["unknown_model_cost"] is True
-        assert c["output_tokens"] == 20, "토큰은 그래도 잰 값이다"
+        assert c["session_output_tokens"] == 20, "토큰은 그래도 잰 값이다"
 
     def test_토큰을_모델_넘어_합산한다(self, transcripts):
         """opus 와 haiku 가 한 세션에 섞인다 — 실물이 그렇다."""
@@ -1976,10 +1976,10 @@ class TestCostState:
                                               "costUSD": 0.1}}),
         ])
         c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
-        assert c["input_tokens"] == 11
-        assert c["output_tokens"] == 22
-        assert c["cache_read"] == 300
-        assert c["cache_write"] == 40
+        assert c["session_input_tokens"] == 11
+        assert c["session_output_tokens"] == 22
+        assert c["session_cache_read"] == 300
+        assert c["session_cache_write"] == 40
         assert sorted(c["models"]) == ["claude-haiku-4-5-20251001",
                                        "claude-opus-5[1m]"]
 
@@ -1989,16 +1989,17 @@ class TestCostState:
             _cost_state(usd="많이"),
         ])
         c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
-        assert "cost_usd" not in c
-        assert c["output_tokens"] == 20
+        assert "session_cost_usd" not in c
+        assert c["session_output_tokens"] == 20
 
     def test_깨진_줄이_나머지를_버리지_않는다(self, transcripts):
         path = transcripts / "C--some-slug" / "abc.jsonl"
         _jsonl(path, [_cost_state(usd=4.5)])
         with path.open("a", encoding="utf-8") as fh:
-            fh.write("{ broken\n")
+            # `_jsonl` 은 끝에 개행을 안 붙인다.
+            fh.write("\n{ broken\n")
         c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
-        assert c["cost_usd"] == 4.5
+        assert c["session_cost_usd"] == 4.5
 
     def test_세션_아이디가_없으면_빈_dict_다(self, transcripts):
         assert ex.StepExecutor._read_cost_state(
@@ -2008,6 +2009,10 @@ class TestCostState:
         """**두 값은 뜻이 다르다.** `_extract_usage` 는 `claude -p` **한 번**의
         비용이고 `cost-state` 는 **세션 누적**(서브에이전트 포함)이다.
         같은 키를 쓰면 `_record_run` 의 `entry.update` 에서 조용히 덮인다.
+
+        그래서 겹침을 테스트로 감시하는 대신 **이름으로 막았다** — 이쪽 키는
+        전부 `session_` 으로 시작한다. 런 단위 이름으로 옮기는 것은
+        `cli.run_cost` 가 한다.
         """
         _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [_cost_state()])
         cost = ex.StepExecutor._read_cost_state("abc",

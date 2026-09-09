@@ -6842,6 +6842,98 @@ class TestPr06ContractLifetime:
         assert (paths.run_dir / "06_contract_snapshot.md").exists()
 
 
+class TestPr06ContractAfterDrop:
+    """M54 — 계약이 지워진 뒤 `pr` 을 다시 돌리면 본문이 계약 절을 잃었다.
+
+    07 수리를 PR 에 올리려면 재승인 뒤 `pr` 을 다시 돌려야 하는데(P7 이 실제로
+    그랬다), 그때 `_contract_sections` 가 이미 없는 파일을 읽어 빈 문자열을
+    돌려주고 본문이 **`no_contract` 런이라고 자기를 잘못 보고했다.** 상태는
+    여전히 `mode: contract` 라 같은 문서의 체크리스트와 모순됐다.
+
+    되살릴 원본은 이미 있다 — 삭제 직전에 `06_contract_snapshot.md` 로 옮겨
+    둔다. 새 사본을 만들지 않고 **읽는 쪽만** 만든다 (M31 · ADR-H022).
+    """
+
+    def _body(self, repo, paths, s):
+        return pr_mod.build_body(repo, paths, s,
+                                 harness._read_json(repo / harness.CONFIG_REL))
+
+    def _with_path(self, repo, run_id):
+        """실물 06 은 `_refresh_contract` 가 `path` 를 싣는다. 픽스처는 안 싣는다."""
+        p, s = st.load(repo, run_id)
+        s["contract"] = dict(s.get("contract") or {},
+                             path="_workspace/contract_x.md")
+        st.save(p, s)
+        return s
+
+    def test_계약이_지워진_뒤_재실행해도_본문이_계약_절을_싣는다(
+            self, repo, request_file, phases, tmp_path):
+        """가장 중요한 회귀 — P7 이 밟은 정상 경로다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        self._with_path(repo, run_id)
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        env = cli.run_pr(repo, run_id=run_id)
+        assert env["exit"] == 0, env["render"]
+        assert not (repo / "_workspace" / "contract_x.md").exists()
+
+        env2 = cli.run_pr(repo, run_id=run_id)
+        assert env2["exit"] == 0, env2["render"]
+        body = (paths.run_dir / "06_pr_body.md").read_text(encoding="utf-8")
+        assert "matchTitle" in body, body
+        assert "POST /api/analyze" in body, body
+        assert "no_contract" not in body, body
+
+    def test_삭제가_스냅샷_경로를_상태에_남긴다(self, repo, request_file, phases,
+                                                tmp_path):
+        """본문이 파일 이름을 짐작하지 않게 한다 — 출처는 상태다."""
+        _branch(repo, "feat-x")
+        run_id, _paths = _enter_06(repo, request_file, phases)
+        self._with_path(repo, run_id)
+        cli.run_approve(repo, "06", run_id=run_id)
+        _remote(repo, tmp_path)
+        assert cli.run_pr(repo, run_id=run_id)["exit"] == 0
+        _p, s = st.load(repo, run_id)
+        snap = (s.get("contract") or {}).get("snapshot")
+        assert snap, s.get("contract")
+        assert (repo / snap).exists(), snap
+
+    def test_계약이_살아_있으면_스냅샷을_보지_않는다(self, repo, request_file,
+                                                    phases):
+        """폴백이 정상 경로를 가로채면 본문이 낡은 계약을 싣는다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        s = self._with_path(repo, run_id)
+        snap = paths.run_dir / "06_contract_snapshot.md"
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        snap.write_text(CONTRACT.replace("matchTitle", "낡은심볼"),
+                        encoding="utf-8")
+        s["contract"]["snapshot"] = paths.rel(snap)
+        body = self._body(repo, paths, s)
+        assert "matchTitle" in body, body
+        assert "낡은심볼" not in body, body
+
+    def test_no_contract_런은_문구가_그대로다(self, repo, request_file, phases):
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        s["contract"] = {"mode": "no_contract", "present": False}
+        assert "(no_contract)" in self._body(repo, paths, s)
+
+    def test_계약_런인데_못_읽으면_no_contract_라_적지_않는다(
+            self, repo, request_file, phases):
+        """**실패와 데이터 없음을 뭉개지 않는다.** 파일도 스냅샷도 없는 것은
+        계약이 없는 런이 아니라 지금 못 읽는 것이다."""
+        _branch(repo, "feat-x")
+        run_id, paths = _enter_06(repo, request_file, phases)
+        s = self._with_path(repo, run_id)
+        (repo / "_workspace" / "contract_x.md").unlink()
+        body = self._body(repo, paths, s)
+        assert "no_contract" not in body, body
+        assert "읽지 못했다" in body, body
+
+
 class TestRunAbandon:
     """이어질 일이 없는 런이 `active` 로 남아 있는 것 자체가 거짓이다."""
 

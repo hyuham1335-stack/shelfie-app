@@ -5749,6 +5749,128 @@ class TestReview05DeltaRound:
         cli._write_review05(s, node, ["arch"], 1, [], r2, round_=2)
         assert s["review05"]["truncated"] is True, s["review05"]
 
+    # ---------------------------------------------------------------- M52
+    #
+    # 델타 라운드는 설계상 한 명만 돈다. 그 한 명의 제출이 **그 라운드의**
+    # merged 이고, PR 본문의 「미해결 Minor」가 거기서 나오면 다른 리뷰어의
+    # 열린 Minor 가 사람이 읽는 자리에서만 사라진다 (원장에는 남는다).
+
+    @staticmethod
+    def _mf(fid, title, severity="minor", category="RESPONSE_SHAPE",
+            role="impl"):
+        """`NAMING`·`BOUNDARY_VIOLATION`·`MIG_DESTRUCTIVE` 를 기본값으로 쓰지
+        않는다 — 셋은 검토 제외 목록이라 `review.check` 가 드롭한다."""
+        return {"id": fid, "category": category, "severity": severity,
+                "target_role": role, "title": title, "quote": title}
+
+    @classmethod
+    def _mslot(cls, findings, closed=()):
+        """성공한 제출 슬롯 하나. `keys` 가 None 이 아닌 것이 성공의 표식이다."""
+        return {"mode": "primary", "blocking": 0,
+                "keys": [{"key": ldg.finding_key(f), "id": f["id"],
+                          "severity": f["severity"], "reraised_from": None}
+                         for f in findings],
+                "findings": list(findings), "closed": list(closed),
+                "dropped_by_enforcement": 0, "truncated": False,
+                "need_more_context": []}
+
+    def test_델타_라운드가_다른_리뷰어의_열린_Minor_를_지우지_않는다(self, repo):
+        """M52 — P7 2회차가 `arch` 하나였고 `sec`·`data` 의 셋이 사라졌다."""
+        major = self._mf("F-9", "인가 누락", "major", "AUTHZ_MISSING_RULE")
+        r1 = {"arch": self._mslot([self._mf("A-1", "arch 지적 1"),
+                                   self._mf("A-2", "arch 지적 2"), major]),
+              "sec": self._mslot([self._mf("S-1", "sec 지적")]),
+              "data": self._mslot([self._mf("D-1", "data 지적 1"),
+                                   self._mf("D-2", "data 지적 2")])}
+        r2 = {"arch": self._mslot([], closed=[ldg.finding_key(major)])}
+        open_ = rv.open_findings({"1": r1, "2": r2})
+        minors = sorted(f["title"] for f in open_ if f["severity"] == "minor")
+        assert minors == ["arch 지적 1", "arch 지적 2", "data 지적 1",
+                          "data 지적 2", "sec 지적"], (
+            "마지막 라운드만 보면 0건이고 델타의 것만 보면 2건이다 — 다섯이어야 "
+            "한다 (M52)")
+
+    def test_닫힌_지적은_열린_목록에_없다(self, repo):
+        """접기가 넓어졌다고 이미 해소된 것까지 되살리면 안 된다."""
+        major = self._mf("F-9", "인가 누락", "major", "AUTHZ_MISSING_RULE")
+        r1 = {"arch": self._mslot([major, self._mf("A-1", "arch 지적 1")])}
+        r2 = {"arch": self._mslot([], closed=[ldg.finding_key(major)])}
+        titles = [f["title"] for f in rv.open_findings({"1": r1, "2": r2})]
+        assert titles == ["arch 지적 1"], titles
+
+    def test_2인_합치로_오른_severity_가_열린_목록에_반영된다(self, repo):
+        """`review.merge` 는 2인이 같은 것을 내면 한 단계 올린다.
+
+        그 상승을 잃으면 major 로 오른 지적이 「미해결 Minor」에 실린다 —
+        수리 대상인 것을 수리 면제인 것처럼 적는 것이다.
+        """
+        same = dict(category="RESPONSE_SHAPE", role="impl")
+        r1 = {"sec": self._mslot([self._mf("S-1", "같은 지적", **same)]),
+              "data": self._mslot([self._mf("D-1", "같은 지적", **same)])}
+        open_ = rv.open_findings({"1": r1})
+        assert len(open_) == 1, open_
+        assert open_[0]["severity"] == "major", open_[0]
+        assert [f for f in open_ if f["severity"] == "minor"] == []
+
+    def test_열린_목록이_라운드를_가로질러_severity_를_올리지_않는다(self, repo):
+        """라운드를 섞어 한 번에 merge 하면 여기가 빨간불이 된다.
+
+        `sec` 가 1회차에, 델타 `arch` 가 2회차에 **같은** 지적을 낸다. 라운드
+        안에서만 merge 하면 둘 다 1인 관측이라 minor 그대로다. 라운드를
+        가로질러 합치면 `by` 가 둘이 되어 major 로 오르고, **한 번도 합치된
+        적 없는 지적이 합치로 오른 것처럼** 적힌다.
+        """
+        same = dict(category="RESPONSE_SHAPE", role="impl")
+        r1 = {"sec": self._mslot([self._mf("S-1", "같은 지적", **same)])}
+        r2 = {"arch": self._mslot([self._mf("A-9", "같은 지적", **same)])}
+        open_ = rv.open_findings({"1": r1, "2": r2})
+        assert len(open_) == 1, open_
+        assert open_[0]["severity"] == "minor", open_[0]
+        assert "severity_raised_from" not in open_[0], open_[0]
+
+    def test_실패한_리뷰어의_슬롯은_열린_목록에_안_들어간다(self, repo):
+        """`keys: None` 이 실패의 표식이다 (`cli.py` 의 실패 슬롯).
+
+        `_judge_05` 가 병합에서 그것을 빼는 것과 **같은 가드**를 쓴다. 안 빼면
+        규약을 어겨 되돌려진 제출의 문장이 PR 본문에 실린다.
+        """
+        r1 = {"arch": self._mslot([self._mf("A-1", "arch 지적")]),
+              "sec": {"mode": "primary", "keys": None, "blocking": 0,
+                      "closed": [], "status": "failed",
+                      "findings": [self._mf("S-1", "반려된 제출의 문장")],
+                      "dropped_by_enforcement": 0, "truncated": False,
+                      "need_more_context": []}}
+        titles = [f["title"] for f in rv.open_findings({"1": r1})]
+        assert titles == ["arch 지적"], titles
+
+    def test_첫_등장의_판정이_원장과_같이_이긴다(self, repo):
+        """원장은 1회차 행을 남긴다 (M30 · `ledgered_keys`).
+
+        본문이 마지막 회차의 판정을 적으면 두 영수증이 같은 키를 두고 다른
+        말을 한다 — 이 증분이 없애려는 그 어긋남을 방향만 바꿔 되살리는 것이다.
+        """
+        same = dict(category="RESPONSE_SHAPE", role="impl")
+        r1 = {"arch": self._mslot([self._mf("A-1", "같은 지적", **same)])}
+        r2 = {"arch": self._mslot(
+            [self._mf("A-1", "같은 지적", severity="major", **same)])}
+        open_ = rv.open_findings({"1": r1, "2": r2})
+        assert len(open_) == 1, open_
+        assert open_[0]["severity"] == "minor", open_[0]
+
+    def test_델타의_회계_목록은_여전히_자기_것만이다(self, repo):
+        """**(A) 를 안 골랐다는 것을 코드로 잠근다.**
+
+        보고 표면을 넓혔다고 회계 목록까지 넓히면 M21 ③ 이 다시 열린다 —
+        두 리뷰어가 모두 `F-1` 을 쓰므로 id 대조가 전역이 되면 한 줄이 서로
+        다른 두 지적을 동시에 해소로 계수한다. 누가 나중에 그 필터를 지우면
+        여기가 빨간불이 된다.
+        """
+        r1 = {"arch": self._mslot([self._mf("F-1", "arch 지적")]),
+              "sec": self._mslot([self._mf("F-1", "sec 지적")])}
+        got = cli._previous_open({"1": r1}, 2, "arch")
+        assert [k["id"] for k in got] == ["F-1"], got
+        assert len(got) == 1, "sec 의 F-1 이 들어오면 한 줄이 둘을 닫는다"
+
     def test_worst_status_is_a_pure_function(self, repo):
         assert rv.worst_status(["ok", "degraded"]) == "degraded"
         assert rv.worst_status(["degraded", "ok"]) == "degraded"
@@ -5841,6 +5963,104 @@ class TestReview05DeltaRound:
         _p, s = st.load(repo, run_id)
         assert "2" in (s["phases"]["05-code-review"].get("rounds") or {}),             "2회차가 슬롯에 안 들어갔으면 이 테스트는 아무것도 안 잰다"
         assert len(s["review05"]["need_more_context"]) == 2,             "델타 라운드의 빈 배열이 1회차의 둘을 지웠다 (M53)"
+
+    def test_실물_델타_라운드_뒤_본문이_모든_리뷰어의_미해결_Minor_를_담는다(
+            self, repo, request_file, phases):
+        """P8 확인 항목의 문장 그대로다 (M52 · `ROADMAP.md:486`).
+
+        P7 이 실제로 밟은 모양: 1회차에 `arch` 가 major 하나와 minor 하나를,
+        `test` 가 minor 하나를 낸다. 2회차 델타는 `arch` 한 명이고, 그의 회계
+        목록에는 **`test` 의 minor 가 없다**(M21 ③ 때문에 그래야 한다). 그래서
+        2회차 merged 는 `arch` 것뿐이고, 본문이 거기서 나오면 `test` 의 minor 가
+        **원장에는 남은 채 사람이 읽는 자리에서만** 사라진다.
+
+        **헛돎 가드 둘** (M53 이 실제로 밟았다): ① 1회차에 major 가 없으면 05 가
+        그 자리에서 통과해 2회차 `record` 가 exit 3 이고 아무것도 안 밟은 채
+        초록이 된다. ② 2회차가 열린 것을 회계하지 않으면 단조성 검사가 exit 8 을
+        낸다. 둘 다 단언으로 잠근다.
+        """
+        run_id, paths, s, node = self._ready(repo, request_file, phases)
+        st.save(paths, s)
+        major = self._mf("F-1", "인가 누락", "major", "AUTHZ_MISSING_RULE")
+        arch_minor = self._mf("F-2", "arch 가 남긴 미해결 Minor")
+        test_minor = self._mf("T-1", "test 가 남긴 미해결 Minor")
+        for code, fs in (("arch", [major, arch_minor]), ("test", [test_minor])):
+            j = self._context_file(paths, code, 1, [], findings=fs)
+            env = cli.run_record(repo, "05", str(j), reviewer=code, round_=1,
+                                 run_id=run_id)
+        assert env["exit"] == 4, (
+            "1회차가 수리를 요구하지 않으면 델타 라운드가 성립하지 않는다 — "
+            "이 테스트는 아무것도 안 잰다", env["exit"], env.get("render"))
+
+        _p, s = st.load(repo, run_id)
+        s["phases"]["05-code-review"]["rounds_planned"] = {"2": ["arch"]}
+        st.save(_p, s)
+        # 델타는 자기 회계 의무만 진다 — major 를 닫고 자기 minor 를 다시 낸다.
+        # `test` 의 minor 는 애초에 그의 목록에 없다. 그것이 M52 의 기전이다.
+        j = self._context_file(
+            paths, "arch", 2, [], findings=[arch_minor],
+            resolved=[{"id": "F-1", "resolved_by": "인가 규칙을 넣었다"}])
+        env = cli.run_record(repo, "05", str(j), reviewer="arch", round_=2,
+                             run_id=run_id)
+        assert env["exit"] == 0, (env["exit"], env.get("render"))
+        _p, s = st.load(repo, run_id)
+        assert "2" in (s["phases"]["05-code-review"].get("rounds") or {}),             "2회차가 슬롯에 안 들어갔으면 이 테스트는 아무것도 안 잰다"
+
+        # 그 라운드의 영수증은 델타 것만 적는다 — 그것이 그 파일의 뜻이다.
+        got = json.loads((paths.run_dir / "05_review.json").read_text(
+            encoding="utf-8"))
+        assert [f["title"] for f in got["findings"]] == [arch_minor["title"]],             got["findings"]
+
+        body = pr_mod.build_body(repo, paths, s,
+                                 harness._read_json(repo / harness.CONFIG_REL))
+        assert arch_minor["title"] in body, body
+        assert test_minor["title"] in body,             "델타가 안 본 리뷰어의 미해결 Minor 가 본문에서 사라졌다 (M52)"
+        assert major["title"] not in body, "닫힌 지적이 미해결로 되살아났다"
+
+
+class TestPr06MinorAccounting:
+    """M52 — 「미해결 Minor」의 출처는 런 전체이지 마지막 라운드가 아니다."""
+
+    def _body(self, repo, paths, s):
+        return pr_mod.build_body(repo, paths, s,
+                                 harness._read_json(repo / harness.CONFIG_REL))
+
+    def test_라운드가_없으면_05_review_json_으로_낙하한다(
+            self, repo, request_file, phases):
+        """옛 런 디렉터리와 리뷰어 0명 경로에서 거동이 그대로다."""
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        (paths.run_dir / "05_review.json").write_text(json.dumps(
+            {"round": 1, "review05": s["review05"],
+             "findings": [{"id": "F-1", "severity": "minor",
+                           "title": "옛 런의 미해결 Minor"}]},
+            ensure_ascii=False), encoding="utf-8")
+        assert "옛 런의 미해결 Minor" in self._body(repo, paths, s)
+
+    def test_전부_닫힌_런은_없다고_적지_낙하하지_않는다(
+            self, repo, request_file, phases):
+        """**빈 목록과 필드 없음은 다르다.**
+
+        `rounds` 가 있는데 열린 것이 0건인 것을 "출처가 없다" 로 읽어
+        `05_review.json` 으로 낙하하면, 이미 닫힌 Minor 가 미해결로 되살아난다.
+        """
+        run_id, paths = _enter_06(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        f = {"id": "F-1", "category": "RESPONSE_SHAPE", "severity": "minor",
+             "target_role": "impl", "title": "닫힌 Minor", "quote": "닫힌 Minor"}
+        s["phases"]["05-code-review"]["rounds"] = {
+            "1": {"arch": {"keys": [{"key": ldg.finding_key(f), "id": "F-1",
+                                     "severity": "minor"}],
+                           "findings": [f], "closed": []}},
+            "2": {"arch": {"keys": [], "findings": [],
+                           "closed": [ldg.finding_key(f)]}}}
+        st.save(_p, s)
+        (paths.run_dir / "05_review.json").write_text(json.dumps(
+            {"round": 1, "review05": s["review05"], "findings": [f]},
+            ensure_ascii=False), encoding="utf-8")
+        body = self._body(repo, paths, s)
+        assert "닫힌 Minor" not in body, body
+        assert "- 없다" in body, body
 
 
 class TestPhase05Ledgering:

@@ -35,6 +35,7 @@ sys.path.insert(0, str(_HERE.parent))
 
 import harness  # noqa: E402
 import mask as mask_mod  # noqa: E402
+import review as review_mod  # noqa: E402
 
 
 # --------------------------------------------------------------------- 브랜치
@@ -217,7 +218,25 @@ def _adopted(paths):
     return out
 
 
-def _minor_open(paths):
+def _minor_open(paths, state):
+    """미해결 Minor. **런 전체이지 마지막 라운드가 아니다** (M52).
+
+    원천은 `phases.05-code-review.rounds` 다 — 디스크에 파생 사본을 만들지
+    않는다 (M31 · ADR-H022). 예전에는 `05_review.json` 의 `findings` 를 읽었는데
+    그것은 **그 라운드의** 병합 결과이고, 델타 라운드는 설계상 한 명이므로 다른
+    리뷰어의 열린 Minor 가 **원장에는 남은 채 사람이 읽는 자리에서만** 사라졌다.
+    "Minor 는 수리 면제이지 회계 면제가 아니다"(M38)는 보고 표면에서도 성립한다.
+
+    `rounds` 가 아예 없을 때만 옛 경로로 낙하한다 — 리뷰어 0명 경로와 옛 런
+    디렉터리다. **빈 목록으로는 낙하하지 않는다**: 전부 닫혀 0건인 것과 원천이
+    없는 것은 다르고, 앞을 뒤로 읽으면 이미 닫힌 Minor 가 미해결로 되살아난다.
+    """
+    node = ((state or {}).get("phases") or {}).get("05-code-review") or {}
+    rounds = node.get("rounds")
+    if rounds:
+        return [f.get("title") or f.get("finding_key") or "제목 없음"
+                for f in review_mod.open_findings(rounds)
+                if f.get("severity") == "minor"]
     try:
         d = json.loads(_read(paths.run_dir / "05_review.json") or "{}")
     except ValueError:
@@ -272,7 +291,7 @@ def build_body(root, paths, state, config):
     units = _contract_sections(root, state, config)
     stat = _diff_stat(root, config)
     adopted = _adopted(paths)
-    minors = _minor_open(paths)
+    minors = _minor_open(paths, state)
     skipped = [g for g in gaps if g.startswith(("stage_absent:",
                                                 "stage_not_touched:",
                                                 "infra_skipped:"))]

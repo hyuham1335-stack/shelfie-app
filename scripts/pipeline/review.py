@@ -340,6 +340,52 @@ def merge(submissions):
     return out
 
 
+def open_findings(rounds):
+    """런이 끝났을 때 **아직 열린** 지적. 전원 것이고 제목이 있다 (M52).
+
+    `cli._previous_open` 의 **형제**이지 확장이 아니다 — 그 함수가 답하는 것은
+    *"이 리뷰어가 이번 제출에서 회계해야 할 것"* 이고 리뷰어별 필터가 붙어야
+    맞다(M21 ③: 두 리뷰어가 모두 `F-1` 을 쓰므로 id 대조를 전역으로 하면 한
+    줄이 서로 다른 두 지적을 동시에 해소로 계수한다). 여기가 답하는 것은
+    *"런 전체에서 무엇이 열린 채인가"* 다. **회계는 리뷰어별이고 보고는 런
+    전체인데, 지금까지 보고가 회계의 경계를 물려받고 있었다** — 델타 라운드는
+    설계상 한 명이므로 그 누수는 델타를 쓸 때마다 났다.
+
+    원천은 `phases.05-code-review.rounds` 하나다. **파생 사본을 새로 쌓지
+    않는다** (M31 · ADR-H022) — 늘어나는 것은 같은 원본에 대한 두 번째 질문뿐이다.
+
+    접는 규칙 셋은 필드의 뜻이 정한다:
+
+    - **라운드마다 따로 `merge` 한다.** 가로질러 한 번에 합치면 상승 규칙의
+      전제인 "독립 관측"이 거짓이 된다 — 델타 리뷰어는 이전 회차의 열린 목록을
+      프롬프트로 받고 그것을 회계하도록 **강제받는다.** 강제된 재진술은 두 번째
+      관측이 아니다. 게다가 보고 표면에서만 오른 심각도는 원장·`review05.major`
+      와 갈린다
+    - **같은 키는 첫 등장이 이긴다.** 원장의 `ledgered_keys` 가 같은 규칙이다
+      (M30) — 원장이 1회차 행을 남기는데 본문이 2회차 판정을 적으면 두 영수증이
+      같은 키를 두고 다른 말을 한다
+    - **닫힌 것은 전 라운드 `closed` 의 합집합으로 뺀다.** 그 값은 자진 신고가
+      아니라 단조성 검사가 이미 검증한 것이다 (M29)
+
+    severity 는 **그 회차의 병합 판정값**이다. 같은 라운드에서 둘이 minor 로 낸
+    키는 원장에 major 로 적혀 있고, 제출 원본값을 쓰면 원장이 major 라 부르는
+    것을 본문이 「미해결 Minor」에 싣는다.
+    """
+    by_key, closed = {}, set()
+    for rn in sorted(rounds or {}, key=int):
+        slot = rounds[rn] or {}
+        # 실패 슬롯(`keys is None`)은 읽지 않는다 — `_judge_05` 의 병합이 쓰는
+        # 것과 **같은 가드**다. 안 빼면 규약을 어겨 되돌려진 제출의 문장이
+        # PR 본문에 실린다.
+        subs = [dict(v, reviewer=code) for code, v in slot.items()
+                if v.get("keys") is not None]
+        for f in merge(subs):
+            by_key.setdefault(f["finding_key"], f)
+        for v in slot.values():
+            closed |= set(v.get("closed") or [])
+    return [f for key, f in by_key.items() if key not in closed]
+
+
 # --------------------------------------------------------------- 인라인 상한
 
 def inline_budget(config, diff_text):

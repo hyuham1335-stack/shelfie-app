@@ -3583,6 +3583,28 @@ class TestDocDriftAxis:
         assert roll["DOC_CODE_DRIFT"]["distinct_keys"] == 6, roll
         assert roll["DOC_CODE_DRIFT"]["promotable"] is True, roll
 
+    def test_같은_제목은_표현이_흔들려도_접힌다(self, repo):
+        """**축은 통제 어휘 위에서는 이미 작동한다** (ADR-H033 한계 절).
+
+        `finding_key` 의 정규화는 공백 접기와 소문자화가 전부다
+        (`verdict.py:125-130`). 그래서 템플릿이 찍는 제목은 접히고 —
+        실물 원장에서 누적 2 를 넘긴 버킷 **둘 다** `contract-trace` 가
+        찍은 것이다 — 모델이 매번 새로 쓰는 자유 서술은 영영 안 접힌다.
+        위 `test_제목이_매번_다르면_임계에_닿지_않는다` 가 뒤쪽을 잠그고
+        이 테스트가 앞쪽을 잠근다. 둘이 함께 있어야 "축이 틀렸다" 와
+        "입력이 자유 서술이다" 를 가를 수 있다.
+        """
+        ldg.seed(repo)
+        tmpl = "계약에 없는 public 심볼 ErrorBanner 가 생겼다"
+        ldg.append(repo, "r1", "05",
+                   [_finding(severity="critical", title=tmpl)])
+        ldg.append(repo, "r2", "05",
+                   [_finding(severity="critical",
+                             title="  계약에 없는 Public 심볼   ErrorBanner 가 생겼다 ")])
+        got = ldg.stage_promotions(repo)
+        assert len(got["candidates"]) == 1, got["candidates"]
+        assert got["candidates"][0]["distinct_runs"] == 2, got["candidates"]
+
     def test_롤업이_승격을_바꾸지_않는다(self, repo):
         """같은 제목이 임계를 넘으면 후보가 되는 경로는 그대로다."""
         ldg.seed(repo)

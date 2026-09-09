@@ -24,6 +24,11 @@
 
 ## 데이터 형태
 
+계약 추적이 이 절을 파싱한다 (M57). 백틱 안의 이름 중 **타입(PascalCase)과
+상수(UPPER_SNAKE)** 를 계약이 이름 붙인 것으로 세고, 그 이름은
+`out_of_contract` 의 "계약에 없는 심볼" 판정에서 빠진다. 필드명·내장·경로는
+형태가 달라 세어지지 않으므로 산문에 자유롭게 쓴다.
+
 - `CreateFooInput { name: string(≤255), amount: number(≥0) }`
 - `FooDetail { id, name, ... }`
 

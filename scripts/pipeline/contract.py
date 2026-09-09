@@ -23,6 +23,17 @@ import harness  # noqa: E402
 _BACKTICK = re.compile(r"`([^`]+)`")
 _SEPARATORS = ("·", "::", "#", " > ")
 _SYMBOL = re.compile(r"[A-Za-z_][\w$]*")
+
+# 「데이터 형태」 절이 이름 붙이는 것의 형태 — **타입 아니면 상수다** (M57).
+#
+# 이 절은 산문이 섞여 있어 백틱 안에 필드명(`retryAfterSeconds`)·내장
+# (`map`·`any`·`globalThis`)·경로(`src/lib/env.ts`)가 함께 온다. 형태로 거르지
+# 않고 다 모으면 `symbols()` 가 넓어져 **오탐 대신 미탐**이 생긴다 — 흔한 낱말이
+# 계약 산문에 있다는 이유로 진짜 위반이 조용히 통과한다.
+#
+# `_errors` 가 `.isupper()` 로 하는 것과 같은 관용구이고, 다만 이 절은 타입도
+# 담으므로 PascalCase 를 함께 받는다.
+_DATA_SHAPE_NAME = re.compile(r"^(?:[A-Z][A-Za-z0-9]*|[A-Z][A-Z0-9_]*)$")
 _METHOD_PATH = re.compile(r"^\s*(?P<method>[A-Z]+)\s+(?P<path>/\S*)")
 
 
@@ -56,17 +67,26 @@ def parse(text, config):
         "dropped": dropped,
         "entrypoints": _entrypoints(section(text, sections.get("entrypoints"))),
         "errors": _errors(section(text, sections.get("errors"))),
+        "data_shapes": _data_shapes(section(text, sections.get("data_shapes"))),
     }
 
 
 def symbols(parsed):
-    """계약이 이름 붙인 것 전부. 귀속의 `in_contract` 판정이 쓴다."""
+    """계약이 이름 붙인 것 전부. 귀속의 `in_contract` 판정이 쓴다.
+
+    **「데이터 형태」도 여기 들어온다** (M57). 그 절이 빠져 있어서 계약이 이름
+    붙인 타입·상수가 전부 `out_of_contract` 로 잡혔고, P8 의 지적 6/6 이 그
+    구조적 오탐이었다. 한 곳만 고치면 소비자 둘(`trace_contract` 의
+    `out_of_contract` · `gate` 의 실패 귀속)이 함께 낫는다.
+    """
     out = set()
     for u in parsed.get("units") or []:
         if u.get("symbol"):
             out.add(u["symbol"])
     for e in parsed.get("errors") or []:
         out.add(e)
+    for d in parsed.get("data_shapes") or []:
+        out.add(d)
     return out
 
 
@@ -134,6 +154,26 @@ def _errors(block):
             if name and name.isupper():
                 out.append(name)
                 break
+    return out
+
+
+def _data_shapes(block):
+    """계약이 「데이터 형태」에 이름 붙인 타입·상수 (M57).
+
+    **`_errors` 와 달리 최상위 불릿만 보지 않는다.** 이 절은 상수를 불릿의
+    **연속 줄**에 나열하는 것이 실물의 모양이고(P8 의 계약이 그랬다), 최상위
+    불릿만 보면 여섯 중 둘밖에 못 잡는다. 대신 형태로 좁힌다 —
+    `_DATA_SHAPE_NAME` 이 무엇을 왜 거르는지 적는다.
+
+    한 줄에 이름이 여럿 올 수 있으므로 `_errors` 처럼 첫 스팬에서 `break`
+    하지 않는다. P8 의 계약은 한 줄에 상수 둘·셋을 적었다.
+    """
+    out = []
+    for line in block.splitlines():
+        for span in _BACKTICK.findall(line):
+            name = _first_symbol(span)
+            if name and _DATA_SHAPE_NAME.match(name):
+                out.append(name)
     return out
 
 

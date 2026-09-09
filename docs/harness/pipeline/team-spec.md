@@ -542,8 +542,9 @@ stateDiagram-v2
 | 그 유닛을 참조하는 테스트가 존재 | `untested_contract_item` | 심볼 문자열 **또는** 진입점 경로. Major, 테스트 역할 — **첫 3런 `warn_only`** (§E6) |
 | 계약의 오류 어휘 상수가 실재 | `missing_error_symbol` | `config.contract.sections.errors` 절. Critical, 선수리 |
 | 진입점이 실재 | `missing_entrypoint` | `adapter.entrypoint_resolver`. Critical, 선수리 |
-| 계약에 없는 신규 public 심볼 | `out_of_contract` | Major — **첫 3런 `warn_only`** |
+| 계약에 없는 신규 public 심볼 | `out_of_contract` | Major — **첫 3런 `warn_only`**. 계약이 이름 붙인 것은 유닛·오류 어휘뿐 아니라 `config.contract.sections.data_shapes` 절의 **타입·상수**도 포함한다 (M57 — 그 절이 파서에 등록된 적이 없어 P8 의 지적 6/6 이 구조적 오탐이었다) |
 
+- **「데이터 형태」 절은 형태로 거른다.** 백틱 안의 첫 심볼이 PascalCase 또는 UPPER_SNAKE 인 것만 센다 — 그 절은 산문이 섞여 있어 필드명·내장(`map`·`any`)·경로가 함께 백틱에 온다. 형태 없이 다 모으면 `symbols()` 가 넓어져 **오탐 대신 미탐**이 생긴다: 흔한 낱말이 계약 산문에 있다는 이유로 진짜 위반이 조용히 통과한다.
 - **컨테이너명 + 심볼명 쌍으로 검색한다.** 심볼명만 보면 흔한 이름이 다른 파일에 있어 **거짓 통과**한다. 컨테이너를 못 찾으면 `unknown`으로 낙하시킨다.
 - 파일 읽기는 전부 UTF-8 명시 (§E4).
 - 커버리지 도구가 없는 상태에서 `untested_contract_item`이 "테스트 약화" 탐지를 대신한다.

@@ -1111,6 +1111,22 @@ def _plan_05_review(root, paths, s, ctx):
     return node
 
 
+def _dedup_ordered(items):
+    """문자열 **정확 일치**로 접고 **첫 등장 순서를 지킨다** (M53).
+
+    `reviewers_failed` 의 집합 합집합과 같은 규율인데(M43) 정렬하지 않는다 —
+    리뷰어 코드는 이름이라 정렬해도 뜻이 안 바뀌지만 이것은 사람이 읽는
+    문장이고, 순서가 "누가 먼저 무엇을 못 봤나" 를 담는다. 다듬지도 않는다
+    (strip·casefold 없음): 정규화는 서로 다른 요청을 조용히 합치는
+    휴리스틱이고, `finding_key` 가 제목을 정확히 보는 것과 같은 보수성이다.
+    """
+    out = []
+    for it in items:
+        if it not in out:
+            out.append(it)
+    return out
+
+
 def _write_review05(s, node, planned, ok, merged, slot, round_=None):
     """`review05` 의 단일 출처. **status 는 런 안에서 좋아지지 않는다.**
 
@@ -1141,6 +1157,25 @@ def _write_review05(s, node, planned, ok, merged, slot, round_=None):
     seen = list(rounds.values()) or [{"planned": len(planned), "ok": ok,
                                       "failed": failed_now}]
 
+    # **리뷰어가 남긴 신호도 라운드를 가로질러 보존한다** (M53). 바로 위와
+    # 같은 이유이고 **원인도 같은 블록에 있었다** — 아래 셋이 `slot`(현재
+    # 라운드 하나)만 읽어 델타 라운드의 1명이 덮었다. P7 에서 1회차 리뷰어
+    # 셋이 쌓은 `need_more_context` 5건이 2회차 `arch` 의 빈 배열에 **0** 이
+    # 됐다. **리뷰어가 "확인 못 했다"고 말한 것이 증발한다** — 단조성 검사가
+    # findings 에는 걸리는데 이 셋에는 안 걸린다.
+    #
+    # 접는 원천은 `node["rounds"]` 다. **파생 사본을 새로 쌓지 않는다**
+    # (M31 · ADR-H022). `round_reviewers` 를 따로 만든 것은 `planned` 가
+    # 인자라 슬롯에서 유도할 수 없었기 때문이고, 이 셋은 제출 자체에 있어
+    # 원본에서 그대로 나온다. `slot` 은 `node["rounds"][str(round_)]` 와
+    # **같은 객체**이므로 이중 계수가 아니고, `rounds` 가 없을 때만(리뷰어
+    # 0명 경로, cli.py 의 `_write_review05(..., slot={})`) `slot` 으로
+    # 낙하한다.
+    #
+    # 접는 방식이 셋 다 다르다 — 근거는 team-spec §3.5 의 표에 있다.
+    subs = [v for r in (node.get("rounds") or {}).values() for v in r.values()]
+    subs = subs or list(slot.values())
+
     prev = s.get("review05") or {}
     s["review05"] = {
         "status": status,
@@ -1155,11 +1190,11 @@ def _write_review05(s, node, planned, ok, merged, slot, round_=None):
         "reviewers_failed": sorted({c for r in seen for c in r["failed"]}),
         "mode": node.get("mode") or "fanout",
         "major": sum(1 for f in merged if f.get("severity") in verdict.BLOCKING),
-        "need_more_context": [n for v in slot.values()
-                              for n in (v.get("need_more_context") or [])],
+        "need_more_context": _dedup_ordered(
+            n for v in subs for n in (v.get("need_more_context") or [])),
         "dropped_by_enforcement": sum(v.get("dropped_by_enforcement") or 0
-                                      for v in slot.values()),
-        "truncated": any(v.get("truncated") for v in slot.values()),
+                                      for v in subs),
+        "truncated": any(v.get("truncated") for v in subs),
     }
     if status != "ok":
         st.demote(s, st.GRADES[1], "review05:%s" % status)

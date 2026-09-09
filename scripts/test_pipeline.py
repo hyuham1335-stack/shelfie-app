@@ -5672,6 +5672,83 @@ class TestReview05DeltaRound:
                             {"arch": {"keys": []}}, round_=2)
         assert s["review05"]["reviewers_failed"] == ["data"], s["review05"]
 
+    # ------------------------------------------------------------------
+    # M53 — 리뷰어가 남긴 신호도 라운드를 가로질러 보존한다.
+    # 위 셋(M43)과 **같은 함수의 같은 실패 모드**다: `slot`(현재 라운드
+    # 하나)만 읽어 델타 라운드의 1명이 덮었다. 접는 방식은 셋이 다르므로
+    # 셋을 따로 잠근다 — 하나가 빨간불일 때 고칠 자리가 각각 다르다.
+    # ------------------------------------------------------------------
+
+    def _sub(self, need=None, dropped=0, truncated=False):
+        return {"keys": [], "need_more_context": list(need or []),
+                "dropped_by_enforcement": dropped, "truncated": truncated}
+
+    def _round(self, node, n, subs):
+        """제출을 `node["rounds"]` 에 실물과 같은 모양으로 넣고 그 슬롯을 준다."""
+        node.setdefault("rounds", {})[str(n)] = subs
+        return subs
+
+    def test_델타_라운드가_1회차_맥락_요청을_지우지_않는다(self, repo):
+        """**M53 의 정본.** P7 에서 1회차 5건이 2회차 뒤 **0** 이 됐다.
+
+        리뷰어가 "그 구간이 diff 밖이라 대조하지 못했다" 고 말한 것이 조용히
+        증발한다 — 단조성 검사가 findings 에는 걸리는데 이 필드에는 안 걸린다.
+        리스트를 그대로 비교해 **첫 등장 순서**까지 함께 못박는다.
+        """
+        s, node = {}, {}
+        r1 = self._round(node, 1, {"data": self._sub(["가", "나"]),
+                                   "sec": self._sub(["다"])})
+        cli._write_review05(s, node, ["data", "sec"], 2, [], r1, round_=1)
+        assert s["review05"]["need_more_context"] == ["가", "나", "다"], s["review05"]
+        r2 = self._round(node, 2, {"arch": self._sub([])})
+        cli._write_review05(s, node, ["arch"], 1, [], r2, round_=2)
+        assert s["review05"]["need_more_context"] == ["가", "나", "다"], s["review05"]
+
+    def test_같은_문구의_맥락_요청은_한_번만_센다(self, repo):
+        """접는 규칙이 **누적이 아니라 합집합**이라는 결정을 잠근다.
+
+        델타 라운드는 같은 리뷰어가 같은 문장을 다시 낸다. 누적이면 「맥락 부족
+        요청」이 라운드 수에 비례해 자라고, "몇 건을 못 봤나" 가 "몇 라운드
+        돌았나" 로 조용히 바뀐다 — M30 이 원장 `count` 에서 고친 그 변질이다.
+        """
+        s, node = {}, {}
+        same = "diff 밖이라 대조 못 했다"
+        r1 = self._round(node, 1, {"arch": self._sub([same, "1회차만의 것"])})
+        cli._write_review05(s, node, ["arch"], 1, [], r1, round_=1)
+        r2 = self._round(node, 2, {"arch": self._sub([same])})
+        cli._write_review05(s, node, ["arch"], 1, [], r2, round_=2)
+        # 안 접으면 3건, 안 모으면 1건. 둘 다 아니어야 한다.
+        assert s["review05"]["need_more_context"] == [same, "1회차만의 것"],             s["review05"]
+
+    def test_드롭_수는_라운드를_가로질러_합쳐진다(self, repo):
+        """`need_more_context` 와 달리 **합**이다.
+
+        이 값은 개체 수가 아니라 **기계가 몇 번 되돌려야 했나** 라는 비용이고
+        (`_excluded_render`), 재제기는 그 비용을 한 번 더 쓴 것이다. 그래서
+        원장의 `finding_key` 접기(M30)와 수가 다를 수 있고 그것이 의도다.
+        """
+        s, node = {}, {}
+        r1 = self._round(node, 1, {"data": self._sub(dropped=2),
+                                   "sec": self._sub(dropped=1)})
+        cli._write_review05(s, node, ["data", "sec"], 2, [], r1, round_=1)
+        assert s["review05"]["dropped_by_enforcement"] == 3, s["review05"]
+        r2 = self._round(node, 2, {"arch": self._sub(dropped=0)})
+        cli._write_review05(s, node, ["arch"], 1, [], r2, round_=2)
+        assert s["review05"]["dropped_by_enforcement"] == 3, s["review05"]
+
+    def test_절단_사실이_델타_뒤에도_남는다(self, repo):
+        """`status` 가 "런 안에서 좋아지지 않는다" 인 것의 대칭이다.
+
+        한 번이라도 절단됐으면 그 런의 리뷰 범위는 절단된 것이고, 뒤 라운드의
+        `False` 가 그것을 덮으면 신호가 무의미해진다.
+        """
+        s, node = {}, {}
+        r1 = self._round(node, 1, {"arch": self._sub(truncated=True)})
+        cli._write_review05(s, node, ["arch"], 1, [], r1, round_=1)
+        r2 = self._round(node, 2, {"arch": self._sub(truncated=False)})
+        cli._write_review05(s, node, ["arch"], 1, [], r2, round_=2)
+        assert s["review05"]["truncated"] is True, s["review05"]
+
     def test_worst_status_is_a_pure_function(self, repo):
         assert rv.worst_status(["ok", "degraded"]) == "degraded"
         assert rv.worst_status(["degraded", "ok"]) == "degraded"
@@ -5706,6 +5783,64 @@ class TestReview05DeltaRound:
         _p, s = st.load(repo, run_id)
         assert s["review05"]["status"] == "degraded", \
             "깨끗한 델타 라운드가 앞선 결손을 지우면 E1 가드가 옆문으로 다시 열린다"
+
+    def _context_file(self, paths, code, round_, need, findings=(), resolved=()):
+        """`_reviewer_files` 는 `need_more_context` 를 `[]` 로 박아 쓴다."""
+        name = ("05_review_%s.json" % code if round_ == 1
+                else "05_review_%s_r%d.json" % (code, round_))
+        j = paths.run_dir / name
+        j.write_text(json.dumps(
+            {"reviewer": code, "round": round_, "status": "ok",
+             "by_checklist": {"전부": list(findings)},
+             "resolved_from_previous": list(resolved),
+             "need_more_context": list(need)},
+            ensure_ascii=False), encoding="utf-8")
+        body = "".join("## %s\n\n%s\n" % (f["severity"], f["quote"])
+                       for f in findings)
+        j.with_name(name.replace(".json", ".raw.md")).write_text(
+            "# 리뷰\n\n" + body + "확인하지 못한 구간이 있다\n",
+            encoding="utf-8")
+        return j
+
+    def test_실물_델타_라운드가_앞_회차의_맥락_요청을_지우지_않는다(
+            self, repo, request_file, phases):
+        """P7 이 실제로 밟은 경로다 (M53).
+
+        단위 넷은 `node["rounds"]` 를 손으로 채운다. 이것은 **`record` 가 그
+        자리를 실제로 채우는지**와 `_judge_05` 가 그 `node` 를 넘기는지까지
+        잰다 — 접는 코드가 맞아도 원천이 안 차 있으면 실물에서는 여전히
+        증발한다.
+
+        **1회차가 major 를 내야 델타 라운드가 성립한다.** 지적 0 건이면 05 가
+        그 자리에서 통과해 2회차 `record` 가 exit 3 으로 거부되고, 그러면 이
+        테스트는 아무것도 안 밟은 채 초록이 된다. `exit != 3` 단언이 그
+        헛돎을 막는다.
+        """
+        run_id, paths, s, node = self._ready(repo, request_file, phases)
+        st.save(paths, s)
+        major = {"id": "F-1", "category": "AUTHZ_MISSING_RULE",
+                 "severity": "major", "target_role": "impl",
+                 "title": "인가 누락", "quote": "인가 누락"}
+        for code, fs in (("arch", [major]), ("test", [])):
+            j = self._context_file(paths, code, 1,
+                                   ["%s: 그 구간이 diff 밖이라 대조 못 했다" % code],
+                                   findings=fs)
+            cli.run_record(repo, "05", str(j), reviewer=code, round_=1,
+                           run_id=run_id)
+        _p, s = st.load(repo, run_id)
+        assert len(s["review05"]["need_more_context"]) == 2, s["review05"]
+
+        s["phases"]["05-code-review"]["rounds_planned"] = {"2": ["arch"]}
+        st.save(_p, s)
+        j = self._context_file(
+            paths, "arch", 2, [],
+            resolved=[{"id": "F-1", "resolved_by": "인가 규칙을 넣었다"}])
+        env = cli.run_record(repo, "05", str(j), reviewer="arch", round_=2,
+                             run_id=run_id)
+        assert env["exit"] == 0, (env["exit"], env.get("render"))
+        _p, s = st.load(repo, run_id)
+        assert "2" in (s["phases"]["05-code-review"].get("rounds") or {}),             "2회차가 슬롯에 안 들어갔으면 이 테스트는 아무것도 안 잰다"
+        assert len(s["review05"]["need_more_context"]) == 2,             "델타 라운드의 빈 배열이 1회차의 둘을 지웠다 (M53)"
 
 
 class TestPhase05Ledgering:

@@ -1912,13 +1912,16 @@ def _judge_round(root, paths, s, phase_item, ctx, round_, slot, rounds):
         _note_cross_verify_gap(s)
         return _advance_to_next(root, paths, s, phase_item, ctx)
 
-    used, _max, exceeded = st.counter_inc(
+    # **봉투는 실효 상한을 말해야 한다** (M56). `max_rounds` 는 선언값이라
+    # 왕복 뒤 지급을 받은 런에서 "5라운드 안에" 라고 적으면서 실제로는 10 을
+    # 다 쓰고 멈춘다 — 사람이 그 숫자로 판단할 수 없다.
+    used, max_eff, exceeded = st.counter_inc(
         s, _loop_counter(phase_item["front"]), max_rounds,
         "not_converged", paths=paths)
     if exceeded:
         _loop_on_exceed(phase_item["front"])
         st.escalate(paths, s,
-                    "01 이 %d라운드 안에 수렴하지 않았다: %s" % (max_rounds, reason),
+                    "01 이 %d라운드 안에 수렴하지 않았다: %s" % (max_eff, reason),
                     ["이대로 진행한다(미해결 지적을 안고 간다)",
                      "범위를 줄여 플랜을 다시 쓴다", "중단한다"],
                     phase="01-plan")
@@ -4029,14 +4032,15 @@ def run_retry(root, phase, counter, reason, run_id=None):
         max_ = _loop_max(loaded[pid]["front"], profile)
     except ConfigDeclarationError as exc:
         return _declaration_envelope("retry", s, exc)
-    used, _m, exceeded = st.counter_inc(s, counter, max_, "manual",
-                                        paths=paths, note=reason)
+    # `max_` 는 선언값이고 봉투가 말해야 하는 것은 실효 상한이다 (M56).
+    used, max_eff, exceeded = st.counter_inc(s, counter, max_, "manual",
+                                             paths=paths, note=reason)
     if exceeded:
         try:
             _loop_on_exceed(loaded[pid]["front"])
         except ConfigDeclarationError as exc:
             return _declaration_envelope("retry", s, exc)
-        st.escalate(paths, s, "`%s` 카운터가 상한 %d 에 닿았다: %s" % (counter, max_, reason),
+        st.escalate(paths, s, "`%s` 카운터가 상한 %d 에 닿았다: %s" % (counter, max_eff, reason),
                     ["범위를 줄인다", "계약을 고친다", "중단한다"], phase=pid)
         return st.envelope("retry", False, 7, s, {"counter": counter, "used": used},
                            "## 반복 한계 — 에스컬레이션\n\n`ESCALATION.md` 를 본다.",
@@ -4045,9 +4049,10 @@ def run_retry(root, phase, counter, reason, run_id=None):
     st.set_phase_status(s, pid, "running", retry_reason=reason)
     s["phase"] = pid
     st.save(paths, s)
-    return st.envelope("retry", True, 0, s, {"counter": counter, "used": used, "max": max_},
+    return st.envelope("retry", True, 0, s,
+                       {"counter": counter, "used": used, "max": max_eff},
                        "`%s` 를 다시 연다 (%s %d/%d). 사유: %s"
-                       % (pid, counter, used, max_, reason),
+                       % (pid, counter, used, max_eff, reason),
                        "python scripts/pipeline/cli.py next --run-id %s" % s["run_id"])
 
 

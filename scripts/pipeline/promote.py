@@ -39,7 +39,8 @@ JUDGEMENTS = ("new", "duplicate", "contradicts")
 ACTIONS = ("create", "amend", "skip")
 
 # **미검증 상속값이다.** 원본 명세에서 왔고 이 리포에서 재본 적이 없다.
-# 첫 세 런의 원장이 이 값을 검사한다 — 매 런 상한에 닿으면 낮은 것이다.
+# 매 런 상한에 닿으면 낮은 것이다. 판정 시한은 `THRESHOLDS` 와 같은 것을
+# 쓴다 — `ledger.PROMOTION_VERDICT_AT_RUNS` (ADR-H033).
 CREATE_MAX_PER_RUN = 3
 
 

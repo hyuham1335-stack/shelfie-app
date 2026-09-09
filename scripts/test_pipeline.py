@@ -4921,6 +4921,31 @@ class TestReviewerIsolation:
         assert rv.validate(repo, _config(repo)) == []
 
 
+class TestReviewerSkillDocs:
+    """스킬 문서와 기계가 `quote` 의 대조 대상을 같게 말해야 한다 (M51).
+
+    기계는 리뷰어 **자신의 `.raw.md`** 와 대조하는데(`verdict.check_review`
+    가 받는 `raw_text`) 스킬 다섯은 "diff 원문의 부분문자열" 이라 적고 있었다.
+    문서대로 diff 를 인용하면 exit 8 이고 **그 반려는 리뷰어 잘못이 아니다.**
+
+    픽스처가 아니라 **실물**을 읽는다 — 정합을 물어야 할 대상이 실물이고,
+    `COPIED` 가 이미 같은 규율로 실물을 복사한다.
+    """
+
+    def test_스킬_다섯이_대조_대상을_자기_원문으로_적는다(self):
+        docs = [rel for rel in COPIED if rel.startswith(".claude/skills/")]
+        assert len(docs) == 5, docs
+        for rel in docs:
+            lines = [ln for ln
+                     in (ROOT / rel).read_text(encoding="utf-8").splitlines()
+                     if "`quote`" in ln and "부분문자열" in ln]
+            # **줄이 있는지도 함께 센다.** 없어도 통과하는 검사라면 그 줄을
+            # 지우는 것을 못 막고, 그러면 리뷰어는 대조 대상을 어디서도 못 읽는다.
+            assert len(lines) == 1, "%s: %r" % (rel, lines)
+            assert ".raw.md" in lines[0], "%s: %r" % (rel, lines[0])
+            assert "diff" not in lines[0], "%s: %r" % (rel, lines[0])
+
+
 def _priority(repo, code):
     for r in _config(repo).get("reviewers") or []:
         if r["code"] == code:

@@ -7248,6 +7248,73 @@ class TestReport08:
         assert "instructed" in out
         assert "과소" in out and "과다" in out, "두 오차 방향이 드러나야 한다"
 
+    # ── C2-1. 08 이 자기 소요를 적는다.
+
+    def test_소요_미측정_문단이_사라졌다(self, repo, request_file, phases):
+        """여섯 런이 이 문장을 적었다. 이제 잰다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "소요 시간은 미측정이다" not in out
+
+    def test_페이즈별_표에_벽시계와_에스컬레이션_대기가_따로_있다(
+            self, repo, request_file, phases):
+        """**칸 이름이 벽시계라고 말해야 한다.** 이 값에는 사람이 답을 쓰는
+        대기가 섞여 있고, P8 은 그것이 60.2% 였다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "벽시계(대기 포함)" in out
+        assert "에스컬레이션 대기" in out
+        assert "01-plan" in out
+
+    def test_재진입_횟수가_같은_표에_있다(self, repo, request_file, phases):
+        """구간 수는 소요의 분모가 아니라 별개 사실이다 — 같은 벽시계라도
+        한 번에 지난 페이즈와 세 번 되돌아온 페이즈는 다른 일이다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "구간" in out
+
+    def test_timing_이_None_이면_미측정이라고_적는다(self, repo, request_file,
+                                                    phases):
+        """못 잰 것을 0 으로 채우지 않는다 (`_tbl` 의 규율과 동형)."""
+        run_id, _paths = _enter_08(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        text, _missing = rep_mod.build(s, {}, {}, [], None)
+        assert "소요 시간은 미측정이다" in text
+        assert "벽시계(대기 포함)" not in text
+
+    def test_소요_기준과_사각이_보고서에_인쇄된다(self, repo, request_file,
+                                                phases):
+        """`모델 호출 수` 칸이 `instructed` 와 사각 둘을 적는 것과 같은 자리다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert st.PHASE_DURATION_BASIS in out
+        for spot in st.PHASE_DURATION_BLIND_SPOTS:
+            assert spot in out, spot
+
+    def test_소요_표가_새_섹션을_만들지_않는다(self, repo, request_file, phases):
+        """`## 비용과 시간` 이 이미 있다. 섹션 목록은 team-spec 이 잠근다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        heads = [ln for ln in out.splitlines() if ln.startswith("## ")]
+        assert len(heads) == len(set(heads)), heads
+        for sec in rep_mod.REQUIRED_SECTIONS:
+            assert sec in out, sec
+
 
 # ---------------------------------------------------------------------------
 # T. doctor — 06 이 exit 9 로 멈출 것을 기동 전에, 무료로 알려 준다

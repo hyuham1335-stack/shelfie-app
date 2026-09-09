@@ -407,8 +407,28 @@ def set_phase_status(s, phase_id, status, now=None, **fields):
     return node
 
 
+def _granted(node):
+    """이 카운터가 지금까지 **추가 지급**받은 총량. 없으면 0.
+
+    지급의 원장은 `grants` 하나이고 `max` 는 그것을 반영한 **파생값**이다.
+    파생값을 원장처럼 다루면 그것을 덮어쓰는 코드가 지급을 지운다 (M56).
+    """
+    return sum(g.get("extra") or 0 for g in node.get("grants") or [])
+
+
 def counter_inc(s, name, max_, reason, paths=None, now=None, note=None):
-    """(used, max, exceeded). 어휘 밖 카운터·사유는 예외.
+    """(used, **실효 상한**, exceeded). 어휘 밖 카운터·사유는 예외.
+
+    **인자 `max_` 는 선언값이고 실효 상한은 `max_ + grants 합` 이다.** 예전에는
+    `node["max"] = max_` 로 선언값을 그대로 대입해 `counter_grant` 가 올린
+    상한을 **다음 소모 한 번이 지웠다** (M56). P8 에서 라운드 7·8·9 가 실효 10
+    인 예산을 5 로 보고 잘못 에스컬레이션했고, 사람이 답변 셋을 손으로 써서
+    [[ADR-H024]] 가 만든 지급 경로의 대역을 했다.
+
+    **셋이 모두 실효값을 말한다** — 반환 2항 · `node["max"]` · `counter_inc`
+    이벤트의 `max`. 한 곳이라도 선언값을 말하면 "어느 예산으로 돌았는가" 가 그
+    자리에서 갈린다. P8 의 `events.jsonl` 이 지급 뒤에도 `max: 5` 를 적어
+    **그 런이 왜 세 번 멈췄는지 원장만으로는 설명되지 않았다.**
 
     **`reason` 은 필수다.** 기본값을 두면 그 기본값이 곧 새 하드코딩이고,
     "무엇에 썼는지 모른다" 가 조용히 통과한다 ([[ADR-H025]] 의 교훈).
@@ -423,7 +443,11 @@ def counter_inc(s, name, max_, reason, paths=None, now=None, note=None):
                          "없이 예산을 태우면 원장이 그 런을 설명하지 못한다"
                          % (reason, ", ".join(COUNTER_REASONS)))
     node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": max_})
-    node["max"] = max_
+    # **실효 상한은 매번 다시 계산한다** (M56). `grants` 가 원장이고 `max` 는
+    # 파생값이므로, 여기가 유일한 재계산 지점이다 — `node["max"]` 를 직접 읽는
+    # 셋(런 헤더·왕복 봉투·보고서의 `_counter_cell`)이 각자 합산하지 않아도 된다.
+    eff = None if max_ is None else max_ + _granted(node)
+    node["max"] = eff
     node["used"] = node.get("used", 0) + 1
     entry = {"n": node["used"], "reason": reason, "ts": stamp(now)}
     if note:
@@ -433,8 +457,8 @@ def counter_inc(s, name, max_, reason, paths=None, now=None, note=None):
     node.setdefault("spent", []).append(entry)
     if paths is not None:
         append_event(paths, "counter_inc", counter=name, used=node["used"],
-                     max=max_, reason=reason, note=note, now=now)
-    return node["used"], max_, node["used"] >= max_ if max_ is not None else False
+                     max=eff, reason=reason, note=note, now=now)
+    return node["used"], eff, node["used"] >= eff if eff is not None else False
 
 
 def counter_grant(s, name, extra, reason, now=None):
@@ -447,6 +471,11 @@ def counter_grant(s, name, extra, reason, now=None):
 
     지급은 무한 연장이 아니다. 부르는 쪽이 자기 왕복 예산(`xverify_return`
     상한 1)에 묶여 있어 런당 한 번뿐이다 (M32 · ADR-H024).
+
+    **여기서 올리는 `max` 는 `grants` 의 파생값이다** — `counter_inc` 이 매
+    소모마다 `선언값 + grants 합` 으로 다시 계산하므로 두 값이 어긋나지 않는다.
+    이 대입을 중복 가산으로 오해해 지우면, 지급 직후부터 다음 소모 전까지
+    봉투(`record` 의 왕복 렌더)와 보고서가 **옛 상한**을 말한다.
     """
     if name not in COUNTERS:
         raise ValueError("알 수 없는 카운터: %r (%s)" % (name, ", ".join(COUNTERS)))

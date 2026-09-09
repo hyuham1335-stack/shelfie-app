@@ -44,9 +44,26 @@ RESOLUTIONS = ("repaired", "deferred", "dropped_by_enforcement", "warn_only")
 SOURCES = ("reviewer", "code-review", "external", "human", "contract-trace")
 
 # (누적 횟수, 최소 distinct_runs). **여섯 숫자 전부 미검증 상속값이다** —
-# 원본에서 왔고 이 리포에서 재본 적이 없다. 첫 세 런의 원장이 이 값을 검사한다:
-# 승격이 한 번도 없으면 임계가 높은 것이고, 매 런 발생하면 낮은 것이다.
+# 원본에서 왔고 이 리포에서 재본 적이 없다. 승격이 한 번도 없으면 임계가
+# 높은 것이고, 매 런 발생하면 낮은 것이다.
 THRESHOLDS = {"critical": (2, 2), "major": (3, 2), "minor": (5, 3)}
+
+# 위 여섯 숫자와 승격의 축을 **판정할 시한**이다 (ADR-H033).
+#
+# 여기 원래 적혀 있던 것은 *"첫 세 런의 원장이 이 값을 검사한다"* 였다.
+# 그런데 그 약속에 기계가 읽는 시한이 없어서 `distinct_runs` 가 6 이 될
+# 때까지 아무도 판정하지 않았다 — **지나간 것조차 몰랐다.** ADR-H026 이
+# `in_baseline` 에 대해 적은 *"시한이 있었던 것이 아니라 이미 지났다"* 와
+# 같은 모양이다.
+#
+# **단위가 `distinct_runs` 인 것이 중요하다** — 임계 판정이 쓰는 축과 같아야
+# "임계가 높다" 와 "표본이 모자라다" 가 섞이지 않는다. 달력의 런 수와는
+# 다르다(`distinct_runs` 는 지적을 0건 낸 런을 안 센다).
+#
+# **게이트가 아니다.** 시한이 지나도 종료 코드를 바꾸지 않는다 — 보고서와
+# `promote --scan` 이 찍기만 한다. 그때 무엇을 보고 어떻게 가를지는 ADR-H033
+# 에 미리 적혀 있다.
+PROMOTION_VERDICT_AT_RUNS = 9
 
 # 승격 집계에서 빼는 resolution. baseline 기간(§E6)의 관측은 오탐률을 아직
 # 모르는 상태의 것이라 학습 근거가 될 수 없다.
@@ -397,6 +414,20 @@ def distinct_runs(root):
                 if not r.get("_corrupt") and r.get("run_id")})
 
 
+def verdict_deadline(root):
+    """승격 임계·축을 판정할 시한 (ADR-H033). **게이트가 아니라 표시다.**
+
+    `seen` 의 단위는 `distinct_runs` 이고 그 한계를 그대로 물려받는다 —
+    지적을 0건 낸 런은 세어지지 않으므로 달력의 런 수보다 작을 수 있다.
+    시한이 지나도 `remaining` 을 음수로 적지 않는다: "얼마나 남았나" 와
+    "얼마나 지났나" 는 다른 질문이고 뒤엣것은 `seen` 과 `at` 이 답한다.
+    """
+    seen = distinct_runs(root)
+    return {"at": PROMOTION_VERDICT_AT_RUNS, "seen": seen,
+            "remaining": max(0, PROMOTION_VERDICT_AT_RUNS - seen),
+            "due": seen >= PROMOTION_VERDICT_AT_RUNS}
+
+
 def in_baseline(root, baseline_runs):
     """baseline 기간 안인가 — 안이면 오탐이 잦은 검사를 `warn_only` 로 낮춘다."""
     return distinct_runs(root) < (baseline_runs or 0)
@@ -458,6 +489,7 @@ def stage_promotions(root):
     return {"candidates": candidates, "held": held,
             "by_category": _by_category(root, cats),
             "distinct_runs": distinct_runs(root),
+            "verdict_deadline": verdict_deadline(root),
             "thresholds": {k: {"count": v[0], "distinct_runs": v[1]}
                            for k, v in THRESHOLDS.items()},
             "axis_note": (

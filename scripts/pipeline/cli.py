@@ -3401,8 +3401,9 @@ def run_report(root, out=None, run_id=None):
     # 나온다, 네가 빠뜨릴 수 없다" 와 같은 규율이다 (M39).
     import ledger as ledger_mod
     try:
-        data["ledger"] = {
-            "by_category": ledger_mod.stage_promotions(root)["by_category"]}
+        got = ledger_mod.stage_promotions(root)
+        data["ledger"] = {"by_category": got["by_category"],
+                          "verdict_deadline": got["verdict_deadline"]}
     except (OSError, ValueError, KeyError):
         pass
     # 소요는 `events.jsonl` 의 유도값이고, 08 시점에 그 파일은 이미 완결이다
@@ -3711,6 +3712,24 @@ def run_promote(root, scan=False, stage=False, apply=False, flush=False,
                        _promote_apply_render(promos, written), None)
 
 
+def _verdict_deadline_lines(dl):
+    """후보 0 을 보는 사람이 **그 자리에서** 시한을 본다 (ADR-H033).
+
+    이 분기가 초기 런의 최빈 경로다. "표본이 아직 없다" 만 적으면 그 말이
+    몇 런까지 유효한지를 아무도 모른다 — 그것이 `THRESHOLDS` 의 옛 약속이
+    두 배 지나도록 아무도 판정하지 않은 이유다. **못 읽으면 안 적는다.**
+    """
+    if not dl:
+        return []
+    tail = ("**시한이 지났다 — 판정할 때다.**" if dl.get("due")
+            else "남은 런 %d." % dl.get("remaining"))
+    return ["", "**승격 판정 시한** — 원장이 본 런 %s / %s. %s 이 셈의 "
+                "단위는 `distinct_runs` 라 달력의 런 수와 다를 수 있다. "
+                "그때 무엇을 보고 어떻게 가를지는 **ADR-H033** 에 미리 "
+                "적혀 있다."
+            % (dl.get("seen"), dl.get("at"), tail)]
+
+
 def _promote_scan_render(got):
     if not got["candidates"]:
         lines = ["승격 후보가 없다 — **모델을 부르지 않고 종결한다.**", ""]
@@ -3723,6 +3742,7 @@ def _promote_scan_render(got):
             lines.append("원장이 본 런은 %d 개다. 임계에 닿을 표본이 아직 "
                          "없다는 뜻이지 지적이 없었다는 뜻이 아니다."
                          % got["distinct_runs"])
+        lines += _verdict_deadline_lines(got.get("verdict_deadline"))
         return "\n".join(lines)
     lines = ["## 승격 후보 %d 건" % len(got["candidates"]), ""]
     for c in got["candidates"]:

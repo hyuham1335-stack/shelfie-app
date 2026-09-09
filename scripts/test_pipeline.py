@@ -3583,6 +3583,28 @@ class TestDocDriftAxis:
         assert roll["DOC_CODE_DRIFT"]["distinct_keys"] == 6, roll
         assert roll["DOC_CODE_DRIFT"]["promotable"] is True, roll
 
+    def test_같은_제목은_표현이_흔들려도_접힌다(self, repo):
+        """**축은 통제 어휘 위에서는 이미 작동한다** (ADR-H033 한계 절).
+
+        `finding_key` 의 정규화는 공백 접기와 소문자화가 전부다
+        (`verdict.py:125-130`). 그래서 템플릿이 찍는 제목은 접히고 —
+        실물 원장에서 누적 2 를 넘긴 버킷 **둘 다** `contract-trace` 가
+        찍은 것이다 — 모델이 매번 새로 쓰는 자유 서술은 영영 안 접힌다.
+        위 `test_제목이_매번_다르면_임계에_닿지_않는다` 가 뒤쪽을 잠그고
+        이 테스트가 앞쪽을 잠근다. 둘이 함께 있어야 "축이 틀렸다" 와
+        "입력이 자유 서술이다" 를 가를 수 있다.
+        """
+        ldg.seed(repo)
+        tmpl = "계약에 없는 public 심볼 ErrorBanner 가 생겼다"
+        ldg.append(repo, "r1", "05",
+                   [_finding(severity="critical", title=tmpl)])
+        ldg.append(repo, "r2", "05",
+                   [_finding(severity="critical",
+                             title="  계약에 없는 Public 심볼   ErrorBanner 가 생겼다 ")])
+        got = ldg.stage_promotions(repo)
+        assert len(got["candidates"]) == 1, got["candidates"]
+        assert got["candidates"][0]["distinct_runs"] == 2, got["candidates"]
+
     def test_롤업이_승격을_바꾸지_않는다(self, repo):
         """같은 제목이 임계를 넘으면 후보가 되는 경로는 그대로다."""
         ldg.seed(repo)
@@ -3692,6 +3714,65 @@ class TestLedgerPromotion:
         with pytest.raises(ValueError):
             ldg.check_destination(repo, "NAMING", "prose")
         assert ldg.check_destination(repo, "AUTHZ_MISSING_RULE", "prose") is None
+
+
+class TestPromotionVerdictDeadline:
+    """승격 임계·축을 **언제** 판정하는가 (ADR-H033).
+
+    임계값 여섯이 미검증 상속값이라는 사실은 `ledger.py` 주석에 처음부터
+    적혀 있었고 *"첫 세 런의 원장이 이 값을 검사한다"* 는 약속도 있었다.
+    그런데 그 약속에 기계가 읽는 시한이 없어서 `distinct_runs` 가 6 이 될
+    때까지 아무도 판정하지 않았다 — **지나간 것조차 몰랐다.** 이 클래스가
+    지키는 것은 시한이 표시되는가이지 시한이 무엇을 강제하는가가 아니다.
+    """
+
+    def _seed_runs(self, repo, n):
+        ldg.seed(repo)
+        for i in range(n):
+            ldg.append(repo, "r%d" % i, "05",
+                       [_finding(title="런 %d 만의 제목" % i)])
+
+    def test_시한이_원장이_본_런으로_남은_런을_낸다(self, repo):
+        self._seed_runs(repo, 6)
+        got = ldg.verdict_deadline(repo)
+        assert got == {"at": 9, "seen": 6, "remaining": 3, "due": False}, got
+
+    def test_시한에_닿으면_due_고_남은_런은_음수로_안_내려간다(self, repo):
+        self._seed_runs(repo, 9)
+        got = ldg.verdict_deadline(repo)
+        assert got["due"] is True and got["remaining"] == 0, got
+        self._seed_runs(repo, 12)
+        got = ldg.verdict_deadline(repo)
+        assert got["seen"] == 12, got
+        assert got["remaining"] == 0, "지난 시한을 음수로 적지 않는다"
+
+    def test_시한_셈이_승격_판정을_한_비트도_안_바꾼다(self, repo, monkeypatch):
+        """ADR-H026 이 `by_category` 롤업을 넣을 때 쓴 것과 같은 확인이다.
+
+        시한을 넘겼는지가 후보 판정에 되먹임되면, 「임계가 높다」 와
+        「표본이 모자라다」 를 가르려고 만든 장치가 그 판정을 오염시킨다.
+        원장은 그대로 두고 **시한 상수만** 흔들어 본다.
+        """
+        ldg.seed(repo)
+        for rid in ("r1", "r2"):
+            ldg.append(repo, rid, "05",
+                       [_finding(severity="critical", title="같은 이름")])
+        for rid in ("r1", "r2"):
+            for phase in ("05", "07", "05-trace"):
+                ldg.append(repo, rid, phase,
+                           [_finding(severity="minor", title="막힌 이름")])
+        keys = ("candidates", "held", "by_category", "distinct_runs")
+
+        monkeypatch.setattr(ldg, "PROMOTION_VERDICT_AT_RUNS", 9)
+        before = ldg.stage_promotions(repo)
+        monkeypatch.setattr(ldg, "PROMOTION_VERDICT_AT_RUNS", 1)
+        after = ldg.stage_promotions(repo)
+
+        assert before["verdict_deadline"]["due"] is False
+        assert after["verdict_deadline"]["due"] is True, "시한은 실제로 흔들렸다"
+        for k in keys:
+            assert before[k] == after[k], k
+        assert len(before["candidates"]) == 1 and len(before["held"]) == 1,             "후보와 held 가 둘 다 살아 있는 표본이어야 확인에 값이 있다"
 
 
 # ---------------------------------------------------------------------------
@@ -6216,6 +6297,27 @@ class TestPromoteScan:
         assert env["data"]["candidates"] == []
         assert env["data"]["held"] == []
 
+    def test_후보가_0_이면_판정_시한을_함께_말한다(self, repo):
+        """후보 0 을 보는 사람이 **그 자리에서** 시한을 본다 (ADR-H033).
+
+        이 분기가 초기 런의 최빈 경로다. "표본이 아직 없다" 만 적으면
+        그 말이 몇 런까지 유효한지를 아무도 모른다.
+        """
+        got = {"candidates": [], "held": [], "distinct_runs": 6,
+               "verdict_deadline": {"at": 9, "seen": 6, "remaining": 3,
+                                    "due": False}}
+        out = cli._promote_scan_render(got)
+        assert "판정 시한" in out, out
+        assert "distinct_runs" in out, "단위를 말하지 않으면 달력 런으로 읽는다"
+        assert "ADR-H033" in out, out
+
+    def test_시한이_지났으면_렌더가_그렇게_말한다(self, repo):
+        got = {"candidates": [], "held": [], "distinct_runs": 9,
+               "verdict_deadline": {"at": 9, "seen": 9, "remaining": 0,
+                                    "due": True}}
+        out = cli._promote_scan_render(got)
+        assert "지났다" in out or "판정할 때다" in out, out
+
 
 def _staged_authz(repo, request_file, phases):
     _fill_ledger(repo, "인가 규칙 누락", "AUTHZ_MISSING_RULE", "critical",
@@ -7307,6 +7409,37 @@ class TestReport08:
         out = (repo / "docs" / "harness" / "pipeline" / "runs"
                / ("%s.md" % run_id)).read_text(encoding="utf-8")
         assert "authz-catchall" in out
+
+    def test_승격_절이_판정_시한을_적는다(self, repo, request_file, phases):
+        """`## 승격된 규칙` 이 "없다" 로 끝나면 그것이 몇 런까지 정상인지
+        아무도 모른다. 시한과 **그 셈의 단위**를 같이 적는다 (ADR-H033)."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        head, _sep, tail = out.partition("## 승격된 규칙")
+        assert _sep, out
+        section = tail.split("## 건너뛴 게이트")[0]
+        assert "판정 시한" in section, section
+        assert "distinct_runs" in section, "단위를 안 적으면 달력 런으로 읽힌다"
+        assert "지적을 0건 낸 런은" in section, "한계를 칸 이름이 말해야 한다"
+
+    def test_시한_줄이_원장을_못_읽으면_안_적는다(self):
+        """못 잰 것을 0 으로 채우지 않는다 ([[ADR-H007]])."""
+        assert rep_mod._verdict_deadline_lines({}) == []
+        assert rep_mod._verdict_deadline_lines({"ledger": {}}) == []
+
+    def test_카테고리_축_표가_보고서에_나온다(self):
+        """`_ledger_axis_lines` 의 첫 회귀다 — 실물 런 보고서로만 확인돼
+        있었다. 시한 줄을 같은 절에 붙이므로 여기서 함께 잠근다."""
+        data = {"ledger": {"by_category": [
+            {"category": "NAMING", "count": 86, "distinct_runs": 4,
+             "distinct_keys": 84, "promotable": True}]}}
+        lines = rep_mod._ledger_axis_lines(data)
+        body = "\n".join(lines)
+        assert "`NAMING`" in body and "86" in body and "84" in body, body
+        assert rep_mod._ledger_axis_lines({}) == [], "없으면 절을 안 만든다"
 
     def test_보고서는_파이프라인을_실패시키지_않는다(self, repo, request_file,
                                                    phases):

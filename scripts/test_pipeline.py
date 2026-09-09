@@ -2806,6 +2806,54 @@ class TestGateReplay:
         _, after = st.load(repo, paths.run_id)
         assert not (after.get("counters") or {}).get("repair")
 
+    def test_단일_스테이지_full_재실행이_테스트_수를_상태에_남긴다(self, gated,
+                                                                   fxdir):
+        """M55 — 수리 뒤 재게이트는 정본이 선언한 정상 경로다.
+
+        `team-spec.md` §3.5: *"수리 후: `gate --stage scoped` → 전체 회귀 1회
+        → 승인 알림."* 그 전체 회귀의 값이 상태에 안 실리면 08 보고서·PR
+        체크리스트·세션 원장 셋이 전부 **마지막 코드 상태가 아닌 수**를
+        증언한다. P7 이 `1423` 을 적었고 마지막 `full` 은 `1424` 를 돌았다.
+
+        **그 회차의 영수증과 카운터는 그대로다** — `only_stage` 는 런을
+        판정하지 않는 경로이고, 그 성질은 바로 위 테스트가 잠근다.
+        """
+        repo, paths, s = gated
+        _gate(repo, make_fixture(fxdir, "regate-first", dict(ALL_PASS),
+                                 tests=1300))
+        _, mid = st.load(repo, paths.run_id)
+        assert (mid.get("tests") or {}).get("ran") == 1300, mid.get("tests")
+
+        fx = make_fixture(fxdir, "regate-full", dict(ALL_PASS), tests=1305)
+        env = cli.run_gate_cmd(repo, phase="04", only_stage="full",
+                               replay=str(fx))
+        assert env["exit"] == 0, env["render"]
+        _, after = st.load(repo, paths.run_id)
+        assert (after.get("tests") or {}).get("ran") == 1305, after.get("tests")
+
+        report = json.loads((paths.run_dir / "04_gate_report.json")
+                            .read_text(encoding="utf-8"))
+        assert report["tests"]["ran"] == 1300, "그 회차의 영수증은 안 덮는다"
+        assert not (after.get("counters") or {}).get("repair")
+
+    def test_단일_스테이지_scoped_는_테스트_수를_건드리지_않는다(self, gated,
+                                                                 fxdir):
+        """`scoped` 는 전체 회귀가 아니다.
+
+        그 수를 「몇 개 돌았나」로 적으면 다음 런의 하한 대조가 무의미해진다.
+        `_tests_signal` 이 `full` 미실행에 `None` 을 내는 것이 그 규율이고,
+        여기서 그것이 상태까지 지켜지는지 본다.
+        """
+        repo, paths, s = gated
+        _gate(repo, make_fixture(fxdir, "scoped-first", dict(ALL_PASS),
+                                 tests=1300))
+        fx = make_fixture(fxdir, "scoped-only", dict(ALL_PASS), tests=9999)
+        env = cli.run_gate_cmd(repo, phase="04", only_stage="scoped",
+                               replay=str(fx))
+        assert env["exit"] == 0, env["render"]
+        _, after = st.load(repo, paths.run_id)
+        assert (after.get("tests") or {}).get("ran") == 1300, after.get("tests")
+
     def test_uncalibrated_and_unverified_show_up_in_gaps(self, gated, fxdir):
         """미캘리브레이션·verified:false 가 조용히 통과하지 않는다."""
         repo, paths, s = gated

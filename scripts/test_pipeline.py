@@ -392,6 +392,49 @@ class TestCounters:
         assert st.counter_inc(s, "repair", 2, "gate_failure") == (1, 2, False)
         assert st.counter_inc(s, "repair", 2, "gate_failure") == (2, 2, True)
 
+    def test_지급한_상한을_다음_소모가_지우지_않는다(self, repo, request_file):
+        """M56 — `counter_grant` 가 올린 상한을 `counter_inc` 한 번이 되돌렸다.
+
+        `20260908-1720-dca1` 의 `counters.round` 는 `used 9 / max 5` 인데
+        `grants[0].extra` 가 5 다. 실효 상한 10 인 예산에서 라운드 7·8·9 가
+        `used >= max` 로 잘못 에스컬레이션했고 **사람이 답변 셋을 손으로 써서
+        그 대역을 했다** — [[ADR-H024]] 가 만든 지급 경로가 실질적으로 없었다.
+
+        기존 지급 테스트 다섯(`TestRoundBudgetAfterRoundTrip`)은 전부 지급
+        **직후** 상태만 봐서 이 결함을 초록불로 통과시켰다.
+        """
+        _, s = st.create_run(repo, "demo", request_file)
+        assert st.counter_inc(s, "repair", 2, "gate_failure") == (1, 2, False)
+        assert st.counter_grant(s, "repair", 2, "왕복이 설계를 뒤집었다") == (1, 4)
+        # 되돌리면 여기가 `(2, 2, True)` 다 — 상한도 판정도 선언값으로 돌아간다.
+        assert st.counter_inc(s, "repair", 2, "gate_failure") == (2, 4, False)
+        assert s["counters"]["repair"]["max"] == 4, s["counters"]["repair"]
+
+    def test_지급받은_예산도_결국_소진된다(self, repo, request_file):
+        """지급은 상한을 올릴 뿐 무한 연장이 아니다 (ADR-H024 의 트레이드오프).
+
+        M56 을 고치면서 `exceeded` 를 영영 False 로 만들면 상한이 사라진다.
+        """
+        _, s = st.create_run(repo, "demo", request_file)
+        st.counter_inc(s, "repair", 1, "gate_failure")
+        st.counter_grant(s, "repair", 1, "왕복 지급")
+        assert st.counter_inc(s, "repair", 1, "gate_failure") == (2, 2, True)
+
+    def test_두_번_지급해도_한_번씩만_더해진다(self, repo, request_file):
+        """실효 상한은 **선언값 + `grants` 합**이고 재계산은 멱등이다.
+
+        `counter_grant` 도 `node["max"]` 를 직접 올리므로, 재계산이 그것과
+        어긋나면 지급~다음 소모 사이 구간에서 봉투와 보고서가 다른 값을 말한다.
+        실물에서 두 번 지급은 `loop.max` 를 올린 변이 테스트에서만 난다
+        (`xverify_return` 상한 1 이 런당 한 번으로 묶는다 · M32).
+        """
+        _, s = st.create_run(repo, "demo", request_file)
+        st.counter_inc(s, "repair", 2, "gate_failure")
+        st.counter_grant(s, "repair", 2, "1차 지급")
+        st.counter_inc(s, "repair", 2, "gate_failure")
+        st.counter_grant(s, "repair", 2, "2차 지급")
+        assert st.counter_inc(s, "repair", 2, "gate_failure") == (3, 6, False)
+
 
 class TestCounterSpendReason:
     """예산을 **무엇에 썼는지**가 원장에 남는가 (M47).
@@ -437,6 +480,22 @@ class TestCounterSpendReason:
                  paths.events.read_text(encoding="utf-8").splitlines() if l.strip()]
         got = [e for e in kinds if e["kind"] == "counter_inc"]
         assert got and got[-1]["data"]["reason"] == "format_reject", got
+
+    def test_이벤트가_실효_상한을_적는다(self, repo, request_file):
+        """M56 — P8 의 `events.jsonl` 은 지급(seq 44) 뒤에도 `max: 5` 를 적었다.
+
+        상태는 마지막 모습이고 이벤트는 순서다. 이벤트가 선언값을 적으면
+        **"라운드 7 이 어느 예산으로 돌았는가"가 원장에서 사라진다** — 그 런이
+        왜 세 번 멈췄는지 원장만 봐서는 설명되지 않는 것이 그래서다.
+        """
+        paths, s = st.create_run(repo, "demo", request_file)
+        st.counter_inc(s, "review_repair", 2, "format_reject", paths=paths)
+        st.counter_grant(s, "review_repair", 2, "왕복 지급")
+        st.counter_inc(s, "review_repair", 2, "review_blocking", paths=paths)
+        kinds = [json.loads(l) for l in
+                 paths.events.read_text(encoding="utf-8").splitlines() if l.strip()]
+        got = [e for e in kinds if e["kind"] == "counter_inc"]
+        assert [e["data"]["max"] for e in got] == [2, 4], got
 
     def test_보고서가_예산을_무엇에_썼는지_적는다(self, repo, request_file):
         """원장에 있어도 보고서가 안 말하면 사람이 그 런을 못 읽는다."""
@@ -1857,6 +1916,50 @@ class TestRoundBudgetAfterRoundTrip:
         text, _missing = rep_mod.build(after, {}, {}, [])
         line = next(l for l in text.splitlines() if l.startswith("| 라운드"))
         assert "지급" in line, line
+
+    def test_지급받은_라운드가_다음_라운드에서_살아남는다(self, run01):
+        """M56 — 되돌아간 01 이 한 바퀴 더 돌면 상한이 선언값으로 되돌아갔다.
+
+        **위 다섯은 전부 `counter_grant` 직후만 봤다.** 되돌린 01 이 실제로
+        라운드를 더 도는 것을 아무도 묻지 않아, 지급 경로가 실질적으로 없는
+        채로 P8 까지 왔다 — 그 런에서 라운드 7·8·9 가 오탐 에스컬레이션이었다.
+        """
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, granted = st.load(repo, paths.run_id)
+        eff = granted["counters"]["round"]["max"]
+        assert eff == 10, granted["counters"]["round"]   # 선언 5 + 지급 5
+
+        self._converge_01(repo, paths)                   # 되돌아간 01 이 한 바퀴 더
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["round"]["max"] == eff, after["counters"]["round"]
+
+    def test_에스컬레이션은_선언_상한이_아니라_실효_상한에서_난다(self, run01):
+        """`_judge_round`(cli.py) 의 `exceeded` 가 실효값을 받는가.
+
+        M56 의 피해가 실제로 난 자리다 — 지급으로 상한이 10 이 됐는데 6회차가
+        `used >= 5` 로 판정돼 멈췄다. `used` 직접 대입은 이 스위트의 기존
+        패턴이고, 선언 상한 5 의 코앞에서만 이 갈림이 보이기 때문에 쓴다.
+        """
+        MINOR = {"id": "F-9", "severity": "minor", "title": "이름이 모호하다",
+                 "quote": "빈 문자열을 먼저 거른다."}
+        repo, paths, s = run01
+        self._converge_01(repo, paths)
+        self._verdict(repo, paths, [dict(self.CRITICAL)])
+        _, mid = st.load(repo, paths.run_id)
+        mid["counters"]["round"]["used"] = 4      # 선언 상한 5 의 코앞
+        st.save(paths, mid)
+
+        _submit_plan(repo, paths, _plan())
+        _submit_review(repo, paths, _review("plan", round_=2, findings=[MINOR]),
+                       round_=2)
+        env = _submit_review(repo, paths, _review("xv", round_=2, findings=[MINOR]),
+                             round_=2)
+        _, after = st.load(repo, paths.run_id)
+        assert after["counters"]["round"]["used"] == 5, after["counters"]["round"]
+        # 실효 상한은 10 이다. 5 에서 멈추면 그것이 M56 이다.
+        assert not after.get("escalated"), env["render"]
 
 
 class TestLoopDeclarationsAreRead:

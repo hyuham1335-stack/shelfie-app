@@ -1899,6 +1899,138 @@ class TestSessionMetrics:
         assert m["tool_result_chars"] == 30
 
 
+def _cost_state(usd=1.5, models=None, **kw):
+    """트랜스크립트 끝에 실제로 있는 레코드의 모양."""
+    rec = {"type": "cost-state", "totalCostUSD": usd,
+           "totalAPIDuration": 1000, "totalDuration": 2000,
+           "hasUnknownModelCost": False,
+           "modelUsage": models if models is not None else {
+               "claude-opus-5[1m]": {
+                   "inputTokens": 10, "outputTokens": 20, "thinkingTokens": 5,
+                   "cacheReadInputTokens": 300, "cacheCreationInputTokens": 40,
+                   "webSearchRequests": 0, "costUSD": usd}}}
+    rec.update(kw)
+    return rec
+
+
+class TestCostState:
+    """세션 누적 비용은 트랜스크립트의 `cost-state` 레코드에 이미 있다.
+
+    **서브에이전트를 포함한다** — 43개 트랜스크립트로 갈랐다. 서브에이전트가
+    0개인 세션 다섯에서 메인 트랜스크립트만으로 `modelUsage` 와 정확히
+    일치하고(예 outputTokens 13,343 = 13,343), 서브에이전트가 있는 세션에서는
+    메인만으로 크게 모자란다. 포함하지 않는다면 뒤쪽도 일치해야 한다.
+
+    **트랜스크립트 재구성을 대조 장치로 짓지 않는다.** 서브에이전트 jsonl 은
+    `apiBlockIndex` 로 쪼갠 부분 usage 를 담고, `modelUsage` 에는 트랜스크립트에
+    레코드조차 없는 haiku 부수 호출이 있다 — 재구성값은 신뢰할 수 없는 하한이다.
+    """
+
+    def test_마지막_cost_state_가_이긴다(self, transcripts):
+        """한 파일에 두 건인 경우가 실물 43개 중 6건이다.
+
+        누적값은 같고 `totalDuration` 만 다르다 — 뒤의 것이 그 세션의 최종이다.
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _cost_state(usd=1.0), _tool_use("Bash", "t1"), _cost_state(usd=3.25),
+        ])
+        c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
+        assert c["session_cost_usd"] == 3.25
+
+    def test_cost_state_가_없으면_빈_dict_다(self, transcripts):
+        """실물 43개 중 9개가 이 경우다 — 아직 안 끝난 세션이다.
+
+        레코드는 트랜스크립트의 **마지막 줄**로 써지므로, 그 세션 자신의
+        SessionEnd 훅은 이 값을 볼 수 없다. 0 으로 채우면 "안 잰 세션" 과
+        "정말 공짜였던 세션" 이 같은 칸에 들어간다 (ADR-H007).
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _tool_use("Bash", "t1"), _tool_result("x", "t1"),
+        ])
+        assert ex.StepExecutor._read_cost_state(
+            "abc", transcript_root=transcripts) == {}
+
+    def test_unknown_model_cost_면_비용_대신_플래그를_적는다(self, transcripts):
+        """값을 모르는 모델이 섞이면 그 합계는 비용이 아니다."""
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _cost_state(usd=9.0, hasUnknownModelCost=True),
+        ])
+        c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
+        assert "session_cost_usd" not in c
+        assert c["unknown_model_cost"] is True
+        assert c["session_output_tokens"] == 20, "토큰은 그래도 잰 값이다"
+
+    def test_토큰을_모델_넘어_합산한다(self, transcripts):
+        """opus 와 haiku 가 한 세션에 섞인다 — 실물이 그렇다."""
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _cost_state(usd=2.0, models={
+                "claude-opus-5[1m]": {"inputTokens": 10, "outputTokens": 20,
+                                      "thinkingTokens": 5,
+                                      "cacheReadInputTokens": 300,
+                                      "cacheCreationInputTokens": 40,
+                                      "costUSD": 1.9},
+                "claude-haiku-4-5-20251001": {"inputTokens": 1, "outputTokens": 2,
+                                              "thinkingTokens": 0,
+                                              "cacheReadInputTokens": 0,
+                                              "cacheCreationInputTokens": 0,
+                                              "costUSD": 0.1}}),
+        ])
+        c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
+        assert c["session_input_tokens"] == 11
+        assert c["session_output_tokens"] == 22
+        assert c["session_cache_read"] == 300
+        assert c["session_cache_write"] == 40
+        assert sorted(c["models"]) == ["claude-haiku-4-5-20251001",
+                                       "claude-opus-5[1m]"]
+
+    def test_모르는_필드는_그_키만_빠진다(self, transcripts):
+        """`totalCostUSD` 가 문자열이면 비용만 없고 토큰은 산다."""
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [
+            _cost_state(usd="많이"),
+        ])
+        c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
+        assert "session_cost_usd" not in c
+        assert c["session_output_tokens"] == 20
+
+    def test_깨진_줄이_나머지를_버리지_않는다(self, transcripts):
+        path = transcripts / "C--some-slug" / "abc.jsonl"
+        _jsonl(path, [_cost_state(usd=4.5)])
+        with path.open("a", encoding="utf-8") as fh:
+            # `_jsonl` 은 끝에 개행을 안 붙인다.
+            fh.write("\n{ broken\n")
+        c = ex.StepExecutor._read_cost_state("abc", transcript_root=transcripts)
+        assert c["session_cost_usd"] == 4.5
+
+    def test_세션_아이디가_없으면_빈_dict_다(self, transcripts):
+        assert ex.StepExecutor._read_cost_state(
+            None, transcript_root=transcripts) == {}
+
+    def test_extract_usage_의_키와_겹치지_않는다(self, transcripts):
+        """**두 값은 뜻이 다르다.** `_extract_usage` 는 `claude -p` **한 번**의
+        비용이고 `cost-state` 는 **세션 누적**(서브에이전트 포함)이다.
+        같은 키를 쓰면 `_record_run` 의 `entry.update` 에서 조용히 덮인다.
+
+        그래서 겹침을 테스트로 감시하는 대신 **이름으로 막았다** — 이쪽 키는
+        전부 `session_` 으로 시작한다. 런 단위 이름으로 옮기는 것은
+        `cli.run_cost` 가 한다.
+        """
+        _jsonl(transcripts / "C--some-slug" / "abc.jsonl", [_cost_state()])
+        cost = ex.StepExecutor._read_cost_state("abc",
+                                                transcript_root=transcripts)
+        usage = ex.StepExecutor._extract_usage({"stdout": json.dumps({
+            "total_cost_usd": 0.5, "num_turns": 3,
+            "usage": {"cache_read_input_tokens": 1,
+                      "cache_creation_input_tokens": 2, "output_tokens": 3}})})
+        assert usage, "대조군이 비면 이 테스트는 아무것도 안 묻는다"
+        assert set(cost) & set(usage) == set()
+
+    def test_record_run_이_cost_state_를_섞지_않는다(self):
+        """읽기 전용 리더다 — step 영수증에 배선하지 않는다."""
+        import inspect
+        body = inspect.getsource(ex.StepExecutor._record_run)
+        assert "_read_cost_state" not in body
+
+
 class TestSessionId:
     def test_pulls_session_id(self):
         out = {"stdout": json.dumps({"session_id": "abc-123", "num_turns": 3})}

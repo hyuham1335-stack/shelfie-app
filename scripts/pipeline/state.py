@@ -388,6 +388,128 @@ def append_event(paths, kind, cmd=None, phase=None, now=None, **data):
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def read_events(paths):
+    """`events.jsonl` 을 seq 순 리스트로. **깨진 줄 하나로 나머지를 버리지 않는다.**
+
+    `_read_session_metrics`(execute.py)와 같은 규율이다 — 쓰이는 중인 파일은
+    마지막 줄이 잘려 있을 수 있고, 그 한 줄 때문에 실측 전부를 잃으면
+    "못 읽었다"가 "아무 일도 없었다"로 보고된다.
+    """
+    if not paths.events.exists():
+        return []
+    out = []
+    try:
+        raw = paths.events.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    out.sort(key=lambda e: e.get("seq") or 0)
+    return out
+
+
+def _parse_stamp(value):
+    """`stamp` 의 역함수. 형식 상수를 새로 만들지 않는다."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, STAMP_FORMAT)
+    except ValueError:
+        return None
+
+
+def phase_durations(paths):
+    """페이즈별 벽시계를 `events.jsonl` 에서 유도한다 (`PHASE_DURATION_BASIS`).
+
+    **새 계측 장치가 아니다.** 이벤트는 이미 `ts` 를 적고 있었고 읽는 쪽만
+    없었다. 그래서 여섯 런의 보고서가 전부 "소요 시간은 미측정" 을 적었다.
+
+    구간을 여는 것은 `phase_enter` 가 아니라 **이벤트의 `phase` 가 바뀌는
+    것**이다. `phase` 가 없는 이벤트(`counter_inc`)는 직전 페이즈를 잇는다 —
+    새 구간을 열면 그 시간이 어느 페이즈에도 안 들어가 벽시계가 샌다.
+
+    에스컬레이션 대기는 `escalated` → **다음 `resumed`** 다. "다음 이벤트"로
+    잡으면 재개 뒤 첫 작업 시간까지 대기로 셈해진다. 재개되지 않은
+    에스컬레이션은 **길이가 없으므로 키를 만들지 않고** 횟수만 센다.
+
+    이 값은 **벽시계이고 사람이 답을 쓰는 대기가 섞여 있다.** 그래서
+    `escalation_wait_sec` 을 같은 표에 따로 뺀다 — P8 은 7시간 48분 중
+    4시간 42분(60.2%)이 그것이었고 다섯 건 전부 01-plan 이었다.
+    총계 한 줄로는 그 사실이 안 보인다.
+
+    구간이 하나도 없으면 **빈 dict** 다. 0 으로 채우면 "안 쟀다"와
+    "0 이었다"가 같은 칸에 들어간다 (ADR-H007).
+    """
+    events = read_events(paths)
+    stamped = [(e, _parse_stamp(e.get("ts"))) for e in events]
+    stamped = [(e, t) for e, t in stamped if t is not None]
+    if len(stamped) < 2:
+        return {}
+
+    phases = {}
+    current = None
+    pending_escalation = None       # (페이즈, 시각)
+
+    def node(name):
+        return phases.setdefault(name, {"wall_sec": 0, "segments": 0,
+                                        "entries": 0, "passes": 0,
+                                        "escalations": 0})
+
+    for idx, (event, when) in enumerate(stamped):
+        name = event.get("phase") or current
+        if name is None:
+            # 런 최초 이벤트가 페이즈를 안 말하면 귀속할 곳이 없다.
+            continue
+        if name != current:
+            node(name)["segments"] += 1
+            current = name
+        cell = node(name)
+
+        kind = event.get("kind")
+        if kind == "phase_enter":
+            cell["entries"] += 1
+        elif kind == "phase_pass":
+            cell["passes"] += 1
+        elif kind == "escalated":
+            cell["escalations"] += 1
+            pending_escalation = (name, when)
+        elif kind == "resumed" and pending_escalation is not None:
+            owner, since = pending_escalation
+            waited = int((when - since).total_seconds())
+            if waited >= 0:
+                node(owner)["escalation_wait_sec"] = \
+                    node(owner).get("escalation_wait_sec", 0) + waited
+            pending_escalation = None
+
+        if idx + 1 < len(stamped):
+            cell["wall_sec"] += int(
+                (stamped[idx + 1][1] - when).total_seconds())
+
+    unresumed = 1 if pending_escalation is not None else 0
+    waits = [p["escalation_wait_sec"] for p in phases.values()
+             if "escalation_wait_sec" in p]
+
+    out = {
+        "basis": PHASE_DURATION_BASIS,
+        "blind_spots": list(PHASE_DURATION_BLIND_SPOTS),
+        "first_ts": stamped[0][0].get("ts"),
+        "last_ts": stamped[-1][0].get("ts"),
+        "wall_sec": int((stamped[-1][1] - stamped[0][1]).total_seconds()),
+        "phases": phases,
+        "unresumed_escalations": unresumed,
+    }
+    if waits:
+        out["escalation_wait_sec"] = sum(waits)
+    return out
+
+
 # --------------------------------------------------------------- 페이즈·카운터
 
 def phase_status(s, phase_id):
@@ -522,6 +644,23 @@ BUDGET_BASIS = "instructed"
 BUDGET_BLIND_SPOTS = (
     "모델이 스스로 낸 호출은 세지 못한다 (과소)",
     "지시를 메인이 대신 처리하면 센 것이 실제로 안 일어난다 (과다)",
+)
+
+
+# 페이즈별 소요의 관측 단위. **`phase_enter` → `phase_pass` 짝이 아니다.**
+# 되돌아간 페이즈에는 진입 이벤트가 안 찍히고(P8 의 01 재작업 3시간 26분이
+# 02 로 귀속됐다) `08-report` 는 `phase_pass` 만 있어 짝으로는 못 잰다.
+# 대신 이벤트를 seq 순으로 걸으며 인접한 두 `ts` 의 차를 **그때 활성인
+# 페이즈**에 더한다 — `Σ 페이즈 소요 == 런 벽시계` 가 기계로 검산된다.
+PHASE_DURATION_BASIS = "event-segment"
+
+# 이 기준이 틀리는 세 방향. `BUDGET_BLIND_SPOTS` 와 같은 규율이다 —
+# 값만 주고 어느 쪽으로 틀리는지 안 주면 사람이 그 숫자로 판단할 수 없다.
+PHASE_DURATION_BLIND_SPOTS = (
+    "이벤트는 대개 일을 끝낸 뒤 찍힌다 — 새 페이즈의 첫 이벤트가 "
+    "phase_enter 가 아니면 그 준비 시간이 앞 페이즈에 붙는다 (앞이 과다)",
+    "타임스탬프가 초 단위다 — 1초 미만 페이즈는 0 으로 보인다 (과소)",
+    "버려진 런은 아무도 일하지 않은 날들이 그대로 벽시계에 들어간다 (과다)",
 )
 
 

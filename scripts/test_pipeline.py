@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -267,6 +268,164 @@ class TestEvents:
                  paths.events.read_text(encoding="utf-8").splitlines() if x.strip()]
         assert [e["seq"] for e in lines] == list(range(1, len(lines) + 1))
         assert lines[-1]["kind"] == "phase_pass"
+
+
+class TestPhaseDurations:
+    """8페이즈가 자기 소요를 잰다 — 새 계측이 아니라 `events.jsonl` 의 유도값이다.
+
+    `report.py` 가 여섯 런에 걸쳐 "소요 시간은 미측정이다" 를 적었는데,
+    `team-spec.md` 의 08 결정론 칸은 페이즈별 소요를 **이미 요구한다.**
+    M56 과 같은 모양이다 — 선언이 있는데 코드가 안 하는 자리다.
+
+    **기준은 `phase_enter` → `phase_pass` 짝이 아니라 이벤트 구간 분할이다.**
+    P8 실측이 그 이유다: 02 의 Critical 이 01 로 되돌렸을 때 되돌아간 01 에
+    `phase_enter` 가 안 찍혔고, 짝 맞추기는 그 3시간 26분을 **02 의 소요로**
+    적는다. `08-report` 는 `phase_pass` 만 있어 짝 맞추기로는 영영 못 잰다.
+    """
+
+    def _at(self, h, m=0, s=0):
+        return datetime(2026, 3, 1, h, m, s, tzinfo=st.TZ)
+
+    def test_구간_합이_런_벽시계와_같다(self, repo, request_file):
+        """불변식. 깨지면 어딘가를 이중계상했거나 흘렸다는 뜻이다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "run_created", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 30))
+        st.append_event(paths, "phase_enter", phase="02-cross-verify",
+                        now=self._at(10, 30))
+        st.append_event(paths, "run_closed", phase="02-cross-verify",
+                        now=self._at(11))
+
+        t = st.phase_durations(paths)
+        assert t["wall_sec"] == 3600
+        assert sum(p["wall_sec"] for p in t["phases"].values()) == t["wall_sec"]
+
+    def test_재진입한_페이즈의_두_구간이_합산된다(self, repo, request_file):
+        """01 → 02 → 01 → pass. **짝 맞추기 기준이면 여기서 깨진다.**"""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 10))
+        st.append_event(paths, "phase_enter", phase="02-cross-verify",
+                        now=self._at(10, 10))
+        # 02 가 되돌린다. 되돌아간 01 에 phase_enter 가 안 찍히는 것이 실물이다.
+        st.append_event(paths, "submit_received", phase="01-plan",
+                        now=self._at(10, 20))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 50))
+
+        t = st.phase_durations(paths)
+        assert t["phases"]["01-plan"]["wall_sec"] == 600 + 1800
+        assert t["phases"]["01-plan"]["segments"] == 2
+        assert t["phases"]["02-cross-verify"]["wall_sec"] == 600
+
+    def test_phase_enter_없이_pass_만_있는_페이즈도_잰다(self, repo, request_file):
+        """`08-report` 의 실물 형태다 — P8 은 seq 107 이 pass 뿐이다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_pass", phase="07-pr-review", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="08-report", now=self._at(10, 5))
+        st.append_event(paths, "run_closed", phase="08-report", now=self._at(10, 5))
+
+        t = st.phase_durations(paths)
+        assert "08-report" in t["phases"]
+        assert t["phases"]["08-report"]["wall_sec"] == 0
+
+    def test_phase_가_없는_이벤트는_직전_페이즈를_잇는다(self, repo, request_file):
+        """`counter_inc` 은 phase 를 안 받는다 — P8 에서 11건이다.
+
+        새 구간을 열면 그 시간이 어느 페이즈에도 안 들어가 벽시계가 샌다.
+        """
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "counter_inc", now=self._at(10, 20))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 40))
+
+        t = st.phase_durations(paths)
+        assert list(t["phases"]) == ["01-plan"]
+        assert t["phases"]["01-plan"]["wall_sec"] == 2400
+
+    def test_에스컬레이션_대기가_페이즈별로_따로_나온다(self, repo, request_file):
+        """벽시계에서 **사람을 기다린 시간**을 뺄 수 있어야 한다.
+
+        P8 은 벽시계 7:48:14 중 4:42:04(60.2%)가 이것이었고, 다섯 건이
+        전부 01-plan 이었다. 총계 한 줄로는 그 사실이 안 보인다.
+        """
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "escalated", phase="01-plan", now=self._at(10, 10))
+        st.append_event(paths, "resumed", phase="01-plan", now=self._at(11, 10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(11, 20))
+
+        t = st.phase_durations(paths)
+        assert t["phases"]["01-plan"]["wall_sec"] == 4800
+        assert t["phases"]["01-plan"]["escalation_wait_sec"] == 3600
+        assert t["phases"]["01-plan"]["escalations"] == 1
+        assert t["escalation_wait_sec"] == 3600
+
+    def test_재개되지_않은_에스컬레이션은_대기_키를_만들지_않는다(
+            self, repo, request_file):
+        """값을 지어내지 않는다. 아직 안 끝난 대기는 길이가 없다 (ADR-H007)."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "escalated", phase="01-plan", now=self._at(10, 10))
+
+        t = st.phase_durations(paths)
+        assert "escalation_wait_sec" not in t
+        assert "escalation_wait_sec" not in t["phases"]["01-plan"]
+        assert t["unresumed_escalations"] == 1
+
+    def test_이벤트가_한_줄이면_소요를_주장하지_않는다(self, repo, request_file):
+        """구간이 없으면 잰 것이 없다 — 0 으로 채우면 '안 쟀다'와 같아진다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "run_created", phase="01-plan", now=self._at(10))
+        assert st.phase_durations(paths) == {}
+
+    def test_깨진_줄이_나머지를_버리지_않는다(self, repo, request_file):
+        """`_read_session_metrics` 와 같은 규율이다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        with paths.events.open("a", encoding="utf-8", newline="") as fh:
+            fh.write("{ broken line\n")
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 30))
+
+        t = st.phase_durations(paths)
+        assert t["phases"]["01-plan"]["wall_sec"] == 1800
+
+    def test_기준과_사각을_함께_돌려준다(self, repo, request_file):
+        """`BUDGET_BASIS`·`BUDGET_BLIND_SPOTS` 와 같은 자리다 — 값만 주고
+        그 값이 어느 방향으로 틀리는지 안 주면 사람이 읽을 수 없다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 1))
+
+        t = st.phase_durations(paths)
+        assert t["basis"] == st.PHASE_DURATION_BASIS
+        assert t["blind_spots"] == list(st.PHASE_DURATION_BLIND_SPOTS)
+
+    @pytest.mark.skipif(
+        not (ROOT / "_workspace/runs/20260908-1720-dca1/events.jsonl").exists(),
+        reason="P8 런 디렉터리가 없다")
+    def test_P8_실물_events_가_같은_값을_낸다(self):
+        """실물 앵커. 합성 픽스처만으로는 기준이 실물에서 성립하는지 모른다.
+
+        P8 은 `phase_enter` 16 · `phase_pass` 9 이고 되돌아간 01 에 진입
+        이벤트가 없다 — 이 런이 기준을 고른 근거 자체다.
+        """
+        t = st.phase_durations(st.RunPaths(ROOT, "20260908-1720-dca1"))
+        assert t["wall_sec"] == 28094
+        assert t["phases"]["01-plan"]["wall_sec"] == 20977
+        assert t["phases"]["01-plan"]["escalation_wait_sec"] == 16924
+        assert t["escalation_wait_sec"] == 16924
+        assert sum(p["wall_sec"] for p in t["phases"].values()) == 28094
+        assert sum(p["entries"] for p in t["phases"].values()) == 16
+        assert sum(p["passes"] for p in t["phases"].values()) == 9
 
 
 class TestFingerprint:
@@ -2864,6 +3023,178 @@ def _ledger_lines(root):
     if not p.exists():
         return []
     return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+class TestRunCost:
+    """런 비용은 **읽는 시점**에 원장 + 트랜스크립트로 집계한다.
+
+    훅에서 못 한다: `cost-state` 는 트랜스크립트의 **마지막 줄**로 써지고
+    그것은 `SessionEnd` 훅보다 늦다 — 세션은 자기 비용을 영원히 못 적는다.
+    반대로 읽는 시점에는 잘 된다: 실물 원장 46줄 중 트랜스크립트가 남은
+    32줄은 **100%** 그 레코드를 갖고 있다.
+
+    그리고 **`run_id` 만으로 합산하면 안 된다.** `session_log._latest_run` 이
+    가장 최근 런 디렉터리를 무조건 집으므로, 런이 닫힌 뒤 시작한 세션도 그
+    `run_id` 를 단다 (M59). 실물 원장에 그 두 줄이 나란히 있다.
+    """
+
+    def _ledger(self, repo, rows):
+        p = repo / "docs" / "pipeline-ledger.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n"
+                             for r in rows), encoding="utf-8")
+        return p
+
+    def _transcript(self, root, sid, usd):
+        d = root / "C--slug"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ("%s.jsonl" % sid)).write_text(
+            json.dumps({"type": "cost-state", "totalCostUSD": usd,
+                        "totalDuration": 1000, "hasUnknownModelCost": False,
+                        "modelUsage": {"m": {"inputTokens": 1, "outputTokens": 2,
+                                             "thinkingTokens": 0,
+                                             "cacheReadInputTokens": 3,
+                                             "cacheCreationInputTokens": 4,
+                                             "costUSD": usd}}},
+                       ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def _run(self, repo, request_file, updated_at,
+             created_at="2026-09-08T17:20:01+0900"):
+        """런은 **구간**을 갖는다. P8 은 17:20 에 시작해 다음날 01:08 에 닫혔다."""
+        paths, s = st.create_run(repo, "demo", request_file)
+        s["created_at"] = created_at
+        s["updated_at"] = updated_at
+        st._write_json(paths.state, s)
+        return paths.run_id
+
+    def test_런을_만진_세션만_합산한다(self, repo, request_file, tmp_path):
+        """`touched` 는 세션 창 안에 런의 `updated_at` 이 있다는 뜻이다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-08T16:51:21+0900", "session_id": "s0"},
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T10:21:20+0900", "session_id": "s2",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 4.34)
+        self._transcript(troot, "s2", 20.29)
+
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert out["ok"] is True
+        d = out["data"]
+        assert d["cost_usd"] == 4.34, "닫힌 뒤 시작한 s2 는 빠진다"
+        assert [x["session_id"] for x in d["sessions"] if x["basis"] == "touched"] \
+            == ["s1"]
+        assert [x["session_id"] for x in d["sessions"]
+                if x["basis"] == "latest_only"] == ["s2"]
+
+    def test_여러_세션에_걸친_런은_앞_세션도_합산한다(self, repo, request_file,
+                                                      tmp_path):
+        """**P8 의 실제 모양이다** — 17:20 에 시작해 다음날 01:08 에 닫혔고
+        세션 둘이 걸쳐 있다. `updated_at` 한 시점만 보면 앞 세션이 통째로 빠진다.
+        """
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900",
+                        created_at="2026-09-08T17:20:01+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-08T16:51:21+0900", "session_id": "s0"},
+            # 17:20~24:00 을 담당한 세션.
+            {"ts": "2026-09-08T23:00:00+0900", "session_id": "early",
+             "run": {"run_id": rid}},
+            # 00:00~01:08 을 담당하고 런을 닫은 세션.
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "late",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "early", 10.0)
+        self._transcript(troot, "late", 4.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert out["data"]["cost_usd"] == 14.0
+        assert [x["basis"] for x in out["data"]["sessions"]] == \
+            ["touched", "touched"]
+
+    def test_latest_only_임을_봉투가_말한다(self, repo, request_file, tmp_path):
+        """뺀 것을 조용히 빼지 않는다 — 왜 뺐는지가 화면에 남아야 한다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T10:21:20+0900", "session_id": "s2",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 1.0)
+        self._transcript(troot, "s2", 2.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert "latest_only" in out["render"]
+
+    def test_트랜스크립트가_없는_세션은_수로_적힌다(self, repo, request_file,
+                                                    tmp_path):
+        """빠진 것을 세지 않으면 합계가 얼마나 모자란지 알 수 없다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            # 둘 다 런 구간(17:20~01:08)과 겹친다. 뒤엣것만 트랜스크립트가 없다.
+            {"ts": "2026-09-08T23:00:00+0900", "session_id": "gone",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T00:30:00+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 1.25)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        assert out["data"]["cost_usd"] == 1.25
+        assert out["data"]["unread_sessions"] == 1
+        assert "1" in out["render"]
+
+    def test_읽은_세션이_하나도_없으면_합계를_주장하지_않는다(
+            self, repo, request_file, tmp_path):
+        """0 달러와 '못 읽었다' 는 다른 것이다 (ADR-H007)."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "gone",
+             "run": {"run_id": rid}},
+        ])
+        out = cli.run_cost(repo, run_id=rid, transcript_root=tmp_path / "없음")
+        assert "cost_usd" not in out["data"]
+        assert out["data"]["unread_sessions"] == 1
+
+    def test_사각을_봉투가_그대로_인쇄한다(self, repo, request_file, tmp_path):
+        """`BUDGET_BLIND_SPOTS` 와 같은 규율 — 양방향으로 틀리므로
+        "하한" 이라고 부르지 않는다."""
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 3.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        for spot in cli.COST_BLIND_SPOTS:
+            assert spot in out["render"], spot
+
+    def test_원장에_그_런이_없으면_exit_3(self, repo, request_file, tmp_path):
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [{"ts": "2026-09-09T09:05:38+0900",
+                             "session_id": "s1"}])
+        out = cli.run_cost(repo, run_id=rid, transcript_root=tmp_path)
+        assert out["exit"] == 3
+
+    def test_토큰도_같이_나온다(self, repo, request_file, tmp_path):
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        self._ledger(repo, [
+            {"ts": "2026-09-09T09:05:38+0900", "session_id": "s1",
+             "run": {"run_id": rid}},
+            {"ts": "2026-09-09T09:40:00+0900", "session_id": "s1b",
+             "run": {"run_id": rid}},
+        ])
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 1.0)
+        self._transcript(troot, "s1b", 2.0)
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        # 창이 [09:05, 09:40] 인 s1b 는 런 구간(~01:08)과 안 겹친다.
+        assert out["data"]["cost_usd"] == 1.0
+        assert out["data"]["output_tokens"] == 2
 
 
 class TestSessionLedger:
@@ -6874,6 +7205,29 @@ def _enter_08(repo, request_file, phases, grade="PASS"):
     return run_id, paths
 
 
+def _seed_timing_events(paths):
+    """실물 런의 모양을 심는다 — `_enter_08` 은 상태만 조립하고 이벤트를 안 남긴다.
+
+    P8 이 실제로 그린 궤적을 줄인 것이다: 01 이 한 번 돌고, 02 가 되돌리고,
+    **되돌아간 01 에는 진입 이벤트가 없고**, 그 사이에 사람을 기다린다.
+    """
+    def at(h, m):
+        return datetime(2026, 3, 1, h, m, 0, tzinfo=st.TZ)
+
+    # `_enter_08` 이 남긴 `run_created` 는 실제 지금 시각이다. 심는 이벤트가
+    # 그보다 과거면 구간이 음수가 된다 — 단위 테스트와 같게 비우고 시작한다.
+    paths.events.write_text("", encoding="utf-8")
+    st.append_event(paths, "phase_enter", phase="01-plan", now=at(10, 0))
+    st.append_event(paths, "escalated", phase="01-plan", now=at(10, 10))
+    st.append_event(paths, "resumed", phase="01-plan", now=at(11, 10))
+    st.append_event(paths, "phase_pass", phase="01-plan", now=at(11, 20))
+    st.append_event(paths, "phase_enter", phase="02-cross-verify", now=at(11, 20))
+    # 02 가 되돌린다. 되돌아간 01 에 phase_enter 가 안 찍히는 것이 실물이다.
+    st.append_event(paths, "submit_received", phase="01-plan", now=at(11, 30))
+    st.append_event(paths, "phase_pass", phase="01-plan", now=at(11, 50))
+    st.append_event(paths, "phase_enter", phase="08-report", now=at(12, 0))
+
+
 def _report_data(paths, **kw):
     d = {"narrative": {"문제": "재시도가 안 됐다", "원인": "상태 머신",
                        "해결": "리듀서 수정", "결과": "통과",
@@ -7088,6 +7442,81 @@ class TestReport08:
                / ("%s.md" % run_id)).read_text(encoding="utf-8")
         assert "instructed" in out
         assert "과소" in out and "과다" in out, "두 오차 방향이 드러나야 한다"
+
+    # ── C2-1. 08 이 자기 소요를 적는다.
+
+    def test_소요_미측정_문단이_사라졌다(self, repo, request_file, phases):
+        """여섯 런이 이 문장을 적었다. 이제 잰다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "소요 시간은 미측정이다" not in out
+
+    def test_페이즈별_표에_벽시계와_에스컬레이션_대기가_따로_있다(
+            self, repo, request_file, phases):
+        """**칸 이름이 벽시계라고 말해야 한다.** 이 값에는 사람이 답을 쓰는
+        대기가 섞여 있고, P8 은 그것이 60.2% 였다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "벽시계(대기 포함)" in out
+        assert "에스컬레이션 대기" in out
+        assert "01-plan" in out
+        # 되돌아간 01 의 두 구간이 합산된다 — 1:20:00 + 0:30:00.
+        assert "1:50:00" in out
+        # 그중 한 시간은 사람을 기다린 것이다.
+        assert "1:00:00" in out
+
+    def test_재진입_횟수가_같은_표에_있다(self, repo, request_file, phases):
+        """구간 수는 소요의 분모가 아니라 별개 사실이다 — 같은 벽시계라도
+        한 번에 지난 페이즈와 세 번 되돌아온 페이즈는 다른 일이다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert "2구간" in out
+
+    def test_timing_이_None_이면_미측정이라고_적는다(self, repo, request_file,
+                                                    phases):
+        """못 잰 것을 0 으로 채우지 않는다 (`_tbl` 의 규율과 동형)."""
+        run_id, _paths = _enter_08(repo, request_file, phases)
+        _p, s = st.load(repo, run_id)
+        text, _missing = rep_mod.build(s, {}, {}, [], None)
+        assert "소요 시간은 미측정이다" in text
+        assert "벽시계(대기 포함)" not in text
+
+    def test_소요_기준과_사각이_보고서에_인쇄된다(self, repo, request_file,
+                                                phases):
+        """`모델 호출 수` 칸이 `instructed` 와 사각 둘을 적는 것과 같은 자리다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        assert st.PHASE_DURATION_BASIS in out
+        for spot in st.PHASE_DURATION_BLIND_SPOTS:
+            assert spot in out, spot
+
+    def test_소요_표가_새_섹션을_만들지_않는다(self, repo, request_file, phases):
+        """`## 비용과 시간` 이 이미 있다. 섹션 목록은 team-spec 이 잠근다."""
+        run_id, paths = _enter_08(repo, request_file, phases)
+        _report_data(paths)
+        cli.run_report(repo, run_id=run_id)
+        out = (repo / "docs" / "harness" / "pipeline" / "runs"
+               / ("%s.md" % run_id)).read_text(encoding="utf-8")
+        heads = [ln for ln in out.splitlines() if ln.startswith("## ")]
+        assert len(heads) == len(set(heads)), heads
+        for sec in rep_mod.REQUIRED_SECTIONS:
+            assert sec in out, sec
 
 
 # ---------------------------------------------------------------------------

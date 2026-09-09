@@ -3730,13 +3730,24 @@ def _verdict_deadline_lines(dl):
             % (dl.get("seen"), dl.get("at"), tail)]
 
 
+def _rule_label(b):
+    """버킷의 규칙 슬러그를 사람이 읽는 꼬리표로. 없으면 빈 문자열.
+
+    `CATEGORY` 가 다대일이라 category 만 찍으면 `BOUNDARY_VIOLATION` 셋이
+    구별되지 않는다 — 무엇을 승격하는지 모르는 채 판정하게 된다 (ADR-H034).
+    """
+    slug = b.get("rule_slug")
+    return " / `%s`" % slug if slug else ""
+
+
 def _promote_scan_render(got):
     if not got["candidates"]:
         lines = ["승격 후보가 없다 — **모델을 부르지 않고 종결한다.**", ""]
         if got["held"]:
             lines.append("다만 누적은 넘었는데 `distinct_runs` 에서 막힌 것이 "
                          "%d 건 있다:" % len(got["held"]))
-            lines += ["- %s (%s)" % (h["category"], h["held_because"])
+            lines += ["- %s%s (%s)"
+                      % (h["category"], _rule_label(h), h["held_because"])
                       for h in got["held"]]
         else:
             lines.append("원장이 본 런은 %d 개다. 임계에 닿을 표본이 아직 "
@@ -3746,10 +3757,19 @@ def _promote_scan_render(got):
         return "\n".join(lines)
     lines = ["## 승격 후보 %d 건" % len(got["candidates"]), ""]
     for c in got["candidates"]:
-        lines.append("- **%s** (%s) — %d회 / %d런 · 목적지 `%s`"
-                     % (c["category"], c["severity"], c["count"],
-                        c["distinct_runs"], c.get("enforceable")))
+        lines.append("- **%s**%s (%s) — %d회 / %d런 · 신원 `%s` · 목적지 `%s`"
+                     % (c["category"], _rule_label(c), c["severity"],
+                        c["count"], c["distinct_runs"],
+                        c.get("rule_key") or c.get("finding_key"),
+                        c.get("enforceable")))
+        keys = c.get("finding_keys") or []
+        if len(keys) > 1:
+            lines.append("  - 접은 인스턴스 %d 건: %s"
+                         % (len(keys), " · ".join("`%s`" % k for k in keys[:6])
+                            + (" …" if len(keys) > 6 else "")))
     lines += ["", "각각에 `create` / `amend` / `skip` 판정을 내고 근거를 적는다.",
+              "**판정은 위 `신원` 을 `rule_key` 로 그대로 돌려준다** — 이름을 "
+              "부른 것과 다른 지적이 승격되면 그 사실이 어디에도 안 드러난다.",
               "**`duplicate` 면 `create` 가 금지되고, `contradicts` 면 자동 "
               "쓰기가 차단된다.**"]
     return "\n".join(lines)

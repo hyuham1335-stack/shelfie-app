@@ -2866,6 +2866,21 @@ def _run_gate_cmd(root, phase="04", only_stage=None, replay=None, run_id=None):
 
     if only_stage:
         # 단일 스테이지는 카운터를 소모하지 않고 리포트를 덮어쓰지 않는다.
+        # **`tests` 는 예외다** (M55). 수리 뒤 `--stage scoped` → 전체 회귀
+        # 1회는 정본이 선언한 정상 경로인데(§3.5), 그 회귀의 값이 상태에 안
+        # 실려 08 보고서·PR 체크리스트·세션 원장 셋이 **마지막 코드 상태가
+        # 아닌 수**를 증언했다. 그 셋은 전부 `state.tests` 를 읽는다.
+        #
+        # `gaps` 는 여기서 안 싣는다 — 등급을 낮추는 입력이고, 이 경로는
+        # 설계상 런을 판정하지 않는다. `tests` 는 등급이 아니라 "몇 개가
+        # 돌았나" 라는 사실이라 성격이 다르다.
+        #
+        # `--stage scoped` 는 `_tests_signal` 이 `full` 미실행에 `None` 을
+        # 내므로 아래 가드에 걸려 안 실린다 — scoped 의 수를 전체 회귀의
+        # 수로 적으면 다음 런의 하한 대조가 무의미해진다.
+        if report.get("tests"):
+            s["tests"] = report["tests"]
+            st.save(paths, s)
         stage = report["stages"][0] if report["stages"] else {}
         ok = stage.get("state") != "ran" or stage.get("exit") == 0
         return st.envelope("gate", ok, 0 if ok else 4, s, {"stage": stage},

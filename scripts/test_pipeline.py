@@ -3963,6 +3963,128 @@ def _trace(repo, contract_path, **kw):
     return tr.run(repo, config, adapter, contract_path, **kw)
 
 
+# P8 의 계약이 「데이터 형태」 절을 쓴 그대로다 (M57).
+#
+# **상수 다섯이 불릿이 아니라 그 불릿의 연속 줄에 있다.** `_errors` 의
+# "최상위 `-` 줄만" 규칙으로는 못 잡는 모양이고, 그것이 P8 의 오탐 6/6 이
+# 나온 자리다. 픽스처를 다듬지 않고 실물 그대로 둔다 — 다듬으면 이 테스트가
+# 실제로 났던 실패를 재현하지 않는다.
+DATA_SHAPES_DOC = """# 계약: x
+
+## 데이터 형태
+
+- `RateLimitDecision { allowed: boolean; retryAfterSeconds: number }`
+  - `retryAfterSeconds` 는 **1 이상의 정수**다. `Retry-After` 가 정수 초를 요구한다
+- 전역 상태는 **컨테이너 하나**다:
+  `RateLimitState { map: Map<string, number>; windowStart: number | undefined }`
+  - **`windowStart` 는 `map` 의 속성이 아니라 컨테이너의 형제 필드다**
+  - `globalThis` 에 건다. `declare global` 로 타입을 선언하고 `any` 로 얹지 않는다
+- 상수는 전부 `src/lib/env.ts` 에서 온다:
+  `RATE_LIMIT_MAX_REQUESTS`(20) · `RATE_LIMIT_WINDOW_MS`(60_000) ·
+  `RATE_LIMIT_MAX_TRACKED_KEYS`(50_000) · `RATE_LIMIT_SHARED_MAX_REQUESTS`(200) ·
+  `RATE_LIMIT_MAX_KEY_CHARS`(45)
+  - `process.env` 를 읽지 않는다
+
+## 유닛
+
+- `lib/match.ts · matchTitle(a: string, b: string): number`
+"""
+
+# 「데이터 형태」 절이 없는 옛 계약. 그대로 돌아야 한다.
+OLD_CONTRACT_DOC = """# 계약: x
+
+## 유닛
+
+- `lib/a.ts · f(): void`
+"""
+
+P8_FALSE_POSITIVES = (
+    "RATE_LIMIT_MAX_REQUESTS", "RATE_LIMIT_WINDOW_MS",
+    "RATE_LIMIT_MAX_TRACKED_KEYS", "RATE_LIMIT_SHARED_MAX_REQUESTS",
+    "RATE_LIMIT_MAX_KEY_CHARS", "RateLimitDecision",
+)
+
+
+class TestContractDataShapes:
+    """계약의 「데이터 형태」 절이 파서에 등록된 적이 없었다 (M57).
+
+    `parse()` 는 `config.contract.sections` 가 이름 붙인 절만 읽는데 그 매핑에
+    이 절이 없었다. 템플릿은 거기 타입·상수를 적게 하므로, 계약이 이름 붙인
+    이름이 `symbols()` 에 안 들어오고 `out_of_contract` 가 전부 "계약에 없는
+    심볼" 로 잡았다 — **P8 의 지적 6/6 이 그 구조적 오탐이다.**
+
+    C4([[ADR-H034]])가 그 여섯을 한 버킷으로 접었으므로 고치지 않으면 이
+    파이프라인의 **첫 승격 후보가 기계가 틀린 규칙 위에 선다.** 그래서 P9 전에
+    닫는다.
+    """
+
+    def _parse(self, repo, text=DATA_SHAPES_DOC):
+        cfg = json.loads((repo / "harness" / "config.json").read_text(encoding="utf-8"))
+        return contract_mod.parse(text, cfg)
+
+    def test_계약이_이름_붙인_타입과_상수가_심볼에_들어온다(self, repo):
+        """**P8 오탐 여섯이 전부 여기서 회수된다.**"""
+        got = contract_mod.symbols(self._parse(repo))
+        missing = [n for n in P8_FALSE_POSITIVES if n not in got]
+        assert missing == [], "P8 이 오탐으로 잡은 이름이 아직 안 들어온다: %s" % missing
+
+    def test_불릿이_아닌_연속_줄도_읽는다(self, repo):
+        """상수 다섯이 그 모양이다 — 최상위 불릿만 보면 2/6 밖에 못 잡는다."""
+        got = contract_mod.symbols(self._parse(repo))
+        consts = [n for n in P8_FALSE_POSITIVES if n.isupper()]
+        assert all(n in got for n in consts), got
+
+    def test_타입_상수_형태가_아닌_낱말은_안_들어온다(self, repo):
+        """**미탐을 막는 회귀다.**
+
+        절 전체의 백틱을 형태 없이 다 모으면 `map`·`any` 같은 흔한 낱말이
+        계약에 있다는 이유로 **진짜 위반이 조용히 통과한다.** 오탐을 고치려다
+        미탐을 만드는 것이 이 자리의 실패 방식이다.
+        """
+        got = contract_mod.symbols(self._parse(repo))
+        for noise in ("retryAfterSeconds", "map", "windowStart", "globalThis",
+                      "any", "src", "process", "declare"):
+            assert noise not in got, "%r 가 심볼로 들어왔다" % noise
+
+    def test_절이_없으면_빈_결과이고_예외가_아니다(self, repo):
+        """그 절이 없는 옛 계약이 그대로 돌아야 한다."""
+        p = self._parse(repo, OLD_CONTRACT_DOC)
+        assert p["data_shapes"] == []
+        assert [u["symbol"] for u in p["units"]] == ["f"]
+
+    def test_기존_세_키가_안_바뀐다(self, repo):
+        """`units`·`entrypoints`·`errors` 는 이 증분이 건드리지 않는다."""
+        p = self._parse(repo)
+        assert [u["symbol"] for u in p["units"]] == ["matchTitle"]
+        assert p["entrypoints"] == [] and p["errors"] == []
+
+    def test_게이트의_귀속도_같은_심볼_집합을_쓴다(self, repo):
+        """`symbols()` 소비자는 둘이고 **둘 다 넓어진다** — 말없이 넓히지 않는다.
+
+        `gate.py` 가 컴파일·테스트 실패를 역할에 배정할 때 같은 집합으로
+        `in_contract` 를 판정한다. 여기서 잠그지 않으면 이 증분이 게이트 거동을
+        바꾼 사실이 어디에도 안 드러난다.
+        """
+        got = contract_mod.symbols(self._parse(repo))
+        assert "RateLimitDecision" in got and "matchTitle" in got, got
+
+    def test_실물_P8_계약에서_여섯이_전부_회수된다(self, repo):
+        """**픽스처가 아니라 그 런이 실제로 쓴 계약으로 확인한다.**
+
+        `_workspace/runs/**` 는 그 런의 사실 기록이라 한 바이트도 안 고친다 —
+        읽기만 한다. 스냅샷이 없는 환경에서는 건너뛴다: 없는 것을 실패로 적으면
+        「파일이 없다」와 「고쳐지지 않았다」가 같은 빨간불이 된다.
+        """
+        snap = (ROOT / "_workspace" / "runs" / "20260908-1720-dca1"
+                / "06_contract_snapshot.md")
+        if not snap.exists():
+            pytest.skip("P8 계약 스냅샷이 없다 — 판정할 표본이 없는 것이지 실패가 아니다")
+        got = contract_mod.symbols(
+            self._parse(repo, snap.read_text(encoding="utf-8")))
+        missing = [n for n in P8_FALSE_POSITIVES if n not in got]
+        assert missing == [], missing
+
+
 class TestContractTraceMissingImpl:
     """컨테이너명 + 심볼명 **쌍**으로 본다. 심볼명만 보면 거짓 통과한다."""
 
@@ -4336,6 +4458,73 @@ class TestContractTraceBaseline:
 
         got = _trace(repo, _write_contract(repo), changed=["src/lib/match.ts"])
         assert self._ooc(got) == [], got["findings"]
+
+
+class TestOutOfContractReadsDataShapes:
+    """P8 의 오탐 6/6 이 실제로 사라지는가 (M57). **이 증분의 성공 정의다.**
+
+    앞의 `TestContractDataShapes` 는 파서가 이름을 모으는지를 묻고, 여기서는
+    그 결과가 `out_of_contract` 까지 도달하는지를 묻는다. 둘이 갈라져 있어야
+    "모으긴 하는데 검사가 안 쓴다" 를 잡을 수 있다.
+
+    P8 의 여섯은 `env.ts` 의 상수 다섯과 `rate-limit.ts` 의 타입 하나였다.
+    여기서는 같은 **모양**을 최소로 재현한다 — 실물 파일 내용을 복사하면
+    이 테스트가 그 런의 코드에 묶인다.
+    """
+
+    CONTRACT = """# 계약: x
+
+## 데이터 형태
+
+- `RateLimitDecision { allowed: boolean; retryAfterSeconds: number }`
+- 상수는 전부 `src/lib/env.ts` 에서 온다:
+  `RATE_LIMIT_MAX_REQUESTS`(20) · `RATE_LIMIT_WINDOW_MS`(60_000)
+
+## 유닛
+
+- `lib/match.ts · matchTitle(a: string, b: string): number`
+"""
+
+    ENV_TS = """
+export const RATE_LIMIT_MAX_REQUESTS = 20
+export const RATE_LIMIT_WINDOW_MS = 60_000
+"""
+    RATE_LIMIT_TS = """
+export type RateLimitDecision = { allowed: boolean }
+"""
+    EXTRA_TS = """
+export const 계약에없는상수 = 3
+"""
+
+    def _write(self, repo):
+        (repo / "src" / "lib" / "env.ts").write_text(
+            self.ENV_TS, encoding="utf-8")
+        (repo / "src" / "lib" / "rate-limit.ts").write_text(
+            self.RATE_LIMIT_TS, encoding="utf-8")
+        return ["src/lib/env.ts", "src/lib/rate-limit.ts"]
+
+    def _ooc(self, got):
+        return sorted(f["symbol"] for f in got["findings"]
+                      if f["code"] == "out_of_contract")
+
+    def test_데이터_형태에_적힌_이름은_계약_밖이_아니다(self, repo):
+        """P8 이 여섯을 잡은 그 경로다. 이제 0 이어야 한다."""
+        changed = self._write(repo)
+        got = _trace(repo, _write_contract(repo, self.CONTRACT), changed=changed)
+        assert self._ooc(got) == [], got["findings"]
+
+    def test_그래도_계약에_없는_것은_여전히_잡는다(self, repo):
+        """**검사를 무력화한 것이 아니다.**
+
+        오탐을 없애려고 판정을 넓히면 진짜 위반이 함께 사라진다 — 그러면
+        고친 것이 아니라 끈 것이다.
+        """
+        changed = self._write(repo)
+        (repo / "src" / "lib" / "env.ts").write_text(
+            (repo / "src" / "lib" / "env.ts").read_text(encoding="utf-8")
+            + self.EXTRA_TS, encoding="utf-8")
+        got = _trace(repo, _write_contract(repo, self.CONTRACT), changed=changed)
+        assert self._ooc(got) == ["계약에없는상수"], got["findings"]
 
 
 class TestContractTraceNoContract:

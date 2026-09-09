@@ -6909,7 +6909,10 @@ class TestPr06ContractAfterDrop:
         snap.parent.mkdir(parents=True, exist_ok=True)
         snap.write_text(CONTRACT.replace("matchTitle", "낡은심볼"),
                         encoding="utf-8")
-        s["contract"]["snapshot"] = paths.rel(snap)
+        s["contract"]["snapshot"] = snap.relative_to(repo).as_posix()
+        # 폴백이 실제로 읽히는 경로인지부터 확인한다 — 안 그러면 이 테스트가
+        # 「스냅샷을 못 찾았다」를 「스냅샷을 안 봤다」로 잘못 세고 헛돈다.
+        assert (repo / s["contract"]["snapshot"]).exists()
         body = self._body(repo, paths, s)
         assert "matchTitle" in body, body
         assert "낡은심볼" not in body, body

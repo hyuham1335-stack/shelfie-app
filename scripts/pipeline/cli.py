@@ -3975,6 +3975,14 @@ def _drop_contract(root, paths, s, ctx):
     snap = paths.run_dir / "06_contract_snapshot.md"
     snap.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
     p.unlink()
+    # **어디로 옮겼는지를 상태에 남긴다** (M54). 06 본문은 계약의 유닛·진입점
+    # 절을 실어야 하는데(`team-spec.md` PR 본문 매핑표), 07 수리 뒤 `pr` 을
+    # 다시 돌리는 정상 경로에서는 원본이 이미 없다. 읽는 쪽이 파일 이름을
+    # 짐작하지 않게 출처를 상태로 준다 — 새 사본은 만들지 않는다.
+    # **`paths.rel` 이 아니라 리포 루트 기준이다** — 같은 노드의 `path` 와
+    # 기준이 갈리면 읽는 쪽이 둘을 다르게 조립해야 한다.
+    s.setdefault("contract", {})["snapshot"] = snap.relative_to(
+        paths.root).as_posix()
     return {"removed": True, "path": rel, "snapshot": paths.rel(snap)}
 
 

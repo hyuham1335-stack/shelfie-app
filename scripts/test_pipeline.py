@@ -3318,10 +3318,14 @@ import ledger as ldg  # noqa: E402
 
 
 def _finding(category="NAMING", severity="major", role="impl", title="제목",
-             resolution="deferred", source="reviewer", reported_by=None):
-    return {"category": category, "severity": severity, "target_role": role,
-            "title": title, "resolution": resolution, "source": source,
-            "reported_by": reported_by or ["arch"]}
+             resolution="deferred", source="reviewer", reported_by=None,
+             rule_slug=None):
+    out = {"category": category, "severity": severity, "target_role": role,
+           "title": title, "resolution": resolution, "source": source,
+           "reported_by": reported_by or ["arch"]}
+    if rule_slug is not None:
+        out["rule_slug"] = rule_slug
+    return out
 
 
 class TestLedgerTaxonomy:
@@ -3564,9 +3568,12 @@ class TestDocDriftAxis:
     def test_제목이_매번_다르면_임계에_닿지_않는다(self, repo):
         """**M39 의 진실이다.** 어휘를 고쳐도 승격은 안 된다.
 
-        버킷 키가 `sha1(category|target_role|정규화 제목)` 이라, 카테고리가
-        아무리 잦아도 제목이 매번 다르면 임계에 영원히 못 닿는다. 나중에
-        누가 "고쳐졌다" 고 착각하지 않게 단언으로 못박는다.
+        C4 가 축을 `rule_key` 로 갈랐어도 **이 경로는 안 바뀐다.**
+        `rule_slug` 가 없는 지적의 `rule_key` 는 `finding_key` 와 같고
+        (ADR-H034 의 폴백), 리뷰어의 자유 서술에는 슬러그가 없다. 그래서
+        카테고리가 아무리 잦아도 제목이 매번 다르면 임계에 영원히 못
+        닿는다. 나중에 누가 "고쳐졌다" 고 착각하지 않게 단언으로 못박는다
+        — **C4 가 접은 것은 통제 어휘를 쓰는 쪽뿐이다.**
         """
         ldg.seed(repo)
         for run in ("r1", "r2", "r3"):
@@ -3584,15 +3591,17 @@ class TestDocDriftAxis:
         assert roll["DOC_CODE_DRIFT"]["promotable"] is True, roll
 
     def test_같은_제목은_표현이_흔들려도_접힌다(self, repo):
-        """**축은 통제 어휘 위에서는 이미 작동한다** (ADR-H033 한계 절).
+        """**축은 통제 어휘 위에서는 슬러그 없이도 이미 작동했다.**
 
         `finding_key` 의 정규화는 공백 접기와 소문자화가 전부다
-        (`verdict.py:125-130`). 그래서 템플릿이 찍는 제목은 접히고 —
-        실물 원장에서 누적 2 를 넘긴 버킷 **둘 다** `contract-trace` 가
-        찍은 것이다 — 모델이 매번 새로 쓰는 자유 서술은 영영 안 접힌다.
-        위 `test_제목이_매번_다르면_임계에_닿지_않는다` 가 뒤쪽을 잠그고
-        이 테스트가 앞쪽을 잠근다. 둘이 함께 있어야 "축이 틀렸다" 와
-        "입력이 자유 서술이다" 를 가를 수 있다.
+        (`verdict.py:125-130`). 그래서 템플릿이 **같은 심볼을 두 번** 찍으면
+        슬러그 없이도 접힌다 — 실물 원장에서 누적 2 를 넘긴 버킷 둘이
+        정확히 그것이다. 이 경로도 폴백이라 C4 뒤에 안 바뀐다.
+
+        **C4 가 고친 것은 여기가 아니라 심볼이 매번 다를 때다** —
+        `TestRuleKeyAxis` 가 그쪽을 잠근다. 셋이 함께 있어야 "축이 틀렸다"
+        와 "입력이 자유 서술이다" 와 "같은 규칙인데 인스턴스가 다르다" 를
+        가를 수 있다.
         """
         ldg.seed(repo)
         tmpl = "계약에 없는 public 심볼 ErrorBanner 가 생겼다"
@@ -3622,6 +3631,149 @@ class TestDocDriftAxis:
         roll = {b["category"]: b
                 for b in ldg.stage_promotions(repo)["by_category"]}
         assert roll["OTHER"]["promotable"] is False, roll
+
+
+class TestRuleKeyAxis:
+    """승격의 축을 **규칙**으로 가른다 (ADR-H034). `finding_key` 는 안 바꾼다.
+
+    두 질문이 원래 다르다 — "이 런에서 무엇을 고쳐야 하나"(인스턴스)와
+    "무엇이 반복되는 유형인가"(규칙). 전자는 `finding_key` 가 답하고
+    후자를 `rule_key` 가 맡는다. **키를 갈아치우지 않고 하나 더 두는 것**이
+    `review.merge` 2인 합치 · `review07.escaped` · 05 단조성 셋을 통째로
+    비켜 가는 방법이다 (`team-spec.md` 의 "finding_key 는 바꾸지 않는다").
+
+    폴백이 안전장치다 — `rule_slug` 가 없으면 `rule_key == finding_key` 라
+    실물 원장 168줄의 집계가 한 비트도 안 바뀐다.
+    """
+
+    def test_슬러그가_없으면_rule_key_는_finding_key_다(self, repo):
+        """**폴백이 항등이다.** 소급 오염이 구조적으로 불가능한 이유."""
+        f = _finding()
+        assert ldg.rule_key(f) == ldg.finding_key(f)
+
+    def test_같은_슬러그는_제목이_달라도_한_키다(self, repo):
+        """실물에서 84버킷으로 흩어진 그 모양이다 — 심볼만 다르다."""
+        a = _finding(source="contract-trace", rule_slug="out_of_contract",
+                     title="계약에 없는 public 심볼 ErrorBanner 가 생겼다")
+        b = _finding(source="contract-trace", rule_slug="out_of_contract",
+                     title="계약에 없는 public 심볼 RATE_LIMIT_WINDOW_MS 가 생겼다")
+        assert ldg.finding_key(a) != ldg.finding_key(b), "인스턴스는 갈린다"
+        assert ldg.rule_key(a) == ldg.rule_key(b), "규칙은 접힌다"
+
+    def test_카테고리가_같아도_슬러그가_다르면_안_뭉친다(self, repo):
+        """`CATEGORY` 는 다대일이다 — BOUNDARY_VIOLATION 에 코드 셋이 몰린다.
+
+        축을 카테고리로 접었다면 이 셋이 한 버킷이 됐고, 승격된 규칙이
+        어느 검사에서 왔는지 아무도 몰랐다. 슬러그가 그것을 가른다.
+        """
+        a = _finding(category="BOUNDARY_VIOLATION", source="contract-trace",
+                     rule_slug="missing_impl", title="가")
+        b = _finding(category="BOUNDARY_VIOLATION", source="contract-trace",
+                     rule_slug="missing_entrypoint", title="나")
+        assert ldg.rule_key(a) != ldg.rule_key(b)
+
+    def test_out_of_contract_여섯이_한_버킷에_쌓인다(self, repo):
+        """P8 이 실제로 낸 모양이다. `observations` 는 여전히 6관측이다."""
+        ldg.seed(repo)
+        ldg.append(repo, "r1", "05",
+                   [_finding(source="contract-trace",
+                             rule_slug="out_of_contract",
+                             title="계약에 없는 public 심볼 %s 가 생겼다" % n)
+                    for n in ("A", "B", "C", "D", "E", "F")])
+        assert len(ldg.observations(repo)) == 6, "관측은 안 접힌다"
+        got = ldg.stage_promotions(repo)
+        buckets = got["candidates"] + got["held"]
+        assert len(buckets) == 1, buckets
+        b = buckets[0]
+        assert b["count"] == 6, b
+        assert b["rule_slug"] == "out_of_contract", b
+        assert len(b["finding_keys"]) == 6, b
+        assert got["candidates"] == [], "한 런이라 distinct_runs 가 모자란다"
+        assert len(got["held"]) == 1, got["held"]
+
+    def test_두_런이면_후보가_된다(self, repo):
+        """심볼이 런마다 달라도 규칙은 같다 — C4 가 겨눈 바로 그 자리."""
+        ldg.seed(repo)
+        for run, names in (("r1", ("A", "B", "C")), ("r2", ("D", "E", "F"))):
+            ldg.append(repo, run, "05",
+                       [_finding(source="contract-trace",
+                                 rule_slug="out_of_contract",
+                                 title="계약에 없는 public 심볼 %s 가 생겼다" % n)
+                        for n in names])
+        got = ldg.stage_promotions(repo)
+        assert len(got["candidates"]) == 1, got["candidates"]
+        c = got["candidates"][0]
+        assert c["count"] == 6 and c["distinct_runs"] == 2, c
+        assert c["rule_key"] and c["rule_slug"] == "out_of_contract", c
+
+    def test_리뷰어가_준_슬러그는_버려진다(self, repo):
+        """**신뢰 경계다.** 모델이 슬러그를 자유롭게 주면 무관한 지적이
+
+        한 버킷에 뭉친다. `contract-trace` 만 받는 이유이고, 버리는 것이
+        거부가 아니라 **폴백**인 이유는 그 행 자체는 정상 관측이기 때문이다.
+        """
+        ldg.seed(repo)
+        ldg.append(repo, "r1", "05",
+                   [_finding(source="reviewer", rule_slug="out_of_contract",
+                             title="가"),
+                    _finding(source="reviewer", rule_slug="out_of_contract",
+                             title="나")])
+        rows = ldg.read_all(repo)
+        assert all("rule_slug" not in r for r in rows), rows
+        assert all(r["rule_key"] == r["finding_key"] for r in rows), rows
+        roll = {b["category"]: b
+                for b in ldg.stage_promotions(repo)["by_category"]}
+        assert roll["NAMING"]["distinct_keys"] == 2, roll
+
+    def test_형태가_어긋난_슬러그는_조용히_안_받는다(self, repo):
+        """생산자 안의 닫힌 집합이라 어긋나면 **버그다.**
+
+        어휘 밖 `category`·`resolution` 을 조용히 받지 않는 것과 같은 자리다.
+        신뢰 경계(다른 source)와 다르다 — 저쪽은 예상된 입력이고 이쪽은
+        `trace_contract` 가 스스로 깨진 것이다.
+        """
+        ldg.seed(repo)
+        with pytest.raises(ValueError):
+            ldg.append(repo, "r1", "05",
+                       [_finding(source="contract-trace",
+                                 rule_slug="Out Of Contract")])
+
+    def test_슬러그가_없는_줄은_finding_key_축_그대로다(self, repo):
+        """**소급 무오염의 단위 판.** 슬러그 없는 원장은 변경 전과 같다."""
+        ldg.seed(repo)
+        for run in ("r1", "r2"):
+            ldg.append(repo, run, "05",
+                       [_finding(category="DOC_CODE_DRIFT", severity="critical",
+                                 title="%s 의 어긋남" % run)])
+        got = ldg.stage_promotions(repo)
+        assert got["candidates"] == [] and got["held"] == []
+        roll = {b["category"]: b for b in got["by_category"]}
+        assert roll["DOC_CODE_DRIFT"]["distinct_keys"] == 2, roll
+
+    def test_실물_원장에는_슬러그가_한_줄도_없다(self, repo):
+        """C4 의 소급 무오염이 여기 선다 — 168줄 전부가 폴백 경로다.
+
+        `ledger.append` 의 행 화이트리스트가 `trace_contract` 의 `code` 를
+        버려 왔으므로 백필도 불가능하다. 축적은 새 런부터 시작한다.
+        """
+        rows = [r for r in ldg.read_all(ROOT) if not r.get("_corrupt")]
+        assert rows, "실물 원장을 읽지 못했다"
+        assert not any("rule_slug" in r or "rule_key" in r for r in rows)
+
+    def test_05_합치는_슬러그로_뭉개지지_않는다(self, repo):
+        """**가장 중요한 회귀다.** `review.merge` 의 축은 `finding_key` 다.
+
+        축을 접었다면 심볼 셋이 한 finding 으로 뭉개져 **수리하는 쪽이
+        무엇을 고칠지 모르게** 되고, 2인 합치로 오인돼 severity 까지 올랐다.
+        """
+        subs = [{"reviewer": "arch", "findings": [
+            _finding(source="contract-trace", rule_slug="out_of_contract",
+                     title="계약에 없는 public 심볼 %s 가 생겼다" % n)
+            for n in ("A", "B", "C")]}]
+        got = rv.merge(subs)
+        assert len(got) == 3, got
+        assert len({f["finding_key"] for f in got}) == 3, got
+        assert all(f["severity"] == "major" for f in got), got
 
 
 class TestLedgerPromotion:
@@ -6666,6 +6818,74 @@ class TestPromoteTargetMatching:
         promo_mod.apply(repo, "r9", promos, [v])
         assert [p for p in promos if p["status"] == "applied"][0][
             "finding_key"] == "KEY-B"
+
+
+class TestPromoteRuleKey:
+    """승격 행의 신원은 `rule_key` 다 (ADR-H034). 옛 행은 폴백으로 산다.
+
+    버킷의 대표 `finding_key` 를 신원으로 쓰면 **런마다 다른 인스턴스**가
+    실려 나가(`ErrorBanner` → 다음 런엔 `RATE_LIMIT_WINDOW_MS`) 같은 규칙이
+    두 승격 행으로 갈라진다. `merge_staged` 가 그것을 합치지 못하고
+    `resolve_target` 이 옛 행을 못 찾는다 — 축을 규칙으로 바꾼 값이 여기서
+    새어 나간다.
+    """
+
+    def _bucket(self, rule_key, finding_keys, **kw):
+        b = {"rule_key": rule_key, "rule_slug": "out_of_contract",
+             "finding_key": None, "finding_keys": sorted(finding_keys),
+             "category": "NAMING", "enforceable": "lint", "rule": None,
+             "severity": "major", "count": 3, "distinct_runs": 2}
+        b.update(kw)
+        return b
+
+    def test_런이_달라도_같은_규칙은_한_행이다(self, repo):
+        """`merge_staged` 의 축이 `rule_key` 라야 성립한다."""
+        p9 = promo_mod.stage([self._bucket("RK-1", ["fk-a", "fk-b", "fk-c"])])
+        assert len(p9) == 1 and p9[0]["rule_key"] == "RK-1", p9
+        p10 = promo_mod.stage([self._bucket("RK-1", ["fk-d", "fk-e", "fk-f"],
+                                            count=6, distinct_runs=2)])
+        merged = promo_mod.merge_staged(p9, p10)
+        assert len(merged) == 1, merged
+        assert merged[0]["count"] == 6, merged
+
+    def test_판정이_rule_key_로_후보를_집는다(self, repo):
+        ldg.seed(repo)
+        promos = promo_mod.stage([self._bucket("RK-1", ["fk-a"]),
+                                  self._bucket("RK-2", ["fk-b"])])
+        errors, _b = promo_mod.check_verdicts(repo, [
+            {"rule_id": "naming-out", "rule_key": "RK-2", "category": "NAMING",
+             "enforceable": "lint", "judgement": "new", "action": "create"}],
+            promos)
+        assert errors == [], errors
+        promo_mod.apply(repo, "r9", promos, [
+            {"rule_id": "naming-out", "rule_key": "RK-2", "category": "NAMING",
+             "enforceable": "lint", "judgement": "new", "action": "create",
+             "rationale": "반복된다"}])
+        by = {p["rule_key"]: p for p in promos}
+        assert by["RK-2"]["status"] == "applied", promos
+        assert by["RK-1"]["status"] == "staged", promos
+
+    def test_없는_rule_key_는_category_로_낙하하지_않는다(self, repo):
+        """`finding_key` 때와 같은 규율이다 — 못 찾는 편이 낫다."""
+        ldg.seed(repo)
+        promos = promo_mod.stage([self._bucket("RK-1", ["fk-a"])])
+        errors, _b = promo_mod.check_verdicts(repo, [
+            {"rule_id": "z", "rule_key": "RK-없음", "category": "NAMING",
+             "enforceable": "lint", "judgement": "new", "action": "create"}],
+            promos)
+        assert errors, "후보에 없는 rule_key 는 거부돼야 한다"
+
+    def test_옛_행은_finding_key_로_계속_집힌다(self, repo):
+        """`state.promotions` 에 이미 쌓인 행에는 `rule_key` 가 없다."""
+        ldg.seed(repo)
+        promos = [{"rule_id": "a", "finding_key": "KEY-A", "category": "NAMING",
+                   "enforceable": "lint", "severity": "major", "count": 3,
+                   "distinct_runs": 2, "status": "staged", "reason": None}]
+        errors, _b = promo_mod.check_verdicts(repo, [
+            {"rule_id": "a", "finding_key": "KEY-A", "category": "NAMING",
+             "enforceable": "lint", "judgement": "new", "action": "create"}],
+            promos)
+        assert errors == [], errors
 
 
 class TestPromoteStatePreservation:

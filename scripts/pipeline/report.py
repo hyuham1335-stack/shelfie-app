@@ -124,6 +124,68 @@ def _counter_cell(node):
     return cell
 
 
+UNMEASURED_DURATION = ("**소요 시간은 미측정이다** — 8페이즈 실행기가 페이즈별 "
+                      "소요를 아직 기록하지 않는다. 재는 것을 만들기 전에는 "
+                      "값을 지어내지 않는다.")
+
+
+def _hms(sec):
+    if sec is None:
+        return None
+    return "%d:%02d:%02d" % (sec // 3600, (sec % 3600) // 60, sec % 60)
+
+
+def _timing_lines(timing):
+    """페이즈별 소요 표. `timing` 이 없으면 **미측정이라고 적는다.**
+
+    **칸 이름이 벽시계라고 말해야 한다.** 이 값에는 사람이 답을 쓰는 대기가
+    섞여 있고, P8 은 7시간 48분 중 4시간 42분(60.2%)이 그것이었다. 이름이
+    그 사실을 말하지 않으면 다음 사람이 순 작업 시간으로 읽는다 — 그래서
+    에스컬레이션 대기를 **같은 표의 옆 칸**으로 뺀다. 총계 한 줄로는
+    "어느 페이즈에서 기다렸는가" 가 안 보인다.
+
+    구간 수는 소요의 분모가 아니라 **별개 사실**이다. 같은 벽시계라도 한 번에
+    지난 페이즈와 세 번 되돌아온 페이즈는 다른 일이다.
+    """
+    if not timing or not timing.get("phases"):
+        return ["", UNMEASURED_DURATION, ""]
+
+    rows = ["", "| 페이즈 | 벽시계(대기 포함) | 그중 에스컬레이션 대기 | 구간 |",
+            "|---|---|---|---|"]
+    for name in sorted(timing["phases"]):
+        cell = timing["phases"][name]
+        wait = cell.get("escalation_wait_sec")
+        segs = "%s구간" % cell.get("segments")
+        entries = cell.get("entries") or 0
+        if entries != 1:
+            # 진입 이벤트가 0 이거나 여럿인 것 자체가 사실이다 — 08 은 0 이고
+            # 되돌아간 01 은 여러 번이다. 구간 수와 다른 것을 말한다.
+            segs = "%s · 진입 %s" % (segs, entries)
+        rows.append("| %s | %s | %s | %s |"
+                    % (name, _hms(cell.get("wall_sec")),
+                       _hms(wait) if wait else "—", segs))
+
+    total_wait = timing.get("escalation_wait_sec")
+    wall = timing.get("wall_sec")
+    share = ""
+    if total_wait and wall:
+        share = " (%.1f%%)" % (100.0 * total_wait / wall)
+    rows.append("| **합계** | **%s** | **%s** | |"
+                % (_hms(wall), (_hms(total_wait) + share) if total_wait else "—"))
+
+    if timing.get("unresumed_escalations"):
+        rows += ["", "재개되지 않은 에스컬레이션 %s건 — **대기 길이는 아직 없다.**"
+                 % timing["unresumed_escalations"]]
+
+    rows += ["", "기준: **%s** — 이벤트를 seq 순으로 걸으며 인접한 두 `ts` 의 "
+                 "차를 그때 활성인 페이즈에 더한다. `Σ 페이즈 소요 == 런 "
+                 "벽시계` 가 검산된다."
+             % timing.get("basis")]
+    rows += ["- %s" % s for s in timing.get("blind_spots") or []]
+    rows.append("")
+    return rows
+
+
 def _tbl(rows):
     """2열 표. 값이 없으면 **`미측정` 이라고 적는다** — 빈칸은 거짓말이다."""
     out = ["| 항목 | 값 |", "|---|---|"]
@@ -132,7 +194,7 @@ def _tbl(rows):
     return out
 
 
-def build(state, data, calibration, promotions):
+def build(state, data, calibration, promotions, timing=None):
     """보고서 마크다운. 반환: (text, missing_sections).
 
     **필수 섹션이 빠져도 파이프라인을 실패시키지 않는다** — 원장에 기록만
@@ -201,9 +263,7 @@ def build(state, data, calibration, promotions):
         ("테스트 실행 수", tests.get("ran")),
         ("테스트 상태", tests.get("status")),
     ])
-    lines += ["", "**소요 시간은 미측정이다** — 8페이즈 실행기가 페이즈별 "
-                  "소요를 아직 기록하지 않는다. 재는 것을 만들기 전에는 "
-                  "값을 지어내지 않는다.", ""]
+    lines += _timing_lines(timing)
 
     lines += ["## 리뷰", ""]
     lines += _tbl([

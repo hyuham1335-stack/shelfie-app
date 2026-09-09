@@ -7033,6 +7033,29 @@ def _enter_08(repo, request_file, phases, grade="PASS"):
     return run_id, paths
 
 
+def _seed_timing_events(paths):
+    """실물 런의 모양을 심는다 — `_enter_08` 은 상태만 조립하고 이벤트를 안 남긴다.
+
+    P8 이 실제로 그린 궤적을 줄인 것이다: 01 이 한 번 돌고, 02 가 되돌리고,
+    **되돌아간 01 에는 진입 이벤트가 없고**, 그 사이에 사람을 기다린다.
+    """
+    def at(h, m):
+        return datetime(2026, 3, 1, h, m, 0, tzinfo=st.TZ)
+
+    # `_enter_08` 이 남긴 `run_created` 는 실제 지금 시각이다. 심는 이벤트가
+    # 그보다 과거면 구간이 음수가 된다 — 단위 테스트와 같게 비우고 시작한다.
+    paths.events.write_text("", encoding="utf-8")
+    st.append_event(paths, "phase_enter", phase="01-plan", now=at(10, 0))
+    st.append_event(paths, "escalated", phase="01-plan", now=at(10, 10))
+    st.append_event(paths, "resumed", phase="01-plan", now=at(11, 10))
+    st.append_event(paths, "phase_pass", phase="01-plan", now=at(11, 20))
+    st.append_event(paths, "phase_enter", phase="02-cross-verify", now=at(11, 20))
+    # 02 가 되돌린다. 되돌아간 01 에 phase_enter 가 안 찍히는 것이 실물이다.
+    st.append_event(paths, "submit_received", phase="01-plan", now=at(11, 30))
+    st.append_event(paths, "phase_pass", phase="01-plan", now=at(11, 50))
+    st.append_event(paths, "phase_enter", phase="08-report", now=at(12, 0))
+
+
 def _report_data(paths, **kw):
     d = {"narrative": {"문제": "재시도가 안 됐다", "원인": "상태 머신",
                        "해결": "리듀서 수정", "결과": "통과",
@@ -7253,6 +7276,7 @@ class TestReport08:
     def test_소요_미측정_문단이_사라졌다(self, repo, request_file, phases):
         """여섯 런이 이 문장을 적었다. 이제 잰다."""
         run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
         _report_data(paths)
         cli.run_report(repo, run_id=run_id)
         out = (repo / "docs" / "harness" / "pipeline" / "runs"
@@ -7264,6 +7288,7 @@ class TestReport08:
         """**칸 이름이 벽시계라고 말해야 한다.** 이 값에는 사람이 답을 쓰는
         대기가 섞여 있고, P8 은 그것이 60.2% 였다."""
         run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
         _report_data(paths)
         cli.run_report(repo, run_id=run_id)
         out = (repo / "docs" / "harness" / "pipeline" / "runs"
@@ -7271,16 +7296,21 @@ class TestReport08:
         assert "벽시계(대기 포함)" in out
         assert "에스컬레이션 대기" in out
         assert "01-plan" in out
+        # 되돌아간 01 의 두 구간이 합산된다 — 1:20:00 + 0:30:00.
+        assert "1:50:00" in out
+        # 그중 한 시간은 사람을 기다린 것이다.
+        assert "1:00:00" in out
 
     def test_재진입_횟수가_같은_표에_있다(self, repo, request_file, phases):
         """구간 수는 소요의 분모가 아니라 별개 사실이다 — 같은 벽시계라도
         한 번에 지난 페이즈와 세 번 되돌아온 페이즈는 다른 일이다."""
         run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
         _report_data(paths)
         cli.run_report(repo, run_id=run_id)
         out = (repo / "docs" / "harness" / "pipeline" / "runs"
                / ("%s.md" % run_id)).read_text(encoding="utf-8")
-        assert "구간" in out
+        assert "2구간" in out
 
     def test_timing_이_None_이면_미측정이라고_적는다(self, repo, request_file,
                                                     phases):
@@ -7295,6 +7325,7 @@ class TestReport08:
                                                 phases):
         """`모델 호출 수` 칸이 `instructed` 와 사각 둘을 적는 것과 같은 자리다."""
         run_id, paths = _enter_08(repo, request_file, phases)
+        _seed_timing_events(paths)
         _report_data(paths)
         cli.run_report(repo, run_id=run_id)
         out = (repo / "docs" / "harness" / "pipeline" / "runs"

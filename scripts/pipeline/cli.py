@@ -3264,7 +3264,10 @@ def run_report(root, out=None, run_id=None):
             "by_category": ledger_mod.stage_promotions(root)["by_category"]}
     except (OSError, ValueError, KeyError):
         pass
-    text, missing = rep.build(s, data, cal or {}, s.get("promotions") or [])
+    # 소요는 `events.jsonl` 의 유도값이고, 08 시점에 그 파일은 이미 완결이다
+    # — 미완 구간이 없다. 비용이 보고서에 없는 것은 그 반대다 (ADR-H032).
+    text, missing = rep.build(s, data, cal or {}, s.get("promotions") or [],
+                              st.phase_durations(paths))
 
     target = Path(out) if out else (
         root / "docs" / "harness" / "pipeline" / "runs"

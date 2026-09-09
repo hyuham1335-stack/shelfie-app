@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -267,6 +268,164 @@ class TestEvents:
                  paths.events.read_text(encoding="utf-8").splitlines() if x.strip()]
         assert [e["seq"] for e in lines] == list(range(1, len(lines) + 1))
         assert lines[-1]["kind"] == "phase_pass"
+
+
+class TestPhaseDurations:
+    """8페이즈가 자기 소요를 잰다 — 새 계측이 아니라 `events.jsonl` 의 유도값이다.
+
+    `report.py` 가 여섯 런에 걸쳐 "소요 시간은 미측정이다" 를 적었는데,
+    `team-spec.md` 의 08 결정론 칸은 페이즈별 소요를 **이미 요구한다.**
+    M56 과 같은 모양이다 — 선언이 있는데 코드가 안 하는 자리다.
+
+    **기준은 `phase_enter` → `phase_pass` 짝이 아니라 이벤트 구간 분할이다.**
+    P8 실측이 그 이유다: 02 의 Critical 이 01 로 되돌렸을 때 되돌아간 01 에
+    `phase_enter` 가 안 찍혔고, 짝 맞추기는 그 3시간 26분을 **02 의 소요로**
+    적는다. `08-report` 는 `phase_pass` 만 있어 짝 맞추기로는 영영 못 잰다.
+    """
+
+    def _at(self, h, m=0, s=0):
+        return datetime(2026, 3, 1, h, m, s, tzinfo=st.TZ)
+
+    def test_구간_합이_런_벽시계와_같다(self, repo, request_file):
+        """불변식. 깨지면 어딘가를 이중계상했거나 흘렸다는 뜻이다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "run_created", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 30))
+        st.append_event(paths, "phase_enter", phase="02-cross-verify",
+                        now=self._at(10, 30))
+        st.append_event(paths, "run_closed", phase="02-cross-verify",
+                        now=self._at(11))
+
+        t = st.phase_durations(paths)
+        assert t["wall_sec"] == 3600
+        assert sum(p["wall_sec"] for p in t["phases"].values()) == t["wall_sec"]
+
+    def test_재진입한_페이즈의_두_구간이_합산된다(self, repo, request_file):
+        """01 → 02 → 01 → pass. **짝 맞추기 기준이면 여기서 깨진다.**"""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 10))
+        st.append_event(paths, "phase_enter", phase="02-cross-verify",
+                        now=self._at(10, 10))
+        # 02 가 되돌린다. 되돌아간 01 에 phase_enter 가 안 찍히는 것이 실물이다.
+        st.append_event(paths, "submit_received", phase="01-plan",
+                        now=self._at(10, 20))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 50))
+
+        t = st.phase_durations(paths)
+        assert t["phases"]["01-plan"]["wall_sec"] == 600 + 1800
+        assert t["phases"]["01-plan"]["segments"] == 2
+        assert t["phases"]["02-cross-verify"]["wall_sec"] == 600
+
+    def test_phase_enter_없이_pass_만_있는_페이즈도_잰다(self, repo, request_file):
+        """`08-report` 의 실물 형태다 — P8 은 seq 107 이 pass 뿐이다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_pass", phase="07-pr-review", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="08-report", now=self._at(10, 5))
+        st.append_event(paths, "run_closed", phase="08-report", now=self._at(10, 5))
+
+        t = st.phase_durations(paths)
+        assert "08-report" in t["phases"]
+        assert t["phases"]["08-report"]["wall_sec"] == 0
+
+    def test_phase_가_없는_이벤트는_직전_페이즈를_잇는다(self, repo, request_file):
+        """`counter_inc` 은 phase 를 안 받는다 — P8 에서 11건이다.
+
+        새 구간을 열면 그 시간이 어느 페이즈에도 안 들어가 벽시계가 샌다.
+        """
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "counter_inc", now=self._at(10, 20))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 40))
+
+        t = st.phase_durations(paths)
+        assert list(t["phases"]) == ["01-plan"]
+        assert t["phases"]["01-plan"]["wall_sec"] == 2400
+
+    def test_에스컬레이션_대기가_페이즈별로_따로_나온다(self, repo, request_file):
+        """벽시계에서 **사람을 기다린 시간**을 뺄 수 있어야 한다.
+
+        P8 은 벽시계 7:48:14 중 4:42:04(60.2%)가 이것이었고, 다섯 건이
+        전부 01-plan 이었다. 총계 한 줄로는 그 사실이 안 보인다.
+        """
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "escalated", phase="01-plan", now=self._at(10, 10))
+        st.append_event(paths, "resumed", phase="01-plan", now=self._at(11, 10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(11, 20))
+
+        t = st.phase_durations(paths)
+        assert t["phases"]["01-plan"]["wall_sec"] == 4800
+        assert t["phases"]["01-plan"]["escalation_wait_sec"] == 3600
+        assert t["phases"]["01-plan"]["escalations"] == 1
+        assert t["escalation_wait_sec"] == 3600
+
+    def test_재개되지_않은_에스컬레이션은_대기_키를_만들지_않는다(
+            self, repo, request_file):
+        """값을 지어내지 않는다. 아직 안 끝난 대기는 길이가 없다 (ADR-H007)."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "escalated", phase="01-plan", now=self._at(10, 10))
+
+        t = st.phase_durations(paths)
+        assert "escalation_wait_sec" not in t
+        assert "escalation_wait_sec" not in t["phases"]["01-plan"]
+        assert t["unresumed_escalations"] == 1
+
+    def test_이벤트가_한_줄이면_소요를_주장하지_않는다(self, repo, request_file):
+        """구간이 없으면 잰 것이 없다 — 0 으로 채우면 '안 쟀다'와 같아진다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "run_created", phase="01-plan", now=self._at(10))
+        assert st.phase_durations(paths) == {}
+
+    def test_깨진_줄이_나머지를_버리지_않는다(self, repo, request_file):
+        """`_read_session_metrics` 와 같은 규율이다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        with paths.events.open("a", encoding="utf-8", newline="") as fh:
+            fh.write("{ broken line\n")
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 30))
+
+        t = st.phase_durations(paths)
+        assert t["phases"]["01-plan"]["wall_sec"] == 1800
+
+    def test_기준과_사각을_함께_돌려준다(self, repo, request_file):
+        """`BUDGET_BASIS`·`BUDGET_BLIND_SPOTS` 와 같은 자리다 — 값만 주고
+        그 값이 어느 방향으로 틀리는지 안 주면 사람이 읽을 수 없다."""
+        paths, _ = st.create_run(repo, "demo", request_file)
+        paths.events.write_text("", encoding="utf-8")
+        st.append_event(paths, "phase_enter", phase="01-plan", now=self._at(10))
+        st.append_event(paths, "phase_pass", phase="01-plan", now=self._at(10, 1))
+
+        t = st.phase_durations(paths)
+        assert t["basis"] == st.PHASE_DURATION_BASIS
+        assert t["blind_spots"] == list(st.PHASE_DURATION_BLIND_SPOTS)
+
+    @pytest.mark.skipif(
+        not (ROOT / "_workspace/runs/20260908-1720-dca1/events.jsonl").exists(),
+        reason="P8 런 디렉터리가 없다")
+    def test_P8_실물_events_가_같은_값을_낸다(self):
+        """실물 앵커. 합성 픽스처만으로는 기준이 실물에서 성립하는지 모른다.
+
+        P8 은 `phase_enter` 16 · `phase_pass` 9 이고 되돌아간 01 에 진입
+        이벤트가 없다 — 이 런이 기준을 고른 근거 자체다.
+        """
+        t = st.phase_durations(st.RunPaths(ROOT, "20260908-1720-dca1"))
+        assert t["wall_sec"] == 28094
+        assert t["phases"]["01-plan"]["wall_sec"] == 20977
+        assert t["phases"]["01-plan"]["escalation_wait_sec"] == 16924
+        assert t["escalation_wait_sec"] == 16924
+        assert sum(p["wall_sec"] for p in t["phases"].values()) == 28094
+        assert sum(p["entries"] for p in t["phases"].values()) == 16
+        assert sum(p["passes"] for p in t["phases"].values()) == 9
 
 
 class TestFingerprint:

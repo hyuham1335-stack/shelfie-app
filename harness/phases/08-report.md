@@ -57,7 +57,7 @@
 |---|---|
 | 완료 등급 + **건너뛴 비차단 게이트 나열** | 문제 → 원인 → 해결 → 결과 → 배운 점 |
 | 페이즈별 소요·재시도, **모델 호출 수(근사)** | 계약이 어디서 부족했는가 |
-| `review05.status` · `escaped_05` · `dropped_by_enforcement` · `need_more_context` | 05 리뷰 범위가 적절했는가 |
+| `review05.status` · `escaped_05` · `dropped_by_enforcement` · `need_more_context` (`dropped_by_enforcement`·`need_more_context`·`truncated` 는 **런 누적**이다 — 마지막 라운드가 아니다) | 05 리뷰 범위가 적절했는가 |
 | **승격 규칙 목록(원장에서 자동 추출)** | 다음 런에서 바꿀 것 |
 | 에스컬레이션 이력 · `audit_run` 여부 · **캘리브레이션 상태** | |
 

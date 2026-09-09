@@ -20,9 +20,13 @@
  * `lib/budget`이 단계로 쪼개고, 각 단계는 `min(단계 예산, 남은 예산)`만 쓴다.
  * 예산을 넘긴 단계는 요청이 아니라 **그 단계의 산출물만** 강등한다 (ADR-005).
  *
- * ## 상태를 남기지 않는다 (ADR-003)
- * 파일·전역 변수·쿠키 어디에도 쓰지 않는다. 요청 스코프 서킷 브레이커도
- * 요청마다 새로 만들어 요청이 끝나면 사라진다.
+ * ## 사용자 데이터를 남기지 않는다 (ADR-003) — 예외는 레이트 리밋 카운터 하나다
+ * 파일·쿠키에는 아무것도 쓰지 않고, 요청 스코프 서킷 브레이커도 요청마다 새로
+ * 만들어 요청이 끝나면 사라진다. **전역 변수는 이제 한 자리에서 쓴다** —
+ * `lib/rate-limit.ts`가 키별 요청 수를 이 인스턴스의 메모리에 들고 있다
+ * (TR-013 · ADR-012). 남는 것이 정수 카운터뿐이고 언제 사라져도 기능이 틀리지
+ * 않는다는 것이 ADR-003 을 다시 열지 않고 이 예외를 받아들인 근거이며,
+ * 그 대가(인스턴스마다 따로 세고 콜드 스타트가 지운다)는 ADR-012 에 적혀 있다.
  */
 import { randomUUID } from "node:crypto";
 
@@ -42,6 +46,7 @@ import {
   reduceBeforeLookup,
 } from "@/lib/merge";
 import { issueProof } from "@/lib/proof";
+import { checkRateLimit, resolveClientKey } from "@/lib/rate-limit";
 import { analyzeRequestSchema, analyzeResponseSchema } from "@/lib/schemas";
 import {
   measureUnidentified,
@@ -104,6 +109,18 @@ export async function POST(request: Request): Promise<Response> {
   if (!serviceEnabled()) {
     // 외부 호출을 하지 않으므로 비용이 발생하지 않는다 (TRD 7번 긴급 차단 스위치).
     return errorResponse(503, "SERVICE_DISABLED", requestId);
+  }
+
+  // 레이트 리밋은 **본문을 읽기 전에** 건다 (TR-013 · ADR-012). 차단하기로 한
+  // 요청에 최대 4MB짜리 본문을 파싱하고 zod로 훑는 비용을 쓰면, 막는 일 자체가
+  // 남용의 지렛대가 된다. 차단된 요청은 Anthropic도 알라딘도 부르지 않는다.
+  const rateLimit = checkRateLimit(resolveClientKey(request.headers), Date.now());
+  if (!rateLimit.allowed) {
+    // 본문은 기존 에러 스키마 그대로다. 같은 값을 본문에 한 번 더 싣지 않는다 —
+    // 재시도 시점은 `Retry-After` 헤더가 표준으로 말하는 자리다 (API_SPEC).
+    return errorResponse(429, "RATE_LIMITED", requestId, {
+      "Retry-After": String(rateLimit.retryAfterSeconds),
+    });
   }
 
   const parsedRequest = await readRequest(request);
@@ -601,15 +618,38 @@ function serviceEnabled(): boolean {
   }
 }
 
-/** 성공 응답. `X-Request-Id`는 성공·실패 모두에 붙인다 (TRD 6.4) */
-function jsonResponse(status: number, body: unknown, requestId: string): Response {
-  return Response.json(body, { status, headers: { "X-Request-Id": requestId } });
+/**
+ * 성공 응답. `X-Request-Id`는 성공·실패 모두에 붙인다 (TRD 6.4).
+ *
+ * `extraHeaders`는 **선택**이다 — 429의 `Retry-After`처럼 본문이 아니라 헤더로
+ * 말해야 하는 값을 실을 자리이고, 넘기지 않는 기존 호출자의 응답 형태는 그대로다.
+ */
+function jsonResponse(
+  status: number,
+  body: unknown,
+  requestId: string,
+  extraHeaders?: Record<string, string>,
+): Response {
+  return Response.json(body, {
+    status,
+    headers: { "X-Request-Id": requestId, ...extraHeaders },
+  });
 }
 
 /**
  * 에러 응답. 본문에도 `requestId`를 담는다 — 사용자가 화면에서 읽어 신고한 ID로
  * 서버 로그를 바로 찾을 수 있어야 상관관계 ID 규칙이 의미를 갖는다 (API_SPEC).
  */
-function errorResponse(status: number, code: ErrorCode, requestId: string): Response {
-  return jsonResponse(status, { error: ERROR_MESSAGES[code], code, requestId }, requestId);
+function errorResponse(
+  status: number,
+  code: ErrorCode,
+  requestId: string,
+  extraHeaders?: Record<string, string>,
+): Response {
+  return jsonResponse(
+    status,
+    { error: ERROR_MESSAGES[code], code, requestId },
+    requestId,
+    extraHeaders,
+  );
 }

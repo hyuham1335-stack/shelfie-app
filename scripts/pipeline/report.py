@@ -72,6 +72,28 @@ def _ledger_axis_lines(data):
     return out
 
 
+def _verdict_deadline_lines(data):
+    """승격 임계·축을 **언제** 판정하는지 (ADR-H033).
+
+    `## 승격된 규칙` 이 "없다" 로 끝나면 그 말이 몇 런까지 정상인지 아무도
+    모른다 — `THRESHOLDS` 의 옛 약속(*"첫 세 런의 원장이 이 값을 검사한다"*)
+    이 두 배 지나도록 아무도 판정하지 않은 이유가 그것이다. **게이트가
+    아니라 표시다**: 시한이 지나도 등급을 바꾸지 않는다.
+    """
+    dl = (data.get("ledger") or {}).get("verdict_deadline") or {}
+    if not dl:
+        return []
+    tail = ("**시한이 지났다 — 판정할 때다.**" if dl.get("due")
+            else "남은 런 %d." % dl.get("remaining"))
+    return ["", "**승격 판정 시한** — 원장이 본 런 %s / %s. %s"
+            % (dl.get("seen"), dl.get("at"), tail),
+            "",
+            "이 셈의 단위는 `distinct_runs` 다 — **지적을 0건 낸 런은 "
+            "세어지지 않는다.** 달력의 런 수와 다를 수 있다. 그때 무엇을 "
+            "보고 어떻게 가를지는 **ADR-H033** 에 미리 적혀 있고, 판정할 "
+            "때 고르는 것이 아니다."]
+
+
 def explain_gap(gap):
     """gap 하나를 사람이 읽는 한 줄로. 모르는 것은 **모른다고 적는다.**"""
     head = str(gap).split(":")[0]
@@ -236,6 +258,7 @@ def build(state, data, calibration, promotions, timing=None):
                                             p.get("reason") or "사유 없음")
                   for p in other]
     lines += _ledger_axis_lines(data)
+    lines += _verdict_deadline_lines(data)
     lines.append("")
 
     lines += ["## 건너뛴 게이트", ""]

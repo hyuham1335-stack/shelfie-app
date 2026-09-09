@@ -174,8 +174,19 @@ def _test_role(config):
 
 
 def _finding(code, severity, role, title, **kw):
-    out = {"code": code, "severity": severity, "target_role": role,
-           "title": title, "category": CATEGORY[code], "source": "contract-trace"}
+    """`rule_slug` 를 여기서 단다 — **승격 집계의 축**이다 (ADR-H034).
+
+    `code` 를 그대로 쓰지 않고 이름을 달리한 것은 이 리포에서 `code` 가 이미
+    **리뷰어 코드**(`cli.py` 라우팅)와 **taxonomy 카테고리 코드**(`ledger.py`)
+    두 뜻으로 쓰이기 때문이다. 세 번째 뜻을 얹지 않는다.
+
+    `CATEGORY` 가 다대일이라(코드 5 → category 3) category 만으로는
+    `missing_impl` 과 `missing_entrypoint` 를 못 가른다. 슬러그가 그것을
+    가르고, 동시에 제목에 박힌 심볼 이름을 축에서 뺀다.
+    """
+    out = {"code": code, "rule_slug": code, "severity": severity,
+           "target_role": role, "title": title, "category": CATEGORY[code],
+           "source": "contract-trace"}
     out.update(kw)
     return out
 

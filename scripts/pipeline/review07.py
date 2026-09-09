@@ -172,8 +172,12 @@ def escaped(root, findings, run_id, previous_open=None):
 
     대조는 둘이다.
 
-    ① **키 대조** — `sha1(category|target_role|title)`. 07 이 05 와 같은
-       이름을 붙였을 때만 맞는다.
+    ① **키 대조** — `finding_key = sha1(category|target_role|title)`. 07 이
+       05 와 같은 이름을 붙였을 때만 맞는다. **승격 축(`rule_key`)이 아니라
+       인스턴스 축이다** — 여기서 물어야 하는 것은 "같은 규칙인가" 가 아니라
+       "05 가 이미 낸 바로 그 지적인가" 이고, 규칙으로 접으면 05 가 못 본
+       새 인스턴스가 dupe 로 삼켜져 `escaped_05` 가 조용히 급락한다
+       (ADR-H034 가 축을 갈라 둔 이유).
     ② **선언 대조** — 07 이 `reraised_from_previous` 로 05 의 열린 지적을
        가리키면 그것도 dupe 다. 키만 보면 **07 이 같은 결함에 다른 이름을
        붙였을 때 새 것으로 세고**, 그러면 지표가 05 를 실제보다 나쁘게 적는다

@@ -59,10 +59,29 @@ def scan(root):
     return got
 
 
+def _identity(d):
+    """승격 행·판정의 신원. `rule_key` 우선, 없으면 `finding_key` (ADR-H034).
+
+    **낙하가 하위 호환을 맡는다** — 이미 쌓인 `state.promotions` 행과 옛
+    원장 줄에는 `rule_key` 가 없고, 폴백 버킷에서는 둘이 같은 값이다.
+    """
+    return d.get("rule_key") or d.get("finding_key")
+
+
 def stage(candidates):
-    """후보를 `state.promotions` 모양으로 만든다. **전부 `staged` 다.**"""
+    """후보를 `state.promotions` 모양으로 만든다. **전부 `staged` 다.**
+
+    신원은 `rule_key` 다. 대표 `finding_key` 를 신원으로 쓰면 런마다 다른
+    인스턴스가 실려 나가(P9 는 `ErrorBanner`, P10 은 `RATE_LIMIT_WINDOW_MS`)
+    `merge_staged` 가 같은 규칙을 두 행으로 갈라 놓는다. 접은 인스턴스는
+    `finding_keys` 로 **전부** 싣는다 — 수리하는 쪽이 무엇을 고칠지 알아야
+    하고, 그것은 신원과 다른 질문이다.
+    """
     return [{"rule_id": c.get("rule") or c["category"].lower().replace("_", "-"),
-             "finding_key": c["finding_key"],
+             "rule_key": c.get("rule_key"),
+             "rule_slug": c.get("rule_slug"),
+             "finding_key": c.get("finding_key"),
+             "finding_keys": list(c.get("finding_keys") or []),
              "category": c["category"],
              "enforceable": c.get("enforceable"),
              "severity": c["severity"],
@@ -80,18 +99,22 @@ def merge_staged(promos, fresh):
     일이고 되돌릴 수 있으면 그것이 조용한 통과의 자리가 된다. 기존 `staged`
     는 근거 수치만 갱신하고, 새 후보만 덧붙인다.
     """
-    by_key = {p.get("finding_key"): p for p in promos}
+    by_key = {_identity(p): p for p in promos}
     for f in fresh:
-        cur = by_key.get(f["finding_key"])
+        cur = by_key.get(_identity(f))
         if cur is None:
             promos.append(f)
-            by_key[f["finding_key"]] = f
+            by_key[_identity(f)] = f
             continue
         if cur.get("status") != "staged":
             continue
         for k in ("severity", "count", "distinct_runs", "enforceable",
                   "category"):
             cur[k] = f[k]
+        # 접힌 인스턴스는 런을 가로질러 **늘어난다.** 근거 수치와 같이 갱신하지
+        # 않으면 수리하는 쪽이 첫 런의 목록만 보게 된다.
+        if f.get("finding_keys"):
+            cur["finding_keys"] = f["finding_keys"]
     return promos
 
 
@@ -101,9 +124,10 @@ def check_verdicts(root, verdicts, promotions=None):
     `blocked` 가 참이면 **자동 쓰기를 하지 않고 에스컬레이션**한다 — 규칙끼리
     싸우는 상태를 파이프라인이 혼자 정리하려 들면 안 된다.
 
-    판정은 **어느 후보를 올리는지 가리켜야 한다** (`category`, 또는 원장의
-    신원인 `finding_key`). `rule_id` 는 새로 짓는 목적지 이름이라 후보와 이름이
-    다를 수 있고, 그것으로 매칭하면 엉뚱한 후보가 승격된다.
+    판정은 **어느 후보를 올리는지 가리켜야 한다** (`category`, 또는 후보의
+    신원인 `rule_key` — 옛 행은 `finding_key`). `rule_id` 는 새로 짓는 목적지
+    이름이라 후보와 이름이 다를 수 있고, 그것으로 매칭하면 엉뚱한 후보가
+    승격된다.
     """
     errors, blocked = [], False
     creates = 0
@@ -112,17 +136,18 @@ def check_verdicts(root, verdicts, promotions=None):
         rid0 = v.get("rule_id") or "(이름 없음)"
         if not _resolve_category(root, v, promotions):
             errors.append("%s: 어느 후보를 승격하는지 가리키지 않았다 — "
-                          "`category` 또는 `finding_key` 가 필요하다." % rid0)
+                          "`category` 또는 `rule_key` 가 필요하다." % rid0)
         elif promotions is not None:
             # **`apply` 와 같은 함수로 본다.** 두 함수가 각자 매칭하면 검사가
             # 통과한 판정이 다른 후보를 승격시킬 수 있다.
             hit = resolve_target(root, v, promotions, taken)
             if hit is None:
                 errors.append(
-                    "%s: 가리킨 후보를 찾지 못했다 (finding_key=%r) — "
-                    "`finding_key` 는 원장의 신원이라 category 로 낙하시키지 "
-                    "않는다. 이름을 부른 것과 다른 지적이 승격되느니 거부한다."
-                    % (rid0, v.get("finding_key")))
+                    "%s: 가리킨 후보를 찾지 못했다 (rule_key=%r · "
+                    "finding_key=%r) — 그것은 후보의 신원이라 category 로 "
+                    "낙하시키지 않는다. 이름을 부른 것과 다른 지적이 "
+                    "승격되느니 거부한다."
+                    % (rid0, v.get("rule_key"), v.get("finding_key")))
             else:
                 taken.add(id(hit))
         j, a = v.get("judgement"), v.get("action")
@@ -159,17 +184,18 @@ def check_verdicts(root, verdicts, promotions=None):
 def _resolve_category(root, v, promotions=None):
     """판정이 가리키는 category. 없으면 None.
 
-    순서가 요점이다 — 명시된 `category` → 원장 신원(`finding_key`) → 목적지
-    이름(`rule_id`) 이 taxonomy 의 `rule` 과 정확히 같을 때. 마지막은 기계
-    강제 규칙에만 성립하고 `prose` 카테고리에는 `rule` 이 없다.
+    순서가 요점이다 — 명시된 `category` → 후보 신원(`rule_key`, 옛 행은
+    `finding_key`) → 목적지 이름(`rule_id`) 이 taxonomy 의 `rule` 과 정확히
+    같을 때. 마지막은 기계 강제 규칙에만 성립하고 `prose` 카테고리에는
+    `rule` 이 없다.
     """
     code = v.get("category")
     if code:
         return code
-    fk = v.get("finding_key")
-    if fk:
+    ident = _identity(v)
+    if ident:
         for p in promotions or []:
-            if p.get("finding_key") == fk:
+            if _identity(p) == ident:
                 return p.get("category")
     rid = v.get("rule_id")
     for p in promotions or []:
@@ -184,23 +210,23 @@ def _resolve_category(root, v, promotions=None):
 def resolve_target(root, v, promotions, taken=None):
     """판정이 가리키는 후보 행. 없으면 None.
 
-    **두 패스로 나눈다.** 한 루프 안에서 `finding_key` 정확 일치와
-    `category` 약한 일치를 섞으면 배열 앞쪽의 약한 일치가 뒤쪽의 정확한
-    일치를 이긴다 — 엉뚱한 규칙이 changelog 에 쓰이고 근거 열도 다른
-    버킷에서 온다 (G-1).
+    **두 패스로 나눈다.** 한 루프 안에서 신원 정확 일치와 `category` 약한
+    일치를 섞으면 배열 앞쪽의 약한 일치가 뒤쪽의 정확한 일치를 이긴다 —
+    엉뚱한 규칙이 changelog 에 쓰이고 근거 열도 다른 버킷에서 온다 (G-1).
 
     `taken` 은 이미 다른 판정에 바인딩된 행이다. 표시하지 않으면 두 판정이
     같은 행을 잡아 **뒤 판정이 앞 판정의 status 를 조용히 덮는다.**
 
-    `finding_key` 를 줬는데 후보에 없으면 **category 로 낙하하지 않는다** —
-    이름을 부른 것과 다른 지적이 승격되느니 못 찾는 편이 낫다. 원장의
-    신원을 가리켰는데 다른 것이 올라가면 그 사실이 어디에도 안 드러난다.
+    신원(`rule_key`, 옛 행은 `finding_key`)을 줬는데 후보에 없으면
+    **category 로 낙하하지 않는다** — 이름을 부른 것과 다른 지적이 승격되느니
+    못 찾는 편이 낫다. 신원을 가리켰는데 다른 것이 올라가면 그 사실이
+    어디에도 안 드러난다.
     """
     taken = taken if taken is not None else set()
-    fk = v.get("finding_key")
-    if fk:
+    ident = _identity(v)
+    if ident:
         for p in promotions:
-            if p.get("finding_key") == fk and id(p) not in taken:
+            if _identity(p) == ident and id(p) not in taken:
                 return p
         return None
     code = _resolve_category(root, v, promotions)

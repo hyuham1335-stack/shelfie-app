@@ -74,6 +74,17 @@ _SEVERITY_RANK = {"minor": 0, "major": 1, "critical": 2}
 # 카테고리 코드의 형태. 글롭처럼 보이는 코드를 새로 만들지 못하게 한다 (M39).
 _CODE_SHAPE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
+# 승격 축의 슬러그 형태와, 그것을 줄 수 있는 생산자 (ADR-H034).
+#
+# **신뢰 경계다.** 슬러그를 아무나 주면 무관한 지적이 한 버킷에 뭉치고,
+# 승격은 "무엇이 반복되는가" 를 묻는 장치라 그 오염이 곧바로 규칙이 된다.
+# `contract-trace` 만 받는 이유는 그쪽 어휘가 `trace_contract.CATEGORY` 라는
+# **코드 안의 닫힌 집합**이기 때문이다 — 모델이 그 자리에서 지어낼 수 없다.
+# 리뷰어·code-review 의 통제 어휘는 별도 증분(C5)의 몫이고, 그때까지 그쪽
+# 슬러그는 **거부가 아니라 폴백**이다: 행 자체는 정상 관측이다.
+_SLUG_SOURCES = ("contract-trace",)
+_SLUG_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
+
 SEED_TAXONOMY = {
     "version": 1,
     "_note": ("스택 비종속 코드만 시드로 배포한다. 프로젝트가 코드를 **추가**하는 "
@@ -256,11 +267,42 @@ def finding_key(f):
     return verdict.finding_key(f)
 
 
+def rule_key(f):
+    """`sha1(category | target_role | rule_slug)`. **승격 집계의 축이다.**
+
+    `finding_key` 와 같은 이유로 **01 과 같은 함수를 쓴다**. 슬러그가 없으면
+    `finding_key` 와 같은 값이라, 슬러그가 한 줄도 없는 옛 원장의 집계가
+    변하지 않는다 (ADR-H034).
+    """
+    return verdict.rule_key(f)
+
+
+def _accept_slug(f):
+    """행에 실을 `rule_slug`. 못 실으면 None.
+
+    **두 종류의 거절을 가른다.** 다른 생산자가 준 슬러그는 예상된 입력이라
+    조용히 버리고 폴백한다 — 그 행은 여전히 정상 관측이다. 반면 형태가
+    어긋난 슬러그는 `trace_contract` 가 **스스로 깨진 것**이라 조용히 받지
+    않는다. 어휘 밖 `category`·`resolution` 을 거부하는 것과 같은 자리다:
+    받으면 승격 집계가 아무도 모르는 축으로 갈라진다.
+    """
+    slug = f.get("rule_slug")
+    if slug is None or f.get("source") not in _SLUG_SOURCES:
+        return None
+    if not isinstance(slug, str) or not _SLUG_SHAPE.match(slug):
+        raise ValueError("rule_slug 의 형태가 어긋났다: %r — %s 여야 한다. "
+                         "생산자 안의 닫힌 집합이라 이것은 버그다"
+                         % (slug, _SLUG_SHAPE.pattern))
+    return slug
+
+
 def append(root, run_id, phase, findings):
     """원장에 줄을 더한다. 반환: 쓴 줄 수.
 
     어휘 밖의 category·resolution 은 **조용히 받지 않는다.** 받으면 승격 집계가
     아무도 모르는 축으로 갈라지고, 그 사실이 어디에도 드러나지 않는다.
+
+    `rule_slug` 의 신뢰 경계도 여기서 쥔다 (`_accept_slug` · ADR-H034).
     """
     root = Path(root)
     known = categories(root)
@@ -278,7 +320,8 @@ def append(root, run_id, phase, findings):
         if src is not None and src not in SOURCES:
             raise ValueError("source 가 어휘 밖이다: %r (%s)"
                              % (src, ", ".join(SOURCES)))
-        rows.append({
+        slug = _accept_slug(f)
+        row = {
             "run_id": run_id,
             "phase": phase,
             "finding_key": finding_key(f),
@@ -291,7 +334,15 @@ def append(root, run_id, phase, findings):
             "reported_by": f.get("reported_by") or [],
             "source": src,
             "ts": st.stamp(),
-        })
+        }
+        # **슬러그는 받았을 때만 적는다.** 없는 것을 `null` 로 적으면 "안 줬다"
+        # 와 "줬는데 안 받았다" 가 같은 모양이 된다. `rule_key` 는 항상 적어
+        # 행이 자기 축을 스스로 말하게 한다 — 옛 줄에는 없으므로 읽는 쪽이
+        # `finding_key` 로 낙하한다.
+        if slug is not None:
+            row["rule_slug"] = slug
+        row["rule_key"] = rule_key(dict(f, rule_slug=slug))
+        rows.append(row)
 
     if not rows:
         return 0
@@ -436,13 +487,20 @@ def in_baseline(root, baseline_runs):
 # ------------------------------------------------------------------- 승격 계산
 
 def stage_promotions(root):
-    """임계를 넘은 finding_key 를 후보로 올린다. **05 는 여기까지다.**
+    """임계를 넘은 **규칙**(`rule_key`)을 후보로 올린다. **05 는 여기까지다.**
 
     반환: {"candidates": [...], "held": [...], "distinct_runs": n,
            "thresholds": {...}}
 
     `held` 는 **누적은 넘었는데 `distinct_runs` 에서 막힌 것**이다. 조용히
     빠뜨리면 "임계가 높다"와 "런이 모자라다"가 같은 침묵이 된다.
+
+    **축은 `finding_key` 가 아니라 `rule_key` 다** (ADR-H034). 승격이 배우는
+    것은 "이 심볼을 고쳐라" 가 아니라 "이 규칙이 반복된다" 이기 때문이다.
+    버킷은 자기가 접은 `finding_keys` 를 전부 싣는다 — 대표 하나만 실으면
+    런마다 다른 인스턴스가 신원이 되어 같은 규칙이 두 승격 행으로 갈라진다.
+    `observations` 의 접기 신원은 **그대로 `finding_key`** 라, 한 런이 낸
+    여섯 건은 여전히 6관측이고 그래서 `count` 가 6 이 된다.
     """
     cats = categories(root)
     buckets = {}
@@ -453,15 +511,26 @@ def stage_promotions(root):
         cat = cats.get(code) or {}
         if cat.get("status") in NEVER_PROMOTE:
             continue
-        key = row.get("finding_key")
+        # **옛 줄에는 `rule_key` 가 없다.** 낙하가 곧 소급 무오염이다 —
+        # 슬러그가 한 줄도 없던 원장은 변경 전과 정확히 같은 버킷을 만든다.
+        fk = row.get("finding_key")
+        key = row.get("rule_key") or fk
         b = buckets.setdefault(key, {
-            "finding_key": key, "category": code,
+            "rule_key": key, "rule_slug": row.get("rule_slug"),
+            # 접힌 버킷에는 대표 `finding_key` 를 두지 않는다 — 런마다 다른
+            # 인스턴스가 신원 행세를 하면 같은 규칙이 두 승격 행으로 갈라진다.
+            # 폴백 버킷(축이 곧 finding_key)에서만 채운다.
+            "finding_key": fk if key == fk else None,
+            "finding_keys": set(),
+            "category": code,
             "target_role": row.get("target_role"),
             "title_norm": row.get("title_norm"),
             "enforceable": cat.get("enforceable"),
             "rule": cat.get("rule"),
             "count": 0, "runs": set(), "severity": "minor"})
         b["count"] += 1
+        if fk:
+            b["finding_keys"].add(fk)
         if row.get("run_id"):
             b["runs"].add(row["run_id"])
         if _SEVERITY_RANK.get(row.get("severity"), -1) > _SEVERITY_RANK[b["severity"]]:
@@ -472,6 +541,7 @@ def stage_promotions(root):
         need_count, need_runs = THRESHOLDS.get(b["severity"], (99, 99))
         runs = len(b["runs"])
         item = dict(b, runs=sorted(b["runs"]), distinct_runs=runs,
+                    finding_keys=sorted(b["finding_keys"]),
                     needs={"count": need_count, "distinct_runs": need_runs})
         if b["count"] < need_count:
             continue
@@ -493,17 +563,24 @@ def stage_promotions(root):
             "thresholds": {k: {"count": v[0], "distinct_runs": v[1]}
                            for k, v in THRESHOLDS.items()},
             "axis_note": (
-                "승격 버킷의 축은 finding_key = sha1(category|target_role|"
-                "정규화 제목)다. `by_category` 는 **보고용이고 승격하지 않는다** "
+                "승격 버킷의 축은 rule_key = sha1(category|target_role|"
+                "rule_slug)이고, rule_slug 가 없으면 finding_key 로 낙하한다 "
+                "(ADR-H034). `by_category` 는 **보고용이고 승격하지 않는다** "
                 "— 카테고리가 잦은 것과 같은 규칙이 잦은 것은 다른 사실이다. "
-                "제목이 매번 다른 카테고리는 임계에 영원히 닿지 않고, 그것은 "
-                "결함이 아니라 '승격의 산물이 규칙' 이라는 정의의 결과다 "
-                "(M39 · ADR-H026)."),
+                "통제 어휘를 쓰는 생산자(contract-trace)의 지적은 심볼이 "
+                "달라도 규칙으로 접히고, 슬러그가 없는 자유 서술은 제목마다 "
+                "갈려 임계에 닿지 않는다 — 뒤엣것은 결함이 아니라 '승격의 "
+                "산물이 규칙' 이라는 정의의 결과다 (M39 · ADR-H026)."),
             "note": "05 는 staged 까지다. 실제 쓰기는 07 에서 런당 한 번이다."}
 
 
 def _by_category(root, cats):
     """카테고리 축의 빈도. **승격하지 않는 관측이다** (M39 · ADR-H026).
+
+    `distinct_keys` 는 **승격 축과 같은 단위**다 (`rule_key`) — 칸 이름이
+    단위를 말해야 하므로 보고서도 「서로 다른 규칙」으로 읽는다. 축이 갈리면
+    이 숫자와 승격 임계가 서로 다른 것을 세게 된다.
+
 
     `held` 가 "임계가 높다" 와 "런이 모자라다" 를 갈라 놓듯, 이 롤업은 셋째
     침묵 — "축이 틀렸다" — 를 갈라 놓는다. 이 리포에서 가장 자주 나는 결함이
@@ -525,8 +602,9 @@ def _by_category(root, cats):
         b["count"] += 1
         if row.get("run_id"):
             b["runs"].add(row["run_id"])
-        if row.get("finding_key"):
-            b["keys"].add(row["finding_key"])
+        rk = row.get("rule_key") or row.get("finding_key")
+        if rk:
+            b["keys"].add(rk)
         if row.get("resolution") in EXCLUDED_FROM_COUNT:
             b["excluded_from_promotion_count"] += 1
     out = []

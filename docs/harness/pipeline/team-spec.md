@@ -851,7 +851,11 @@ gap 은 effort 와 **따로 센다**:
 
 **코드는 글롭이 아니다.** `categories()` 가 만드는 dict 의 **문자열 키**이고 `append()` 는 `code not in known` 으로만 본다 — `other/foo` 는 `other/*` 에 매칭되지 않고 어휘 밖으로 튕긴다. 그 오해가 P5 에서 제출 1회를 무르게 했다(M39). 이제 `validate_taxonomy` 가 코드 형태를 `^[A-Z][A-Z0-9_]*$` 로 잠근다. 옛 코드 `other/*` 는 **원장의 과거를 읽을 수 있게** `retired` 로 남긴다 — `retired` 는 이미 `NEVER_PROMOTE` 라 거동이 바뀌지 않고, `findings.jsonl` 은 한 줄도 고치지 않는다.
 
-**승격의 축은 제목이지 카테고리가 아니다.** 버킷 키가 `sha1(category|target_role|정규화 제목)` 이라, 카테고리가 아무리 잦아도 제목이 매번 다르면 임계에 **영원히** 닿지 않는다. 이것은 결함이 아니라 "승격의 산물이 규칙" 이라는 정의의 결과다. 그러나 그 사실이 어디에도 안 보이면 "승격 0건" 이 "지적이 없었다" 로 읽히므로, `stage_promotions` 이 **승격하지 않는 `by_category` 롤업**을 함께 낸다 (ADR-H026). `candidates` 와 `held` 는 그 롤업으로 한 비트도 달라지지 않는다.
+**승격의 축은 규칙이지 카테고리도 제목도 아니다** (ADR-H034). 버킷 키는 `rule_key = sha1(category|target_role|rule_slug)` 이고, `rule_slug` 가 없으면 `finding_key` 로 낙하한다. 그래서 **통제 어휘를 쓰는 생산자**(`contract-trace`)의 지적은 제목에 심볼 이름이 박혀 있어도 규칙으로 접히고, **슬러그가 없는 자유 서술**(리뷰어·code-review)은 제목마다 갈려 임계에 **영원히** 닿지 않는다. 뒤엣것은 결함이 아니라 "승격의 산물이 규칙" 이라는 정의의 결과다 — 승격이 배우는 것은 "이 심볼을 고쳐라" 가 아니라 "이 규칙이 반복된다" 이고, 매번 다른 문장은 규칙이 아니다. 그 어휘를 리뷰어 쪽으로 넓히는 것은 별도 증분이다.
+
+원래 여기 적혀 있던 것은 *"승격의 축은 제목이지 카테고리가 아니다"* 였다. **틀린 문장이 아니라 좁은 문장이었다** — 그때는 슬러그라는 것이 없어 제목이 유일한 축이었고, 원장 168줄 · 6런이 후보 0을 낼 때까지 그 좁음이 드러나지 않았다. 실측이 원인을 가른 뒤에 정정한다 (`NAMING` 86관측 / 84버킷 — 전부 `out_of_contract` 하나였다).
+
+그 사실이 어디에도 안 보이면 "승격 0건" 이 "지적이 없었다" 로 읽히므로, `stage_promotions` 이 **승격하지 않는 `by_category` 롤업**을 함께 낸다 (ADR-H026). `candidates` 와 `held` 는 그 롤업으로 한 비트도 달라지지 않는다.
 
 ### 5.2 `findings.jsonl` (append-only)
 
@@ -859,12 +863,24 @@ gap 은 effort 와 **따로 센다**:
 {"run_id":"…","phase":"05","finding_key":"…","category":"AUTHZ_MISSING_RULE","severity":"critical",
  "target_role":"impl","title_norm":"…",
  "resolution":"repaired|deferred|dropped_by_enforcement|warn_only","repaired_by":"main|agent",
- "reported_by":["{code}"],"source":"reviewer|code-review|external|human|contract-trace","ts":"…"}
+ "reported_by":["{code}"],"source":"reviewer|code-review|external|human|contract-trace",
+ "rule_slug":"out_of_contract","rule_key":"…","ts":"…"}
 ```
 
 원장은 이 파일 **하나뿐**이다(append-only라 머지 충돌이 자명하게 union). 집계 파일은 두지 않고 **매번 재계산**한다 — 수백 줄 규모라 밀리초고, 파생 파일을 두면 동기화 버그만 생긴다.
 
 **`finding_key = sha1(category | target_role | normalize_title)`. 파일 경로를 키에 넣지 않는다** — "동일 유형"은 파일을 가로질러야 의미가 있다. `resolution: "warn_only"`는 baseline 기간(§E6) 항목이며 **승격 집계에서 제외된다.**
+
+**키가 둘이다 (ADR-H034).** `finding_key` 는 **인스턴스**의 신원이고 `rule_key = sha1(category | target_role | rule_slug)` 는 **규칙**의 신원이다. `rule_slug` 가 없으면 `rule_key == finding_key` 다 — 폴백이 항등이라 슬러그가 한 줄도 없는 과거 원장의 집계가 변하지 않는다. 쓰는 쪽이 갈린다:
+
+| 쓰는 곳 | 키 | 왜 |
+|---|---|---|
+| 05 단조성 · `review.merge` 2인 합치 · 07 의 `escaped_05` 대조 · `observations` 접기 신원 | `finding_key` | 묻는 것이 "05 가 이미 낸 **바로 그** 지적인가" 다. 규칙으로 접으면 새 인스턴스가 dupe 로 삼켜지고 수리하는 쪽이 무엇을 고칠지 모른다 |
+| `stage_promotions` 버킷 · `_by_category` 의 `distinct_keys` · `state.promotions` 행의 신원 | `rule_key` | 묻는 것이 "무엇이 반복되는 유형인가" 다 |
+
+**`rule_slug` 는 아무나 못 준다.** `ledger.append` 가 `source == "contract-trace"` 인 행에서만 받는다 — 그쪽 어휘가 `trace_contract.CATEGORY` 라는 **코드 안의 닫힌 집합**이라 모델이 그 자리에서 지어낼 수 없기 때문이다. 다른 생산자가 준 슬러그는 **거부가 아니라 폴백**이다(그 행 자체는 정상 관측이다). 반면 형태(`^[a-z][a-z0-9_]*$`)가 어긋난 슬러그는 생산자가 스스로 깨진 것이라 **exit 8** 이다 — 어휘 밖 `category`·`resolution` 을 조용히 받지 않는 것과 같은 자리다. "모델의 자진 신고는 받되 대조한다" 와 같은 결이다.
+
+**승격 행은 접은 인스턴스를 전부 싣는다** (`finding_keys`). 대표 하나만 실으면 런마다 다른 인스턴스가 신원 행세를 해서 같은 규칙이 두 승격 행으로 갈라진다 — `merge_staged` 가 합치지 못하고 `resolve_target` 이 옛 행을 못 찾는다.
 
 **행의 신원은 `(run_id, phase, finding_key)`이고, 같은 신원의 뒷줄은 새 발생이 아니라 승계(supersede)다.** 집계는 `ledger.observations`가 접은 것을 쓴다 — 가변 필드(`resolution`·`repaired_by`)는 마지막 줄이 이기고 `severity`는 최대다. **파일은 여전히 append-only이고 `read_all`이 모든 줄을 보존한다** — 가변성을 쓰기가 아니라 읽기로 옮긴 것이다. 줄을 제자리 수정하면 tracked 파일의 union-머지 성질이 죽고 동시 런의 lost-update가 생긴다.
 
@@ -889,6 +905,12 @@ gap 은 effort 와 **따로 센다**:
 > 그 대가로 **두 축이 서로 가까워졌다.** 한 페이즈만 지적하면 누적과 `distinct_runs`가 같아지고, 둘이 갈리는 것은 05·07·`contract-trace`가 같은 것을 볼 때뿐이다. `held`(누적은 넘었는데 런이 모자란 상태)가 도달 불가능해지면 "임계가 높다"와 "런이 모자라다"가 다시 같은 침묵이 되므로, **`held`가 여전히 표현 가능한지를 테스트가 지킨다.**
 >
 > 그리고 **여섯 숫자의 캘리브레이션 표본이 리셋된다** — 이 시점 이전 원장의 누적값은 다른 단위로 잰 것이라 지금 값과 같은 뜻으로 비교하면 안 된다.
+
+> **축이 바뀌었고 표본이 또 리셋된다 (2026-09-09, ADR-H034).** 버킷의 축이 `finding_key`(인스턴스)에서 `rule_key`(규칙)로 옮겨 갔다. M30 때와 **같은 문장을 두 번째 쓴다** — 축이 바뀌면 그 위에서 잰 누적값은 새 축의 값과 같은 뜻이 아니다.
+>
+> 다만 이번에는 **과거가 오염되지 않는다.** 폴백이 항등이라 슬러그 없는 옛 168줄은 여전히 `finding_key` 축이고 집계가 한 비트도 안 바뀐다. 리셋되는 것은 과거가 아니라 **비교 가능성**이다: 새 축에서의 누적은 0에서 시작하고, 그 전 6런은 새 축에 대해 아무 증거도 주지 않는다.
+>
+> **그래서 임계 판정 시점이 옮겨 간다.** ADR-H033 이 못박은 `distinct_runs = 9` 는 「축이 안정된 표본」을 전제했다. 축을 바꾼 직후의 첫 런은 그 전제를 만족하지 않으므로, 판정은 **축 변경 후 3런**에 한다. 그때까지 `held` 가 나오는 것을 "임계가 높다" 로 읽으면 안 된다 — 표본이 아직 없는 것이다.
 
 `enforceable` 어휘는 셋이다:
 

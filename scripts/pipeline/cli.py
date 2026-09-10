@@ -3364,11 +3364,11 @@ def run_cost(root, run_id=None, transcript_root=None):
             continue
         start = st._parse_stamp(rows[idx - 1].get("ts")) if idx else None
         end = st._parse_stamp(row.get("ts"))
-        basis = None
-        if born is not None and updated is not None and end is not None:
-            # 두 구간이 겹치면 그 세션은 런이 살아 있는 동안 돌았다.
-            overlaps = born <= end and (start is None or updated > start)
-            basis = "touched" if overlaps else "latest_only"
+        # 두 구간이 겹치면 그 세션은 런이 살아 있는 동안 돌았다. 판정은
+        # `session_log` 가 쓰는 시점에 부르는 것과 **같은 함수**다 (M59).
+        touched = st.session_touched_run(born, updated, start, end)
+        basis = None if touched is None else (
+            "touched" if touched else "latest_only")
         cell = {"session_id": row.get("session_id"), "ts": row.get("ts")}
         if basis:
             # 판정할 수 없으면 키를 만들지 않는다 — latest_only 로 단정하면

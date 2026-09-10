@@ -176,10 +176,23 @@ def _inv_block(plan_text):
 
 
 def _contract_sections(root, state, config):
-    rel = (state.get("contract") or {}).get("path")
-    if not rel:
-        return ""
-    text = _read(Path(root) / rel)
+    """계약의 유닛·진입점 절. **살아 있는 파일이 없으면 스냅샷을 읽는다** (M54).
+
+    06 push 가 성공하면 계약 파일을 지운다. 07 수리 뒤 재승인하고 `pr` 을 다시
+    돌리는 것은 정본이 선언한 정상 경로인데(`team-spec.md` §3.5), 그때 원본이
+    없어 이 절이 통째로 비었고 본문이 **자기를 `no_contract` 런이라고 잘못
+    보고했다.** 지우기 직전에 남긴 `06_contract_snapshot.md` 가 그 원본이다.
+
+    **살아 있으면 스냅샷을 보지 않는다** — 스냅샷은 삭제 시점에 굳은 값이라
+    그 뒤의 계약 델타를 모른다.
+    """
+    node = state.get("contract") or {}
+    text = ""
+    for rel in (node.get("path"), node.get("snapshot")):
+        if rel:
+            text = _read(Path(root) / rel)
+        if text:
+            break
     if not text:
         return ""
     sections = (config.get("contract") or {}).get("sections") or {}
@@ -191,6 +204,19 @@ def _contract_sections(root, state, config):
         if m:
             out.append(m.group(0).strip())
     return "\n\n".join(out)
+
+
+def _no_units(state):
+    """유닛 절이 비었을 때의 문구. **실패와 데이터 없음을 뭉개지 않는다.**
+
+    계약이 없는 런과 계약이 있는데 지금 못 읽는 것은 다른 사실이다. 뒤엣것을
+    `no_contract` 라 적으면 같은 본문의 체크리스트(`state.contract.mode` 를
+    본다)와 모순되고, PR 이 스스로를 잘못 보고한다 (M54).
+    """
+    if (state.get("contract") or {}).get("mode") == "no_contract":
+        return "_계약의 유닛·진입점 절이 없다 (no_contract)._"
+    return ("_계약의 유닛·진입점 절을 읽지 못했다 — 계약 파일도 스냅샷도 "
+            "없다._")
 
 
 def _adopted(paths):
@@ -316,7 +342,7 @@ def build_body(root, paths, state, config):
     if request_note:
         lines += [request_note, ""]
     lines += ["## 작업 내용", ""]
-    lines += [units or "_계약의 유닛·진입점 절이 없다 (no_contract)._", ""]
+    lines += [units or _no_units(state), ""]
     lines += ["- 변경 규모: %s" % stat, ""]
     lines += ["## 기술적 고려사항", ""]
     lines += (["- %s" % a for a in adopted] if adopted

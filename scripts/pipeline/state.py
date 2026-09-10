@@ -603,7 +603,11 @@ def counter_grant(s, name, extra, reason, now=None):
         raise ValueError("알 수 없는 카운터: %r (%s)" % (name, ", ".join(COUNTERS)))
     if not extra or extra < 0:
         raise ValueError("지급량은 양수여야 한다: %r" % (extra,))
-    node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": extra})
+    # 초기값은 **0 이다** (M58). `extra` 로 만들면 바로 아래가 그것에 `extra` 를
+    # 또 더해 소모 전 첫 지급이 상한을 두 배로 만든다. `max` 는 `grants` 의
+    # 파생값이므로 소모가 없는 상태의 상한은 지급 합계와 같아야 한다 —
+    # 선언값은 이 함수가 모르고 `counter_inc` 이 인자로 받는다.
+    node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": 0})
     node["max"] = (node.get("max") or 0) + extra
     node.setdefault("grants", []).append(
         {"at": stamp(now), "extra": extra, "reason": reason})

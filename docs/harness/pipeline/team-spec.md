@@ -873,7 +873,9 @@ gap 은 effort 와 **따로 센다**:
   {"code":"MIG_MISSING","enforceable":"check","status":"proposed"},
   {"code":"TX_BOUNDARY","enforceable":"prose","status":"active"},
   {"code":"CONCURRENCY","enforceable":"prose","status":"active"},
-  {"code":"TEST_MISSING_FAILURE_PATH","enforceable":"prose","status":"active"},
+  {"code":"TEST_MISSING_FAILURE_PATH","enforceable":"prose","status":"active",
+   "slugs":[{"slug":"nothing_locked","note":"구현을 되돌려도 이 테스트가 빨간불이 안 된다"},
+            {"slug":"asserts_implementation","note":"단언이 구현의 내부 구조를 따라간다"}]},
   {"code":"CONTRACT_DEFECT","enforceable":"none","status":"escalate_only"},
   {"code":"DOC_CODE_DRIFT","enforceable":"prose","status":"active"},
   {"code":"OTHER","enforceable":"prose","status":"unpromotable"},
@@ -885,7 +887,11 @@ gap 은 effort 와 **따로 센다**:
 
 **코드는 글롭이 아니다.** `categories()` 가 만드는 dict 의 **문자열 키**이고 `append()` 는 `code not in known` 으로만 본다 — `other/foo` 는 `other/*` 에 매칭되지 않고 어휘 밖으로 튕긴다. 그 오해가 P5 에서 제출 1회를 무르게 했다(M39). 이제 `validate_taxonomy` 가 코드 형태를 `^[A-Z][A-Z0-9_]*$` 로 잠근다. 옛 코드 `other/*` 는 **원장의 과거를 읽을 수 있게** `retired` 로 남긴다 — `retired` 는 이미 `NEVER_PROMOTE` 라 거동이 바뀌지 않고, `findings.jsonl` 은 한 줄도 고치지 않는다.
 
-**승격의 축은 규칙이지 카테고리도 제목도 아니다** (ADR-H034). 버킷 키는 `rule_key = sha1(category|target_role|rule_slug)` 이고, `rule_slug` 가 없으면 `finding_key` 로 낙하한다. 그래서 **통제 어휘를 쓰는 생산자**(`contract-trace`)의 지적은 제목에 심볼 이름이 박혀 있어도 규칙으로 접히고, **슬러그가 없는 자유 서술**(리뷰어·code-review)은 제목마다 갈려 임계에 **영원히** 닿지 않는다. 뒤엣것은 결함이 아니라 "승격의 산물이 규칙" 이라는 정의의 결과다 — 승격이 배우는 것은 "이 심볼을 고쳐라" 가 아니라 "이 규칙이 반복된다" 이고, 매번 다른 문장은 규칙이 아니다. 그 어휘를 리뷰어 쪽으로 넓히는 것은 별도 증분이다.
+**승격의 축은 규칙이지 카테고리도 제목도 아니다** (ADR-H034). 버킷 키는 `rule_key = sha1(category|target_role|rule_slug)` 이고, `rule_slug` 가 없으면 `finding_key` 로 낙하한다. 그래서 **통제 어휘를 쓰는 생산자**의 지적은 제목에 심볼 이름이 박혀 있어도 규칙으로 접히고, **슬러그가 없는 자유 서술**은 제목마다 갈려 임계에 닿지 않는다. 승격이 배우는 것은 "이 심볼을 고쳐라" 가 아니라 "이 규칙이 반복된다" 이고, **매번 다른 문장은 규칙이 아니다.**
+
+**통제 어휘는 이제 `taxonomy.json` 이 준다** (ADR-H035). 카테고리 객체의 `slugs` 가 그 카테고리의 어휘이고, **선언한 카테고리는 `rule_slug` 가 필수**이며 안 선언한 카테고리는 면제다. 면제 목록을 코드에 적지 않는다 — `validate_taxonomy` 가 *"승격 못 하는 카테고리는 `slugs` 를 선언할 수 없다"* 를 강제하므로 `OTHER`·`CONTRACT_DEFECT`·`other/*` 의 면제가 **스키마에서** 나온다. 원소가 `{slug, note}` 인 것은 `note` 가 봉투의 화물이기 때문이다: 한 카테고리를 여러 스킬이 가로질러 내므로(실측 — `DOC_CODE_DRIFT` 18건은 arch 7·data 5·sec 3 이 냈고 `docs` 는 0건이다) 이름만 나열하면 리뷰어가 뜻을 모른 채 고른다. **카테고리를 가로지르는 슬러그 중복은 허용한다** — `rule_key` 가 category 를 포함하므로 다른 규칙이고, 금지하면 없는 제약이 된다.
+
+원래 여기 적혀 있던 것은 *"슬러그가 없는 자유 서술(리뷰어·code-review)은 제목마다 갈려 임계에 **영원히** 닿지 않는다 … 결함이 아니라 정의의 결과다"* 였다. **틀린 문장이 아니라 좁은 문장이었다** — 그때는 통제 어휘가 `trace_contract.CATEGORY` 라는 코드 안의 집합뿐이었고, "정의의 결과" 는 *리뷰어에게 어휘를 줄 수 없다* 는 전제 위에 서 있었다. 그 전제를 데이터가 무너뜨렸다: 원장 65관측을 읽으니 군집이 실재했고(`nothing_locked` 7관측이 3런을 가로지른다) 리뷰어 스킬의 「볼 것」 표가 이미 완비 집합이었다. §5.1 의 이 정정은 [[ADR-H034]] 가 자기 앞 문장을 고친 방식과 같다 — **실측이 원인을 가른 뒤에 정정한다.**
 
 원래 여기 적혀 있던 것은 *"승격의 축은 제목이지 카테고리가 아니다"* 였다. **틀린 문장이 아니라 좁은 문장이었다** — 그때는 슬러그라는 것이 없어 제목이 유일한 축이었고, 원장 168줄 · 6런이 후보 0을 낼 때까지 그 좁음이 드러나지 않았다. 실측이 원인을 가른 뒤에 정정한다 (`NAMING` 86관측 / 84버킷 — 전부 `out_of_contract` 하나였다).
 
@@ -898,7 +904,7 @@ gap 은 effort 와 **따로 센다**:
  "target_role":"impl","title_norm":"…",
  "resolution":"repaired|deferred|dropped_by_enforcement|warn_only","repaired_by":"main|agent",
  "reported_by":["{code}"],"source":"reviewer|code-review|external|human|contract-trace",
- "rule_slug":"out_of_contract","rule_key":"…","ts":"…"}
+ "rule_slug":"doc_contradicts_code","rule_key":"…","ts":"…"}
 ```
 
 원장은 이 파일 **하나뿐**이다(append-only라 머지 충돌이 자명하게 union). 집계 파일은 두지 않고 **매번 재계산**한다 — 수백 줄 규모라 밀리초고, 파생 파일을 두면 동기화 버그만 생긴다.
@@ -912,7 +918,16 @@ gap 은 effort 와 **따로 센다**:
 | 05 단조성 · `review.merge` 2인 합치 · 07 의 `escaped_05` 대조 · `observations` 접기 신원 | `finding_key` | 묻는 것이 "05 가 이미 낸 **바로 그** 지적인가" 다. 규칙으로 접으면 새 인스턴스가 dupe 로 삼켜지고 수리하는 쪽이 무엇을 고칠지 모른다 |
 | `stage_promotions` 버킷 · `_by_category` 의 `distinct_keys` · `state.promotions` 행의 신원 | `rule_key` | 묻는 것이 "무엇이 반복되는 유형인가" 다 |
 
-**`rule_slug` 는 아무나 못 준다.** `ledger.append` 가 `source == "contract-trace"` 인 행에서만 받는다 — 그쪽 어휘가 `trace_contract.CATEGORY` 라는 **코드 안의 닫힌 집합**이라 모델이 그 자리에서 지어낼 수 없기 때문이다. 다른 생산자가 준 슬러그는 **거부가 아니라 폴백**이다(그 행 자체는 정상 관측이다). 반면 형태(`^[a-z][a-z0-9_]*$`)가 어긋난 슬러그는 생산자가 스스로 깨진 것이라 **exit 8** 이다 — 어휘 밖 `category`·`resolution` 을 조용히 받지 않는 것과 같은 자리다. "모델의 자진 신고는 받되 대조한다" 와 같은 결이다.
+**`rule_slug` 는 아무나 못 준다.** `ledger.append` 가 `source` 를 `contract-trace`·`reviewer`·`code-review` 셋으로 한정한다. `external`(봇 요약)과 `human` 은 **봉투가 어휘를 찍어 준 적이 없어** 대조할 것이 없으므로 그쪽 슬러그는 **거부가 아니라 폴백**이다(그 행 자체는 정상 관측이다). 반면 형태(`^[a-z][a-z0-9_]*$`)가 어긋난 슬러그는 생산자가 스스로 깨진 것이라 **exit 8** 이다 — 실패(시스템이 못 함)와 데이터 없음을 안 뭉개는 규율이 승격 입력에도 그대로 선다.
+
+**보증의 종류가 C5 에서 바뀌었다 — 약해졌고, 그것을 적는다** (ADR-H035). `trace_contract.CATEGORY` 는 **코드에서** 닫혀 생산자가 다른 값을 *낼 수 없다.* `taxonomy.json` 의 `slugs` 는 **데이터에서** 닫히고 검사로 강제되어, 생산자는 무엇이든 내고 *exit 8 을 받는다.* 즉 슬러그의 보증은 이제 `category` 가 M46 이후 갖고 있던 것과 **정확히 같다** — 더 강하지도 약하지도 않다. C4 의 *"모델이 지어낼 수 없다"* 는 *"모델이 지어내면 exit 8 을 받는다"* 로 정정된다. 남는 잔여 위험은 **어휘 안에서 틀린 것을 고르는 것**이고 제거되지 않는다.
+
+**어휘를 막는 층과 신뢰 경계를 막는 층이 다르다** (M46 의 2층 규율).
+
+| 층 | 막는 것 | 안 막는 것 | 왜 |
+|---|---|---|---|
+| `review.check` ②-c · `_record_07` 검증 루프 | **어휘 대조** — 어휘 밖과 누락 | — | 위반한 **그 제출자**가 `attempts` 예산과 강등 경로를 탄다. 병합 뒤에 돌면 엉뚱한 사람이 맞고 스스로 빠져나올 수 없다 |
+| `ledger.append` / `_accept_slug` | **신뢰 경계**(source)와 **형태**(shape) | **어휘 대조** | 05 밖 경로(07·trace)의 마지막 방어선이라 **동작해야** 한다. 여기서 어휘를 강제하면 `contract-trace` 의 `out_of_contract` 를 `NAMING.slugs` 에 적어야 하고, 두 생산자의 어휘가 한 배열에서 섞인다 |
 
 **승격 행은 접은 인스턴스를 전부 싣는다** (`finding_keys`). 대표 하나만 실으면 런마다 다른 인스턴스가 신원 행세를 해서 같은 규칙이 두 승격 행으로 갈라진다 — `merge_staged` 가 합치지 못하고 `resolve_target` 이 옛 행을 못 찾는다.
 

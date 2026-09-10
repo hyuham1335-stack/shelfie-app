@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_note": "스택 비종속 코드만 시드로 배포한다. 프로젝트가 코드를 **추가**하는 것은 자유이고, doctor 와 lint-phases 가 유니크·어휘·rule 참조 실재를 검증한다. status 가 active 이고 enforceable 이 prose 가 아닌 것만 05 의 '검토 제외' 목록에 들어간다 — 기계 강제 규칙이 늘수록 05 가 자동으로 싸지고 좁아진다.",
+  "_note": "스택 비종속 코드만 시드로 배포한다. 프로젝트가 코드를 **추가**하는 것은 자유이고, doctor 와 lint-phases 가 유니크·어휘·rule 참조 실재를 검증한다. status 가 active 이고 enforceable 이 prose 가 아닌 것만 05 의 '검토 제외' 목록에 들어간다 — 기계 강제 규칙이 늘수록 05 가 자동으로 싸지고 좁아진다. `slugs` 는 승격 축의 통제 어휘다 (ADR-H035): 선언한 카테고리는 그중 하나를 **필수로** 받고, 안 선언한 카테고리는 면제다. **카테고리를 가로지르는 슬러그 중복은 허용한다** — rule_key 가 category 를 포함하므로 다른 규칙이고, 금지하면 없는 제약이 된다. 승격 못 하는 카테고리는 슬러그를 선언할 수 없다.",
   "categories": [
     {
       "code": "BOUNDARY_VIOLATION",
@@ -66,7 +66,25 @@
       "code": "TEST_MISSING_FAILURE_PATH",
       "enforceable": "prose",
       "status": "active",
-      "note": "실패 경로가 테스트되지 않았다"
+      "note": "실패 경로가 테스트되지 않았다",
+      "slugs": [
+        {
+          "slug": "nothing_locked",
+          "note": "구현을 되돌려도 이 테스트가 빨간불이 안 된다"
+        },
+        {
+          "slug": "asserts_implementation",
+          "note": "단언이 구현의 내부 구조(호출 순서·내부 상태)를 따라간다. 모킹이 너무 깊은 것도 여기다"
+        },
+        {
+          "slug": "boundary_untested",
+          "note": "0 · 빈 값 · 상한 · 하나 넘김이 안 잠겼다"
+        },
+        {
+          "slug": "failure_path_untested",
+          "note": "계약이 말한 예외가 테스트되지 않았다"
+        }
+      ]
     },
     {
       "code": "CONTRACT_DEFECT",
@@ -78,7 +96,29 @@
       "code": "DOC_CODE_DRIFT",
       "enforceable": "prose",
       "status": "active",
-      "note": "문서·주석이 코드가 말하는 사실과 어긋난다. 기계가 못 막는다 — 어느 문장이 어느 상수를 참칭하는지는 판정이다"
+      "note": "문서·주석이 코드가 말하는 사실과 어긋난다. 기계가 못 막는다 — 어느 문장이 어느 상수를 참칭하는지는 판정이다",
+      "slugs": [
+        {
+          "slug": "doc_contradicts_code",
+          "note": "문서·주석이 코드가 하는 일과 다른 것을 말한다"
+        },
+        {
+          "slug": "same_fact_two_places",
+          "note": "같은 사실이 두 곳에 각각 적혀 갈라졌다"
+        },
+        {
+          "slug": "estimate_as_measured",
+          "note": "재지 않은 값이 실측처럼 적혔다"
+        },
+        {
+          "slug": "skip_as_pass",
+          "note": "수행하지 않은 것이 통과한 것처럼 적혔다"
+        },
+        {
+          "slug": "dead_reference",
+          "note": "링크·경로·심볼 이름이 실재하지 않는다"
+        }
+      ]
     },
     {
       "code": "OTHER",

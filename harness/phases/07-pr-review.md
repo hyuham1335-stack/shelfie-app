@@ -143,7 +143,10 @@ python scripts/pipeline/cli.py promote --scan --run-id {run_id}
 
 
 `{run_dir}/07_pr_review.json` 하나를 내고 `record --phase 07` 을 부른다.
-finding 은 **05 와 같은 스키마**를 쓴다.
+finding 은 **05 와 같은 스키마**를 쓴다 — **`rule_slug` 규칙도 같다.** 어휘를
+선언한 `category` 는 봉투의 「규칙 슬러그」 절에서 하나를 골라야 하고, 안 적거나
+어휘 밖을 적으면 제출이 exit 8 로 되돌아온다. 05 와 07 이 같은 결함에 다른 축을
+쓰면 `escaped_05` 계수가 그 경계에서 어긋난다.
 
 ```json
 {"external": {"status": "reviewed|disabled|not_a_review|timeout", "major": 0},
@@ -151,6 +154,7 @@ finding 은 **05 와 같은 스키마**를 쓴다.
  "findings": [
    {"id": "G-1", "category": "AUTHZ_MISSING_RULE", "severity": "major",
     "target_role": "impl", "title": "…", "path": "…", "line": 34,
+    "rule_slug": "어휘를 선언한 category 에서만 · 봉투의 「규칙 슬러그」 절 참고",
     "quote": "원문의 부분문자열", "source": "external|code-review|human",
     "evidence": "…", "suggestion": "…",
     "reraised_from_previous": "05 의 열린 지적 키 (같은 결함일 때만)"}],

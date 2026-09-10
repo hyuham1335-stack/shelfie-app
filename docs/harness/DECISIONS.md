@@ -1591,9 +1591,28 @@ graph LR
 든다 — `CoreDoesNotImportTheExecutorTest` 가 `CoreHasNoStackNamesTest` 옆에 앉는다.
 
 **승인 우회는 따라가지 않는다.** `_invoke_claude`·`_execute_single_step`·`RunningFile`
-은 전부 실행기에 남고, 옮긴 다섯 중 어느 것도 `subprocess` 를 부르지 않는다. 추출본에
-대해 `git grep "dangerously-skip-permissions" $(git rev-list --all)` 가 빈 출력인지로
-이것을 기계가 확인한다.
+은 전부 실행기에 남고, 옮긴 다섯 중 어느 것도 `subprocess` 를 부르지 않는다.
+
+**이 보증의 첫 문구는 틀렸고 추출이 그것을 잡았다.** 처음에는
+`git grep "dangerously-skip-permissions" $(git rev-list --all)` 가 **빈 출력**이어야
+한다고 적었는데, 실제로는 **66건**이 나왔다. 전부 `DECISIONS.md`·`ROADMAP.md` 가
+*"이 플래그를 왜 안 싣는가"* 를 설명하는 산문이고 — [[ADR-H005]] · ROADMAP §6 항목
+36 · 이 ADR 자신 — **그것들은 템플릿에 있어야 맞다.** 이유를 지우면 클론하는 사람이
+왜 실행기가 없는지 모른다.
+
+검사가 **코드와 그 코드를 설명하는 산문을 같은 것으로 셌다.** 같은 세션에서
+`CoreHasNoStackNamesTest` 가 이 ADR 의 초고 docstring 이 인용한 상수 이름을 잡은 것과
+정확히 같은 모양이고, 그때는 자물쇠가 옳았지만 이번에는 **문구가 틀렸다.** 둘의
+차이는 대상이다 — 스택 이름은 코어 어디에도 없어야 하고, 승인 우회는 **코드에** 없어야
+한다. 그래서 보증을 실행 가능한 파일로 좁힌다:
+
+```bash
+git grep -I -l "dangerously-skip-permissions" $(git rev-list --all)   -- '*.py' '*.json' '*.yml' '*.yaml' '*.sh'          # 0건
+git grep -I -l -E '"claude",[[:space:]]*"-p"' $(git rev-list --all)   # 0건
+```
+
+**둘 다 실측 0 이다.** 방침은 지켜졌고 틀린 것은 그것을 재는 자였다. 예측을 먼저
+적었기 때문에 이 구분이 사후 합리화가 아니라 채점으로 남는다.
 
 **`state.RunningFile` 재수출은 옮기지 않고 지웠다** — 리포 전체에 소비자가 0 이었다.
 옮겼다면 죽은 코드를 템플릿의 첫 커밋에 실을 뻔했다.
@@ -1656,6 +1675,18 @@ graph LR
 | `test_harness.py::RealRepoTest::test_doctor_passes_on_this_repo` | `adapters/nextjs-ts.json` 의 `requires` 가 `package.json` 을 요구한다 | **E** |
 | `test_harness.py::RealRepoTest::test_cli_exit_code` | 같은 것을 subprocess 로 다시 묻는다 | **E** |
 | `test_pipeline.py::TestDoctorRemote::test_실물_리포에서_원격_검사가_통과한다` | `_check_remote` 가 `origin` 을 요구하는데 `filter-repo` 가 그것을 지운다 | **G** |
+
+**셋 다 그대로 나왔고 넷째는 없었다 (실측 · 2026-09-10).** 추출본은
+**815 통과 · 3 실패 · 2 skip**, 수집 에러 **0**, `lint-phases` **exit 0** 이다.
+수집 에러 0 이 이 증분의 값이다 — 실행기 의존을 안 끊었으면 `test_pipeline.py` 712 건이
+여기서 전멸했고 D 는 채점할 것 자체가 없었다.
+
+skip 둘은 **양쪽 리포에서 같다** — `_workspace/` 가 `.gitignore` 대상이라 P8 런
+디렉터리가 어느 쪽에도 없다. **skip 은 통과가 아니고**, 그 사실을 그대로 적는다
+([[ADR-H007]] 과 같은 결).
+
+**실측 요약**: 커밋 362 → **187** · 파일 **69** · 테스트 **820**(원본 1,005 에서
+`test_execute.py` 185 를 뺀 값과 같다).
 
 **`npm test` 는 추출본에 없고, 그 자리를 아무것도 대신하지 않는다.** 그것이 재던 것은
 *"하네스 변경이 파일럿 앱을 안 깨뜨렸다"* 이고 추출본에는 파일럿 앱이 없다. 대신 이

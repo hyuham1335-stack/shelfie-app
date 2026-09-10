@@ -1,0 +1,45 @@
+# harness-template 추출 범위 — 포함 목록 (ADR-H037)
+#
+# `git filter-repo --paths-from-file harness/keep-paths.txt` 로 먹인다.
+# 배제 목록이 아니라 **포함 목록**인 이유: 배제에서 한 줄을 빠뜨리면
+# Shelfie 파일이 조용히 새고, 포함에서 빠뜨리면 파일이 없어져 pytest 가
+# 시끄럽게 죽는다. 이 리포는 조용한 통과를 막는 쪽을 고른다.
+#
+# `--path` 는 정확 경로 또는 디렉터리 접두부로 매칭한다. 접두부이므로
+# 과거에 지워진 파일도 따라온다 — 그것이 이력 보존의 뜻이다.
+#
+# 이 목록 안에 살지만 빼야 하는 것(실행기 계열)은 2차 패스가 --invert-paths
+# 로 걷어낸다. 한 번의 호출에서 포함과 배제를 섞을 수 없기 때문이다.
+
+# ── 계약 계층 · 8페이즈 · 어댑터 · 프로파일
+harness
+
+# ── 파이프라인 코어와 공유 원시요소
+scripts/pipeline
+scripts/harness.py
+scripts/runtime.py
+scripts/session_log.py
+
+# ── 테스트 슈트 (test_execute.py 는 2차 패스가 뺀다)
+scripts/test_pipeline.py
+scripts/test_harness.py
+scripts/test_runtime.py
+scripts/fixtures
+
+# ── 하네스 자신의 문서. docs/ 직속 6종은 프로젝트가 채우는 자리라 안 간다 (ADR-H002)
+docs/harness
+
+# ── 리뷰어·워커·진입점. skills/{harness,review} 는 2차 패스가 뺀다
+.claude/agents
+.claude/commands
+.claude/skills/architecture-reviewer
+.claude/skills/data-layer-reviewer
+.claude/skills/docs-reviewer
+.claude/skills/security-reviewer
+.claude/skills/test-quality-reviewer
+.claude/settings.json
+
+# ── 루트. CLAUDE.md 는 `## 작업 원칙` 넷의 출처라 싣고 F 가 나머지를 비운다.
+#    .gitignore 는 _workspace/ 무시가 없으면 doctor 가 FAIL 이라 싣는다.
+CLAUDE.md
+.gitignore

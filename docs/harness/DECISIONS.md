@@ -1541,4 +1541,188 @@ flowchart TD
 
 ---
 
+### ADR-H037: 추출은 실행기를 안 싣고, 코어는 실행기를 안 문다
+
+**2026-09-10 · 추출 (세션 D)**
+
+**맥락 — 방침과 코드가 정반대를 말하고 있었다.** [ROADMAP](ROADMAP.md) §6 항목 36 은
+추출 범위에서 *"순차 실행기(`scripts/execute.py` 계열)는 뺀다"* 고 적는다. 이유는
+`claude -p --dangerously-skip-permissions` 를 헤드리스로 띄우는 승인 우회를 클론하는
+사람이 물려받게 하지 않기 위해서다. **그런데 8페이즈 코어가 그 실행기를 import 하고
+있었다** — `state.py`·`cli.py`·`session_log.py` 셋이다.
+
+`state.py` 의 import 는 **모듈 최상위**라, 그대로 추출하면 `test_pipeline.py` 가 수집
+단계에서 죽고 **712 건이 전멸한다.** 즉 세션 D 가 *"추출이 됐다"* 고 말할 게이트가
+하나도 안 남는다. [[ADR-H031]] 이 `A` 를 닫으며 세운 게이트 1번(*"코어에 스택 고유명사
+0건"*)과 같은 층의 문제인데 자물쇠가 없었다.
+
+**결정 — 공유 원시요소를 코어 소유의 모듈로 내리고 실행기가 그것을 읽는다.**
+
+`scripts/runtime.py` 를 신설해 아래 다섯을 든다. 전부 인스턴스 상태를 안 쓰는
+**읽기 헬퍼**다.
+
+| 옮긴 것 | 쓰는 쪽 |
+|---|---|
+| `TZ` | `state.stamp` · `StepExecutor` |
+| `TRANSCRIPT_ROOT` | 리더 둘 · `session_log` |
+| `force_utf8_output()` (+ import 시 호출) | `cli.py`·`session_log.py`·`execute.py` 의 출력 |
+| `read_cost_state()` | `cli.run_cost` · 실행기 |
+| `read_session_metrics()` | `session_log` · 실행기 |
+
+`execute.py` 는 이것을 읽고 **얇은 별칭만** 남긴다
+(`_read_cost_state = staticmethod(runtime.read_cost_state)`). 실행기 안의 호출부와
+`test_execute.py` 185 건을 안 건드리려는 것이다.
+
+```mermaid
+graph LR
+  subgraph before["전 — 코어가 실행기를 문다"]
+    C1["pipeline/state.py<br/>pipeline/cli.py<br/>session_log.py"] -->|import execute| E1["execute.py<br/>(승인 우회 포함)"]
+  end
+  subgraph after["후 — 둘 다 원시요소를 문다"]
+    C2["pipeline/state.py<br/>pipeline/cli.py<br/>session_log.py"] -->|import runtime| R["runtime.py<br/>TZ · 트랜스크립트 리더 · 인코딩"]
+    E2["execute.py<br/>(승인 우회 포함)"] -->|import runtime| R
+  end
+  after -.->|추출은 이 선에서 자른다| T["harness-template<br/>= 코어 + runtime"]
+```
+
+**[[ADR-H031]] 과 방향만 반대이고 규율은 같다.** 그쪽은 스택 이름 목록을 코어에서
+어댑터 **선언**으로 내렸고, 이쪽은 트랜스크립트 읽기를 실행기에서 코어 쪽 **모듈**로
+내린다. 둘 다 *"지식은 그것을 소유해야 할 계층에 둔다"* 이고, 둘 다 자물쇠가 회귀를
+든다 — `CoreDoesNotImportTheExecutorTest` 가 `CoreHasNoStackNamesTest` 옆에 앉는다.
+
+**승인 우회는 따라가지 않는다.** `_invoke_claude`·`_execute_single_step`·`RunningFile`
+은 전부 실행기에 남고, 옮긴 다섯 중 어느 것도 `subprocess` 를 부르지 않는다.
+
+**이 보증의 첫 문구는 틀렸고 추출이 그것을 잡았다.** 처음에는
+`git grep "dangerously-skip-permissions" $(git rev-list --all)` 가 **빈 출력**이어야
+한다고 적었는데, 실제로는 **66건**이 나왔다. 전부 `DECISIONS.md`·`ROADMAP.md` 가
+*"이 플래그를 왜 안 싣는가"* 를 설명하는 산문이고 — [[ADR-H005]] · ROADMAP §6 항목
+36 · 이 ADR 자신 — **그것들은 템플릿에 있어야 맞다.** 이유를 지우면 클론하는 사람이
+왜 실행기가 없는지 모른다.
+
+검사가 **코드와 그 코드를 설명하는 산문을 같은 것으로 셌다.** 같은 세션에서
+`CoreHasNoStackNamesTest` 가 이 ADR 의 초고 docstring 이 인용한 상수 이름을 잡은 것과
+정확히 같은 모양이고, 그때는 자물쇠가 옳았지만 이번에는 **문구가 틀렸다.** 둘의
+차이는 대상이다 — 스택 이름은 코어 어디에도 없어야 하고, 승인 우회는 **코드에** 없어야
+한다. 그래서 보증을 실행 가능한 파일로 좁힌다:
+
+```bash
+git grep -I -l "dangerously-skip-permissions" $(git rev-list --all)   -- '*.py' '*.json' '*.yml' '*.yaml' '*.sh'          # 0건
+git grep -I -l -E '"claude",[[:space:]]*"-p"' $(git rev-list --all)   # 0건
+```
+
+**둘 다 실측 0 이다.** 방침은 지켜졌고 틀린 것은 그것을 재는 자였다. 예측을 먼저
+적었기 때문에 이 구분이 사후 합리화가 아니라 채점으로 남는다.
+
+**`state.RunningFile` 재수출은 옮기지 않고 지웠다** — 리포 전체에 소비자가 0 이었다.
+옮겼다면 죽은 코드를 템플릿의 첫 커밋에 실을 뻔했다.
+
+**`TZ` 의 KST 하드코딩은 옮기기만 하고 매개변수화하지 않는다.** 옮기면서 동시에
+고치면 회귀가 났을 때 어느 쪽이 원인인지 못 가른다. 세션 E 로 넘긴다.
+
+---
+
+**결정 2 — 추출 범위는 배제 목록이 아니라 포함 목록으로 적는다.**
+
+`keep-paths.txt` 를 이 커밋에 함께 남기고 `git filter-repo --paths-from-file` 로
+먹인다. **배제 목록에서 한 줄을 빠뜨리면 Shelfie 파일이 조용히 새고, 포함 목록에서
+빠뜨리면 파일이 없어져 pytest 가 시끄럽게 죽는다.** 이 리포의 규율은 조용한 통과를
+막는 쪽이고([[ADR-H022]] 와 같은 결), 목록이 커밋된 산출물이라 이 문서가 인용할 수
+있다는 값도 같이 온다.
+
+`.claude/skills/{harness,review}/` 는 **뺀다.** 전자는 전문이 순차 실행기 워크플로이고
+`execute.py` 를 열두 줄에서 부른다 — ROADMAP §6 항목 36 이 *"클론하는 사람이
+가드레일이 자동 주입된다고 오해한다"* 며 경고한 바로 그 오해를 이 파일이 그대로
+심는다. 후자는 없는 `/docs/ARCHITECTURE.md` 를 읽으라 지시한다. 코어 어디도 둘을
+안 부른다.
+
+**실측 데이터(`ledger/findings.jsonl` 168줄 · `pipeline/runs/*.md` 6장 ·
+`calibration.json`)는 이력에 싣는다.** 팁에서 지울지는 세션 F 가 정한다. 비대칭이
+명확하기 때문이다 — `--path` 에서 빼면 그 결정이 **되돌릴 수 없이** 선점되고, 넣어
+두면 F 가 팁에서 지워도 이력이 남는다.
+
+---
+
+**결정 3 — 이력을 보존한다는 것이 무엇을 뜻하는지 적는다.**
+
+**고쳐지는 것은 팁뿐이다.** 과거 커밋의 `state.py` 는 없는 `execute` 를 import 하고,
+과거 `config.json` 은 `"shelfie"` 와 `src/**` 를 담는다. **옛 커밋을 체크아웃하면 안
+돈다.** 이것은 결함이 아니라 이력의 정의인데, 안 적으면 클론하는 사람이 결함으로
+읽는다.
+
+**새로 공개되는 정보는 0 이다.** `shelfie-app` 이 이미 public 이므로(2026-09-01 생성)
+*"이력을 보존하면 Shelfie 내용이 새로 노출된다"* 는 걱정은 성립하지 않는다. 남는 것은
+템플릿 클론이 남의 앱 이력을 읽게 된다는 미학 문제뿐이다. 세션 G 가 push 앞에서 이
+문단을 다시 읽을 것이다.
+
+**§284 의 거울상이 여기서 확정된다.** 추출이 실행기를 빼므로 **템플릿에는 `CLAUDE.md`
+를 프롬프트에 넣는 코드가 없다.** 이 리포에서 그 일을 하는 것은 실행기의
+`_load_guardrails` 하나뿐이고([[ADR-H008]]), 남는 8페이즈 코어는
+`harness/config.json` 의 `instruction_file` 선언으로 **가리키기만** 한다. 세션 F 가
+시드 주석에 적기로 한 그 사실의 기계적 근거가 이것이다.
+
+---
+
+**대상 리포와 그 주소를 여기 적는다** — <https://github.com/hyuham1335-stack/harness-template>
+(2026-09-08 생성 · public · 실 ref 없음). 같은 계정에 `project-harness` 라는 **별개**
+public 리포가 있어(2026-09-01) 이름만으로는 가른 적이 없다. **추출본에는 리모트가
+없다** — `filter-repo` 가 `origin` 을 지웠고 D 는 다시 붙이지 않았다. 붙이는 것과
+push 는 세션 G 의 몫이고(`ROADMAP` §6 항목 36 의 *"push 는 G 에서 한 번만"*), G 는
+`git remote add origin <위 주소>` 로 시작한다.
+
+**지금 push 하지 않는 이유를 실측으로 적는다.** 추출본은 스크럽(E) 전이라
+`harness/config.json` 이 `"shelfie"`·`adapter: nextjs-ts`·`roles[].owns: src/**` 를 그대로
+담고 있고 테스트 셋이 빨간불이다. 그 상태가 public 에 나가면 되돌릴 수 없다.
+
+**세션 D 는 여기서 멈춘다.** 추출본에 **커밋을 하나도 만들지 않는다.** "리포 골격"은
+`filter-repo` 가 만든 트리 그 자체이고, 손으로 얹는 것은 E·F 의 몫이다. 예측한
+빨간불을 D 가 고치면 그 순간 D 와 E 의 경계가 사라진다.
+
+**빨간불 셋을 실행 전에 적는다 — 이것이 D 의 채점 기준이다.** 추출본의 `pytest` 는
+초록불이 **아니고**, 아래 셋 말고 다른 것이 빨개지면 D 를 닫지 않는다.
+
+| 예상 실패 | 왜 | 누가 닫나 |
+|---|---|---|
+| `test_harness.py::RealRepoTest::test_doctor_passes_on_this_repo` | `adapters/nextjs-ts.json` 의 `requires` 가 `package.json` 을 요구한다 | **E** |
+| `test_harness.py::RealRepoTest::test_cli_exit_code` | 같은 것을 subprocess 로 다시 묻는다 | **E** |
+| `test_pipeline.py::TestDoctorRemote::test_실물_리포에서_원격_검사가_통과한다` | `_check_remote` 가 `origin` 을 요구하는데 `filter-repo` 가 그것을 지운다 | **G** |
+
+**셋 다 그대로 나왔고 넷째는 없었다 (실측 · 2026-09-10).** 추출본은
+**815 통과 · 3 실패 · 2 skip**, 수집 에러 **0**, `lint-phases` **exit 0** 이다.
+수집 에러 0 이 이 증분의 값이다 — 실행기 의존을 안 끊었으면 `test_pipeline.py` 712 건이
+여기서 전멸했고 D 는 채점할 것 자체가 없었다.
+
+skip 둘은 **양쪽 리포에서 같다** — `_workspace/` 가 `.gitignore` 대상이라 P8 런
+디렉터리가 어느 쪽에도 없다. **skip 은 통과가 아니고**, 그 사실을 그대로 적는다
+([[ADR-H007]] 과 같은 결).
+
+**실측 요약**: 커밋 362 → **187** · 파일 **69** · 테스트 **820**(원본 1,005 에서
+`test_execute.py` 185 를 뺀 값과 같다).
+
+**`npm test` 는 추출본에 없고, 그 자리를 아무것도 대신하지 않는다.** 그것이 재던 것은
+*"하네스 변경이 파일럿 앱을 안 깨뜨렸다"* 이고 추출본에는 파일럿 앱이 없다. 대신 이
+증분이 shelfie-app 안에서 그것을 이미 쟀다(앱 1,460). *"게이트가 없어졌다"* 와
+*"게이트를 다른 데서 통과했다"* 를 같은 칸에 넣지 않는다.
+
+**트레이드오프**:
+
+- **최상위 모듈이 하나 는다.** `scripts/` 는 이미 `harness.py`·`execute.py`·
+  `session_log.py` 셋인데 넷이 된다. 대안이던 *"`harness.py` 에 넣는다"* 는 계약
+  계층과 실행·관측 계층의 경계를 흐려서 버렸다
+- **별칭이 남는다.** `execute.py` 의 `_read_cost_state` 등은 이제 정의가 아니라
+  재수출이라, 그 이름을 따라간 사람이 한 번 더 점프해야 한다. 남는 185 테스트와
+  호출부를 안 건드리는 값이 그보다 컸다
+- **`git-filter-repo` 는 새로 깔리는 외부 도구다.** 검증한 것은 *"명령이 만든 결과
+  트리"* 이지 *"도구가 옳다"* 가 아니다. `git log -- <drop 경로>` 가 빈 출력인지로
+  대리 검증한다
+
+**재검토 시점**: 세션 G 가 push 하기 직전. 그때 위 빨간불 셋이 E·F 를 거쳐 몇 개
+남았는지가 이 결정의 채점표다.
+
+관련: [[ADR-H031]](같은 수법을 코어의 스택 이름에 먼저 썼다) · [[ADR-H003]](추출을
+파일럿 완주 후로 미룬 결정 — 그 조건이 채워졌다) · [[ADR-H005]](옮기지 않기로 한
+승인 우회가 사는 자리) · [[ADR-H008]](`CLAUDE.md` 주입이 실행기에만 있다는 사실)
+
+---
+
 ### ADR-H00N: {다음 결정}

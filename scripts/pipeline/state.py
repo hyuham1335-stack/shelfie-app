@@ -21,13 +21,14 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))            # 형제 모듈
-sys.path.insert(0, str(_HERE.parent))     # scripts/harness.py · execute.py
+sys.path.insert(0, str(_HERE.parent))     # scripts/harness.py · runtime.py
 
 import harness  # noqa: E402  — 소유 판정·스키마 검증·doctor 의 단일 출처
-import execute  # noqa: E402  — RunningFile · TZ. import 만으로 UTF-8 출력이 강제된다
+import runtime  # noqa: E402  — TZ. import 만으로 UTF-8 출력이 강제된다
 
-RunningFile = execute.RunningFile
-TZ = execute.StepExecutor.TZ
+# 코어는 순차 실행기를 물지 않는다 — 템플릿이 그것을 안 싣기 때문이다
+# (ADR-H037). RunningFile 재수출은 소비자가 없어 여기서 지웠다.
+TZ = runtime.TZ
 STAMP_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
 WORKSPACE_REL = "_workspace"

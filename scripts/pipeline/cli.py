@@ -27,7 +27,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))            # 형제 모듈
-sys.path.insert(0, str(_HERE.parent))     # scripts/harness.py · execute.py
+sys.path.insert(0, str(_HERE.parent))     # scripts/harness.py · runtime.py
 
 import harness  # noqa: E402  — 소유 판정·스키마 검증·doctor 의 단일 출처
 import state as st  # noqa: E402
@@ -3333,7 +3333,7 @@ def run_cost(root, run_id=None, transcript_root=None):
     못 잰 것이 "무관하다" 는 주장으로 바뀐다.
     `commits_since.kind` 가 기준을 같은 줄에 적는 것과 같은 규율이다.
     """
-    import execute            # run_report 가 report 를 부르는 것과 같은 자리다
+    import runtime            # run_report 가 report 를 부르는 것과 같은 자리다
 
     root = Path(root)
     paths, s = st.load(root, run_id)
@@ -3385,7 +3385,7 @@ def run_cost(root, run_id=None, transcript_root=None):
     for cell in sessions:
         if cell.get("basis") != "touched":
             continue
-        got = execute.StepExecutor._read_cost_state(
+        got = runtime.read_cost_state(
             cell["session_id"], transcript_root=transcript_root)
         if not got:
             unread += 1

@@ -32,7 +32,7 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE / "pipeline"))
 
 import harness                # noqa: E402  — _git 단일 출처
-import execute                # noqa: E402  — 트랜스크립트 집계 · UTF-8 강제
+import runtime                # noqa: E402  — 트랜스크립트 집계 · UTF-8 강제
 import state as st            # noqa: E402  — stamp · _vcs_baseline · RUNS_REL
 
 LEDGER_REL = "docs/pipeline-ledger.jsonl"
@@ -306,7 +306,7 @@ def _session_metrics(hook_input, transcript_root):
     root = transcript_root
     if root is None:
         tp = (hook_input or {}).get("transcript_path")
-        root = Path(tp).parent.parent if tp else execute.TRANSCRIPT_ROOT
+        root = Path(tp).parent.parent if tp else runtime.TRANSCRIPT_ROOT
     root = Path(root)
     try:
         found = sorted(root.glob("*/%s.jsonl" % sid))
@@ -321,7 +321,7 @@ def _session_metrics(hook_input, transcript_root):
     if size > TRANSCRIPT_MAX_BYTES:
         # 읽지 않은 것과 값이 없는 것은 다르다.
         return {"metrics_skipped": "transcript_too_large", "bytes": size}
-    return execute.StepExecutor._read_session_metrics(sid, transcript_root=root) or None
+    return runtime.read_session_metrics(sid, transcript_root=root) or None
 
 
 # ------------------------------------------------------------------------ 수집
@@ -386,7 +386,7 @@ def append(root, record):
 # --------------------------------------------------------------------- 진입점
 
 def main(argv=None, stdin=None, root=None):
-    execute._force_utf8_output()
+    runtime.force_utf8_output()
     parser = argparse.ArgumentParser(description="세션 종료 사실을 원장에 남긴다")
     parser.add_argument("--from-hook", action="store_true",
                         help="stdin 으로 훅 JSON 을 받는다")

@@ -309,6 +309,39 @@ class CoreHasNoStackNamesTest(unittest.TestCase):
                          "스택 이름 목록이 실행기 코드로 돌아왔다 — 선언은 어댑터가 든다 (ADR-H031)")
 
 
+class CoreDoesNotImportTheExecutorTest(unittest.TestCase):
+    """추출 게이트의 자물쇠 — 8페이즈 코어가 순차 실행기를 다시 물면 안 된다.
+
+    `harness-template` 은 `scripts/execute.py` 를 안 싣는다 (ROADMAP 36).
+    코어가 그것을 import 하면 추출본은 **테스트 수집 단계에서** 죽는다 —
+    `state.py` 의 import 가 모듈 최상위라 `test_pipeline.py` 전체가 error 다.
+    실행기 없이 도는지는 추출해 봐야만 알 수 있는 것이 아니라 **여기서**
+    알 수 있어야 한다 (ADR-H037).
+
+    `NODE_RUNNERS` 자물쇠(위)와 같은 모양이다: 방침을 산문이 아니라 기계가 든다.
+    """
+
+    #: 실행기 자신과 그 입력 형식(`phases/*/index.json`)을 읽는 것들.
+    #: 셋 다 추출 범위 밖이라 execute 를 물어도 템플릿에 영향이 없다.
+    ALLOWED = {"scripts/execute.py", "scripts/backfill_reads.py",
+               "scripts/test_execute.py", "scripts/test_harness.py"}
+
+    def test_only_the_executor_family_imports_execute(self):
+        hits = []
+        for path in sorted((ROOT / "scripts").rglob("*.py")):
+            rel = path.relative_to(ROOT).as_posix()
+            if rel in self.ALLOWED:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith(("import execute", "from execute ")):
+                    hits.append("%s: %s" % (rel, stripped))
+        self.assertEqual([], hits,
+                         "코어가 순차 실행기를 물었다 — 공유 원시요소는 "
+                         "scripts/runtime.py 가 든다 (ADR-H037)")
+
+
 class SchemaValidatorTest(unittest.TestCase):
     """스키마에 적었는데 검사되지 않는 규칙 = 이 계층에서 가장 위험한 조용한 통과."""
 

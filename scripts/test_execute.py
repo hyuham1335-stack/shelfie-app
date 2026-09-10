@@ -2063,14 +2063,16 @@ class TestRunRecordsPull:
         _jsonl(transcripts / "C--some-slug" / "sid-1.jsonl", [
             _tool_use("Bash", "t1"), _tool_result("가" * 4321, "t1"),
         ])
-        with patch.object(ex, "TRANSCRIPT_ROOT", transcripts):
+        # 정의가 runtime 으로 내려갔다 (ADR-H037) — 패치도 그쪽에 건다.
+        with patch.object(ex.runtime, "TRANSCRIPT_ROOT", transcripts):
             run = self._complete(executor, json.dumps({"session_id": "sid-1"}))
         assert run["tool_result_chars"] == 4321
         assert run["session_id"] == "sid-1"
         assert run["reads_source"] == "live"
 
     def test_unmeasurable_pull_creates_no_keys(self, executor, transcripts):
-        with patch.object(ex, "TRANSCRIPT_ROOT", transcripts):
+        # 정의가 runtime 으로 내려갔다 (ADR-H037) — 패치도 그쪽에 건다.
+        with patch.object(ex.runtime, "TRANSCRIPT_ROOT", transcripts):
             run = self._complete(executor, json.dumps({"session_id": "gone"}))
         assert "tool_result_chars" not in run
         assert "reads_source" not in run

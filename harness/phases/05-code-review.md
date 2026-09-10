@@ -153,6 +153,7 @@ python scripts/pipeline/cli.py contract-trace --run-id {run_id}
  "by_checklist":{"{체크리스트 이름}":[
     {"id":"F-1","category":"AUTHZ_MISSING_RULE","severity":"critical|major|minor",
      "target_role":"impl","title":"…","path":"…","line":34,
+     "rule_slug":"어휘를 선언한 category 에서만 · 봉투의 「규칙 슬러그」 절 참고",
      "quote":"raw 원문의 부분문자열","evidence":"…","suggestion":"…"}]},
  "resolved_from_previous":[{"id":"F-2","resolved_by":"…"}],
  "need_more_context":[]}
@@ -165,6 +166,11 @@ python scripts/pipeline/cli.py contract-trace --run-id {run_id}
   exit 8 로 되돌아오고 **어느 finding 이 무엇을 썼는지와 쓸 수 있는 코드 전부**를
   봉투가 보여 준다. 어휘는 아래 「원장 어휘」 절에 있다 — 새 코드가 필요하면
   지어내지 말고 `CONTRACT_DEFECT` 나 `OTHER` 로 내고 그 사실을 evidence 에 적는다
+- **어휘를 선언한 `category` 는 `rule_slug` 가 필수다** — 승격의 축이기 때문이다.
+  어느 카테고리가 그런지와 각 슬러그의 뜻은 봉투의 「규칙 슬러그」 절이 말한다.
+  **슬러그를 지어내지 마라** — 맞는 것이 없으면 `category: OTHER` 로 내고 무엇이
+  없는지를 evidence 에 적는다. 승격이 배우는 것은 "이 자리를 고쳐라" 가 아니라
+  "이 규칙이 반복된다" 이고, 매번 다른 문장은 규칙이 아니다
 - `config.reviewers` 에 없는 `code` 도 거부된다 — 라우팅이 부르지 않은 리뷰어의
   제출은 받지 않는다. **`next` 가 확정한 `planned` 밖이면 exit 8 이다**(델타
   라운드에서는 지목된 한 명 밖이면 그렇다). 분모를 제출자에서 유도하면 누가

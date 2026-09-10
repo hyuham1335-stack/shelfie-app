@@ -260,6 +260,8 @@ def check(root, config, payload, raw_text, previous_open, excluded=None,
                 errors.append(
                     "finding %s: taxonomy 에 없는 category 다 (%r). 쓸 수 있는 "
                     "것: %s" % (f.get("id"), code, allowed))
+                continue
+            errors += slug_errors(f, known[code])
 
     if errors:
         return _fail(errors)
@@ -300,6 +302,39 @@ def check(root, config, payload, raw_text, previous_open, excluded=None,
             "dropped_categories": sorted({f.get("category") for f in dropped}),
             "truncated": truncated}
 
+
+def slug_errors(f, category):
+    """②-c **승격 축의 통제 어휘** (ADR-H035). [오류 문자열].
+
+    **어휘를 선언한 카테고리에서만 필수다.** 전면 선택이면 리뷰어가 그냥 안
+    적어 축이 그대로 자유 서술로 남고, 전면 필수면 `OTHER`·`CONTRACT_DEFECT`
+    처럼 어휘가 없는 곳에 억지 슬러그를 만들게 되어 M46 이 고친 회차 예산
+    소진이 재현되는데 이번엔 **탈출구 자체가 없다.**
+
+    면제 목록을 여기 적지 않는 것이 요점이다 — `validate_taxonomy` 가
+    *"승격 못 하는 카테고리는 slugs 를 선언할 수 없다"* 를 강제하므로
+    면제가 **스키마에서** 나온다. 어휘가 늘어도 이 함수는 안 바뀐다.
+
+    거부 메시지가 `note` 까지 싣는 이유도 실측이다 — `DOC_CODE_DRIFT` 를
+    내는 것은 arch·data·sec 이고 그들은 `docs-reviewer` 의 표를 읽지 않는다.
+    이름만 나열하면 두 슬러그를 언제 가르는지 모른 채 고른다 (M20).
+    """
+    vocab = category.get("slugs") or []
+    if not vocab:
+        return []                       # 어휘를 안 선언한 카테고리는 면제다
+    slug = f.get("rule_slug")
+    known = [s.get("slug") for s in vocab]
+    if slug in known:
+        return []
+    menu = "\n".join("  - `%s` — %s" % (s.get("slug"), s.get("note"))
+                      for s in vocab)
+    what = ("`rule_slug` 가 없다" if slug is None
+            else "%s 의 어휘에 없는 `rule_slug` 다 (%r)"
+                 % (f.get("category"), slug))
+    return ["finding %s: %s. %s 는 승격 축의 통제 어휘를 선언한 카테고리라 "
+            "그중 하나를 골라야 한다 — 맞는 것이 없으면 `category: OTHER` 로 "
+            "내고 무엇이 없는지를 evidence 에 적는다:\n%s"
+            % (f.get("id"), what, f.get("category"), menu)]
 
 def _fail(errors, dropped=0):
     return {"ok": False, "exit": 8, "errors": errors, "keys": [], "closed": [],

@@ -74,15 +74,23 @@ _SEVERITY_RANK = {"minor": 0, "major": 1, "critical": 2}
 # 카테고리 코드의 형태. 글롭처럼 보이는 코드를 새로 만들지 못하게 한다 (M39).
 _CODE_SHAPE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
-# 승격 축의 슬러그 형태와, 그것을 줄 수 있는 생산자 (ADR-H034).
+# 승격 축의 슬러그 형태와, 그것을 줄 수 있는 생산자 (ADR-H034 · ADR-H035).
 #
 # **신뢰 경계다.** 슬러그를 아무나 주면 무관한 지적이 한 버킷에 뭉치고,
 # 승격은 "무엇이 반복되는가" 를 묻는 장치라 그 오염이 곧바로 규칙이 된다.
-# `contract-trace` 만 받는 이유는 그쪽 어휘가 `trace_contract.CATEGORY` 라는
-# **코드 안의 닫힌 집합**이기 때문이다 — 모델이 그 자리에서 지어낼 수 없다.
-# 리뷰어·code-review 의 통제 어휘는 별도 증분(C5)의 몫이고, 그때까지 그쪽
-# 슬러그는 **거부가 아니라 폴백**이다: 행 자체는 정상 관측이다.
-_SLUG_SOURCES = ("contract-trace",)
+#
+# **C4 는 `contract-trace` 하나만 받았고 C5 가 셋으로 넓혔다. 그러면서
+# 보증의 종류가 바뀌었다 — 약해졌고, 그 사실을 여기 적는다.**
+# `trace_contract.CATEGORY` 는 **코드에서** 닫혀 생산자가 다른 값을 *낼 수
+# 없다.* `taxonomy.json` 의 `slugs` 는 **데이터에서** 닫히고 검사로
+# 강제되어, 생산자는 무엇이든 내고 *exit 8 을 받는다.* 즉 슬러그의 보증은
+# 이제 `category` 가 M46 이후 갖고 있던 것과 정확히 같다 — 더 강하지도
+# 약하지도 않다. 남는 잔여 위험은 **어휘 안에서 틀린 것을 고르는 것**이고,
+# 그것은 제거되지 않고 완화만 된다 (ADR-H035 한계 절).
+#
+# `external`(봇 요약)과 `human` 은 안 넓힌다 — 둘 다 봉투가 어휘를 찍어 준
+# 적이 없다. 그쪽 슬러그는 **거부가 아니라 폴백**이다: 행 자체는 정상 관측이다.
+_SLUG_SOURCES = ("contract-trace", "reviewer", "code-review")
 _SLUG_SHAPE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 SEED_TAXONOMY = {
@@ -91,7 +99,12 @@ SEED_TAXONOMY = {
               "것은 자유이고, doctor 와 lint-phases 가 유니크·어휘·rule 참조 "
               "실재를 검증한다. status 가 active 이고 enforceable 이 prose 가 "
               "아닌 것만 05 의 '검토 제외' 목록에 들어간다 — 기계 강제 규칙이 "
-              "늘수록 05 가 자동으로 싸지고 좁아진다."),
+              "늘수록 05 가 자동으로 싸지고 좁아진다. "
+              "`slugs` 는 승격 축의 통제 어휘다 (ADR-H035): 선언한 카테고리는 "
+              "그중 하나를 **필수로** 받고, 안 선언한 카테고리는 면제다. "
+              "**카테고리를 가로지르는 슬러그 중복은 허용한다** — rule_key 가 "
+              "category 를 포함하므로 다른 규칙이고, 금지하면 없는 제약이 "
+              "된다. 승격 못 하는 카테고리는 슬러그를 선언할 수 없다."),
     "categories": [
         {"code": "BOUNDARY_VIOLATION", "enforceable": "lint",
          "rule": "no-restricted-imports", "status": "active",
@@ -116,14 +129,44 @@ SEED_TAXONOMY = {
         {"code": "CONCURRENCY", "enforceable": "prose", "status": "active",
          "note": "동시성·락 순서"},
         {"code": "TEST_MISSING_FAILURE_PATH", "enforceable": "prose",
-         "status": "active", "note": "실패 경로가 테스트되지 않았다"},
+         "status": "active", "note": "실패 경로가 테스트되지 않았다",
+         # test-quality-reviewer 의 「볼 것」 다섯 행에서 왔다. 「모킹 남용」과
+         # 「사후 작성의 흔적」은 **한 슬러그로 합쳤다** — 둘 다 "테스트가
+         # 구현을 베꼈다" 는 같은 결함이고, 가르면 한 규칙이 두 버킷으로
+         # 갈려 임계에 못 닿는다.
+         "slugs": [
+             {"slug": "nothing_locked",
+              "note": "구현을 되돌려도 이 테스트가 빨간불이 안 된다"},
+             {"slug": "asserts_implementation",
+              "note": "단언이 구현의 내부 구조(호출 순서·내부 상태)를 "
+                      "따라간다. 모킹이 너무 깊은 것도 여기다"},
+             {"slug": "boundary_untested",
+              "note": "0 · 빈 값 · 상한 · 하나 넘김이 안 잠겼다"},
+             {"slug": "failure_path_untested",
+              "note": "계약이 말한 예외가 테스트되지 않았다"}]},
         {"code": "CONTRACT_DEFECT", "enforceable": "none",
          "status": "escalate_only",
          "note": "계약은 메인 단독 소유다. 수리가 아니라 에스컬레이션이고 "
                  "자동 승격 대상이 아니다"},
         {"code": "DOC_CODE_DRIFT", "enforceable": "prose", "status": "active",
          "note": ("문서·주석이 코드가 말하는 사실과 어긋난다. 기계가 못 "
-                  "막는다 — 어느 문장이 어느 상수를 참칭하는지는 판정이다")},
+                  "막는다 — 어느 문장이 어느 상수를 참칭하는지는 판정이다"),
+         # docs-reviewer 의 「볼 것」 다섯 행과 1:1 이다. **그 스킬만 쓰는
+         # 어휘가 아니다** — 원장 실측에서 이 카테고리를 낸 것은 arch 7 ·
+         # data 5 · sec 3 이고 docs 는 0 이다(`only_when_no_source_change` 라
+         # 여섯 런에서 한 번도 안 켜졌다). 카테고리가 스킬을 가로지르므로
+         # 어휘의 거처는 스킬 파일이 아니라 여기다.
+         "slugs": [
+             {"slug": "doc_contradicts_code",
+              "note": "문서·주석이 코드가 하는 일과 다른 것을 말한다"},
+             {"slug": "same_fact_two_places",
+              "note": "같은 사실이 두 곳에 각각 적혀 갈라졌다"},
+             {"slug": "estimate_as_measured",
+              "note": "재지 않은 값이 실측처럼 적혔다"},
+             {"slug": "skip_as_pass",
+              "note": "수행하지 않은 것이 통과한 것처럼 적혔다"},
+             {"slug": "dead_reference",
+              "note": "링크·경로·심볼 이름이 실재하지 않는다"}]},
         {"code": "OTHER", "enforceable": "prose", "status": "unpromotable",
          "note": ("분류되지 않은 것. **글롭이 아니라 문자열 그대로의 코드다** "
                   "— categories() 가 만드는 dict 의 키이고 append() 는 "
@@ -187,6 +230,17 @@ def categories(root):
     return {c.get("code"): c for c in data.get("categories") or []}
 
 
+def slug_vocabulary(root, code):
+    """그 카테고리의 통제 어휘 `[{slug, note}]`. 선언이 없으면 빈 목록.
+
+    **없는 것과 빈 것을 구분하지 않는 것이 여기서는 맞다** — 스키마가
+    `slugs: []` 를 이미 거부하므로(선언했는데 비면 "선언 안 했다" 와 같은
+    침묵이 된다) 빈 목록이 뜻하는 것은 언제나 "이 카테고리는 어휘를 안
+    선언했다" 하나다. 호출부가 분기를 안 써도 되게 한다.
+    """
+    return list((categories(root).get(code) or {}).get("slugs") or [])
+
+
 def excluded_categories(root):
     """05 의 "검토 제외" 목록. `active` + 기계 강제 가능한 것만.
 
@@ -234,6 +288,54 @@ def validate_taxonomy(data):
         if enf in MACHINE_ENFORCED and not c.get("rule"):
             errors.append("%s 는 enforceable=%s 인데 rule 참조가 없다 — "
                           "어디로 승격할지 아무도 모른다" % (code, enf))
+        errors += _validate_slugs(code, c)
+    return errors
+
+
+def _validate_slugs(code, c):
+    """승격 축의 통제 어휘 검사 (ADR-H035). [오류 문자열].
+
+    **형태는 `_SLUG_SHAPE` 그 객체를 쓴다.** 정규식을 여기서 다시 쓰면
+    taxonomy 가 선언한 슬러그를 `_accept_slug` 가 exit 8 로 튕기고, **선언과
+    수용이 갈렸다는 사실이 어디에도 안 드러난다.**
+    """
+    if "slugs" not in c:
+        return []                       # 선언 안 함 — 그 카테고리는 면제다
+    errors = []
+    slugs = c.get("slugs")
+    if not isinstance(slugs, list):
+        return ["%s 의 slugs 가 배열이 아니다: %r" % (code, slugs)]
+    if not slugs:
+        return ["%s 의 slugs 가 비었다 — 어휘를 두거나 키를 안 두거나 "
+                "둘 중 하나다. 빈 선언은 '선언 안 했다' 와 같은 침묵이 된다"
+                % code]
+    # 승격 못 하는 카테고리의 어휘는 소비자가 없다. **이 한 줄이 「어휘가
+    # 선언된 곳에서만 필수」를 구조로 만든다** — OTHER·CONTRACT_DEFECT·
+    # other/* 의 면제가 코드의 목록이 아니라 스키마에서 나온다.
+    if c.get("status") in NEVER_PROMOTE:
+        errors.append("%s 는 status=%s 라 승격되지 않는다 — slugs 를 선언할 "
+                      "수 없다. 어휘를 둘 곳은 승격 대상 카테고리뿐이다"
+                      % (code, c.get("status")))
+    seen = []
+    for s in slugs:
+        if not isinstance(s, dict):
+            errors.append("%s 의 슬러그 항목이 객체가 아니다: %r" % (code, s))
+            continue
+        slug = s.get("slug")
+        if not isinstance(slug, str) or not _SLUG_SHAPE.match(slug):
+            errors.append("%s 의 슬러그 형태가 규약 밖이다: %r — %s 여야 한다"
+                          % (code, slug, _SLUG_SHAPE.pattern))
+            continue
+        # note 가 봉투의 유일한 화물이다. 없으면 그 카테고리를 내는 리뷰어가
+        # 두 슬러그를 언제 가르는지 모른 채 고른다.
+        if not (s.get("note") or "").strip():
+            errors.append("%s.%s 에 note 가 없다 — 봉투가 실을 것이 없으면 "
+                          "리뷰어가 뜻을 모른 채 고른다" % (code, slug))
+        seen.append(slug)
+    dup = sorted({s for s in seen if seen.count(s) > 1})
+    if dup:
+        errors.append("%s 의 슬러그가 유니크하지 않다: %s"
+                      % (code, ", ".join(dup)))
     return errors
 
 
@@ -280,11 +382,17 @@ def rule_key(f):
 def _accept_slug(f):
     """행에 실을 `rule_slug`. 못 실으면 None.
 
-    **두 종류의 거절을 가른다.** 다른 생산자가 준 슬러그는 예상된 입력이라
-    조용히 버리고 폴백한다 — 그 행은 여전히 정상 관측이다. 반면 형태가
-    어긋난 슬러그는 `trace_contract` 가 **스스로 깨진 것**이라 조용히 받지
-    않는다. 어휘 밖 `category`·`resolution` 을 거부하는 것과 같은 자리다:
-    받으면 승격 집계가 아무도 모르는 축으로 갈라진다.
+    **두 종류의 거절을 가른다.** 신뢰 경계 밖(`external`·`human`)이 준
+    슬러그는 예상된 입력이라 조용히 버리고 폴백한다 — 그 행은 여전히 정상
+    관측이다. 반면 형태가 어긋난 슬러그는 생산자가 **스스로 깨진 것**이라
+    조용히 받지 않는다.
+
+    **어휘 대조는 여기서 안 한다** (2층 규율 · M46). 어휘는 제출자 층
+    (`review.check` · `_record_07`)이 막아 위반한 그 제출자가 `attempts`
+    예산과 강등 경로를 타게 하고, 여기는 05 밖 경로의 **마지막 방어선**이라
+    신뢰 경계와 형태만 본다. 여기서 어휘를 강제하면 `contract-trace` 의
+    `out_of_contract` 를 `NAMING.slugs` 에 적어야 하고, 두 생산자의 어휘가
+    한 배열에서 섞인다.
     """
     slug = f.get("rule_slug")
     if slug is None or f.get("source") not in _SLUG_SOURCES:

@@ -3754,24 +3754,27 @@ class TestRuleKeyAxis:
         assert c["count"] == 6 and c["distinct_runs"] == 2, c
         assert c["rule_key"] and c["rule_slug"] == "out_of_contract", c
 
-    def test_리뷰어가_준_슬러그는_버려진다(self, repo):
-        """**신뢰 경계다.** 모델이 슬러그를 자유롭게 주면 무관한 지적이
+    def test_리뷰어가_준_슬러그를_이제_받는다(self, repo):
+        """**C4 는 버렸고 C5 가 받는다** (ADR-H035). 신뢰 경계가 옮겨 갔다.
 
-        한 버킷에 뭉친다. `contract-trace` 만 받는 이유이고, 버리는 것이
-        거부가 아니라 **폴백**인 이유는 그 행 자체는 정상 관측이기 때문이다.
+        C4 의 이유는 *"`contract-trace` 의 어휘는 코드 안의 닫힌 집합이라
+        모델이 지어낼 수 없다"* 였다. C5 는 `taxonomy.json` 에 리뷰어 어휘를
+        선언하고 **제출자 층이 대조**하게 만들었다 — 닫힘이 코드에서 데이터로
+        내려왔고, 보증은 `category` 가 M46 이후 갖고 있던 것과 같아졌다
+        (*"지어낼 수 없다"* 가 아니라 *"지어내면 exit 8"*).
         """
         ldg.seed(repo)
         ldg.append(repo, "r1", "05",
-                   [_finding(source="reviewer", rule_slug="out_of_contract",
-                             title="가"),
-                    _finding(source="reviewer", rule_slug="out_of_contract",
-                             title="나")])
+                   [_finding(category="DOC_CODE_DRIFT", source="reviewer",
+                             rule_slug="doc_contradicts_code", title="가"),
+                    _finding(category="DOC_CODE_DRIFT", source="reviewer",
+                             rule_slug="doc_contradicts_code", title="나")])
         rows = ldg.read_all(repo)
-        assert all("rule_slug" not in r for r in rows), rows
-        assert all(r["rule_key"] == r["finding_key"] for r in rows), rows
+        assert all(r["rule_slug"] == "doc_contradicts_code" for r in rows), rows
+        assert all(r["rule_key"] != r["finding_key"] for r in rows), rows
         roll = {b["category"]: b
                 for b in ldg.stage_promotions(repo)["by_category"]}
-        assert roll["NAMING"]["distinct_keys"] == 2, roll
+        assert roll["DOC_CODE_DRIFT"]["distinct_keys"] == 1, roll
 
     def test_형태가_어긋난_슬러그는_조용히_안_받는다(self, repo):
         """생산자 안의 닫힌 집합이라 어긋나면 **버그다.**
@@ -3798,15 +3801,35 @@ class TestRuleKeyAxis:
         roll = {b["category"]: b for b in got["by_category"]}
         assert roll["DOC_CODE_DRIFT"]["distinct_keys"] == 2, roll
 
-    def test_실물_원장에는_슬러그가_한_줄도_없다(self, repo):
-        """C4 의 소급 무오염이 여기 선다 — 168줄 전부가 폴백 경로다.
+    LEDGER_ROWS_BEFORE_C5 = 168
 
-        `ledger.append` 의 행 화이트리스트가 `trace_contract` 의 `code` 를
-        버려 왔으므로 백필도 불가능하다. 축적은 새 런부터 시작한다.
+    def test_실물_원장의_앞_168줄에는_슬러그가_없다(self, repo):
+        """C4 의 소급 무오염이 여기 선다 — 그 168줄 전부가 폴백 경로다.
+
+        **앞 168줄로 한정하는 것이 요점이다.** C4 시점의 문장(*"실물 원장에는
+        슬러그가 한 줄도 없다"*)을 그대로 두면 C5 이후 첫 런에서 빨간불이 되고,
+        그때 **회귀와 예정된 변화가 구분되지 않는다.** 원장은 append-only 라
+        앞 168줄은 영원히 참이고, 뒤에 붙는 줄은 아래가 따로 본다.
         """
         rows = [r for r in ldg.read_all(ROOT) if not r.get("_corrupt")]
-        assert rows, "실물 원장을 읽지 못했다"
-        assert not any("rule_slug" in r or "rule_key" in r for r in rows)
+        assert len(rows) >= self.LEDGER_ROWS_BEFORE_C5, len(rows)
+        old = rows[:self.LEDGER_ROWS_BEFORE_C5]
+        assert not any("rule_slug" in r or "rule_key" in r for r in old)
+
+    def test_실물_원장의_슬러그는_전부_어휘_안이다(self, repo):
+        """지금은 0건이라 자명히 통과하고 **P9 부터 진짜 불변식**이 된다.
+
+        `contract-trace` 는 면제한다 — 그쪽 어휘는 `trace_contract.CATEGORY`
+        이지 taxonomy 가 아니다 (2층 규율에서 append 가 어휘를 안 보는 이유).
+        """
+        cats = ldg.categories(ROOT)
+        for r in ldg.read_all(ROOT):
+            slug = r.get("rule_slug")
+            if not slug or r.get("source") == "contract-trace":
+                continue
+            vocab = {s["slug"]
+                     for s in (cats.get(r["category"]) or {}).get("slugs") or []}
+            assert slug in vocab, (r["category"], slug, sorted(vocab))
 
     def test_05_합치는_슬러그로_뭉개지지_않는다(self, repo):
         """**가장 중요한 회귀다.** `review.merge` 의 축은 `finding_key` 다.
@@ -3823,6 +3846,291 @@ class TestRuleKeyAxis:
         assert len({f["finding_key"] for f in got}) == 3, got
         assert all(f["severity"] == "major" for f in got), got
 
+    def test_code_review_의_슬러그도_받는다(self, repo):
+        """07 도 봉투가 어휘를 실어 주는 생산자다. **빼면 안 된다** —
+
+        반사실 계산에서 `doc_contradicts_code` 후보 4건 중 2건이 07 행이라,
+        07 을 빼면 그 후보가 성립하지 않는다.
+        """
+        ldg.seed(repo)
+        ldg.append(repo, "r1", "07",
+                   [_finding(category="DOC_CODE_DRIFT", source="code-review",
+                             rule_slug="same_fact_two_places")])
+        assert ldg.read_all(repo)[0]["rule_slug"] == "same_fact_two_places"
+
+    def test_external_과_human_의_슬러그는_여전히_폴백이다(self, repo):
+        """신뢰 경계가 **완전히** 열리지는 않았다.
+
+        `external` 은 봇 요약이라 봉투를 본 적이 없고 `human` 은 정의상
+        `review.check` 를 안 탄다. 어휘를 아무도 안 찍어 준 값을 받는 것은
+        C4 가 경고한 "무관한 지적을 한 버킷에 뭉친다" 로 곧장 간다.
+        """
+        ldg.seed(repo)
+        for src in ("external", "human"):
+            ldg.append(repo, "r1", "05",
+                       [_finding(category="DOC_CODE_DRIFT", source=src,
+                                 rule_slug="doc_contradicts_code",
+                                 title="%s 의 지적" % src)])
+        rows = ldg.read_all(repo)
+        assert all("rule_slug" not in r for r in rows), rows
+        assert all(r["rule_key"] == r["finding_key"] for r in rows), rows
+
+    def test_append_는_어휘_대조를_하지_않는다(self, repo):
+        """**2층 규율** (M46). 어휘는 제출자 층이 막고 여기는 신뢰 경계와 형태다.
+
+        여기서 어휘를 강제하면 `contract-trace` 의 `out_of_contract` 를
+        `NAMING.slugs` 에 적어야 하고 두 생산자의 어휘가 한 배열에서 섞인다.
+        마지막 방어선은 **동작해야** 하므로 모르는 슬러그도 행으로는 쓴다.
+        """
+        ldg.seed(repo)
+        ldg.append(repo, "r1", "05",
+                   [_finding(category="DOC_CODE_DRIFT", source="reviewer",
+                             rule_slug="unknown_slug")])
+        assert ldg.read_all(repo)[0]["rule_slug"] == "unknown_slug"
+
+    def test_형태가_어긋난_리뷰어_슬러그는_exit_8_이다(self, repo):
+        """신뢰 경계(폴백)와 **형태**(버그)는 다른 거절이다.
+
+        source 가 어휘 밖인 것은 예상된 입력이라 조용히 폴백하지만, 형태가
+        어긋난 것은 생산자가 스스로 깨진 것이다 — `lookup_failed` 와
+        `no_match` 를 안 뭉개는 규율이 승격 입력에도 그대로 선다.
+        """
+        ldg.seed(repo)
+        with pytest.raises(ValueError):
+            ldg.append(repo, "r1", "05",
+                       [_finding(category="DOC_CODE_DRIFT", source="reviewer",
+                                 rule_slug="Doc Contradicts Code")])
+
+    def test_같은_슬러그_다른_제목이_리뷰어_경로에서도_접힌다(self, repo):
+        """C4 가 `out_of_contract` 에서 본 모양의 **리뷰어 판**이다.
+
+        원장 실측 — `nothing_locked` 7관측이 3런을 가로지르는데 제목은 매번
+        달랐다. 접히지 않으면 그 일곱이 일곱 버킷이고 임계에 못 닿는다.
+        """
+        ldg.seed(repo)
+        for run in ("r1", "r2"):
+            ldg.append(repo, run, "05",
+                       [_finding(category="TEST_MISSING_FAILURE_PATH",
+                                 role="test", source="reviewer",
+                                 rule_slug="nothing_locked",
+                                 title="%s 에서 %s 를 아무도 안 잠근다" % (run, n))
+                        for n in ("상한", "빈 값", "경계")])
+        got = ldg.stage_promotions(repo)
+        assert len(got["candidates"]) == 1, got["candidates"]
+        c = got["candidates"][0]
+        assert c["count"] == 6 and c["distinct_runs"] == 2, c
+        assert c["rule_slug"] == "nothing_locked", c
+
+    def test_슬러그가_있어도_finding_key_는_안_바뀐다(self, repo):
+        """`team-spec` 이 못박은 불변이다. 두 키가 갈리는 자리를 잠근다."""
+        base = _finding(category="DOC_CODE_DRIFT", source="reviewer")
+        with_slug = dict(base, rule_slug="doc_contradicts_code")
+        assert ldg.finding_key(base) == ldg.finding_key(with_slug)
+        assert ldg.rule_key(with_slug) != ldg.finding_key(with_slug)
+
+    def test_05_합치는_리뷰어_슬러그로도_뭉개지지_않는다(self, repo):
+        """C4 의 회귀가 C5 에서도 선다 — `review.merge` 의 축은 `finding_key` 다.
+
+        접었다면 서로 다른 세 지적이 합치로 오인돼 severity 가 부당하게
+        오르고, 수리하는 쪽이 무엇을 고칠지 모르게 된다.
+        """
+        subs = [{"reviewer": "arch", "findings": [
+            _finding(category="DOC_CODE_DRIFT", source="reviewer",
+                     rule_slug="doc_contradicts_code",
+                     title="%s 의 주석이 코드와 다르다" % n)
+            for n in ("A", "B", "C")]}]
+        got = rv.merge(subs)
+        assert len(got) == 3, got
+        assert len({f["finding_key"] for f in got}) == 3, got
+        assert all(f["severity"] == "major" for f in got), got
+
+    def test_두_리뷰어가_다른_슬러그를_주면_먼저_온_것이_굳는다(self, repo):
+        """도착 순서 의존이지만 **새 비결정성이 아니다.**
+
+        `merge` 는 `setdefault` 라 `path`·`quote`·`evidence` 가 이미 첫
+        제출을 굳힌다. 슬러그가 그 성질을 하나 더 탈 뿐이라는 것을 못박고
+        고치지 않는다 — 고치면 두 리뷰어의 한 지적이 두 규칙으로 갈린다.
+        """
+        def one(slug):
+            return _finding(category="DOC_CODE_DRIFT", source="reviewer",
+                            rule_slug=slug, title="같은 지적")
+        got = rv.merge([{"reviewer": "arch",
+                         "findings": [one("doc_contradicts_code")]},
+                        {"reviewer": "sec",
+                         "findings": [one("same_fact_two_places")]}])
+        assert len(got) == 1, got
+        assert got[0]["rule_slug"] == "doc_contradicts_code", got
+
+class TestSlugVocabulary:
+    """리뷰어·code-review 의 통제 어휘가 `taxonomy.json` 에 산다 (ADR-H035).
+
+    **거처가 스킬 파일이 아닌 이유는 실측이다.** `DOC_CODE_DRIFT` 18건을 낸
+    것은 arch 7 · data 5 · sec 3 이고 `docs` 는 0 이다 — `docs-reviewer` 는
+    `only_when_no_source_change` 라 여섯 런에서 한 번도 안 켜졌다.
+    **카테고리는 스킬을 가로지르므로** 어휘를 SKILL.md 에 두면 그것을 안 읽는
+    리뷰어가 그 카테고리를 내고, 그것이 바로 `same_fact_two_places` 다.
+    """
+
+    def _cat(self, **kw):
+        d = {"code": "DOC_CODE_DRIFT", "enforceable": "prose",
+             "status": "active"}
+        d.update(kw)
+        return {"version": 1, "categories": [d]}
+
+    def test_어휘가_카테고리_객체_안에_산다(self, repo):
+        """최상위 별도 맵을 안 고른 이유 — `rule_key` 가 이미
+        `category|target_role|rule_slug` 라 슬러그는 구조적으로 카테고리
+        종속이다. 중첩이면 참조 무결성 위반이 **불가능**하다.
+        """
+        ldg.seed(repo)
+        cats = ldg.categories(repo)
+        for code in ("DOC_CODE_DRIFT", "TEST_MISSING_FAILURE_PATH"):
+            slugs = cats[code].get("slugs")
+            assert slugs, code
+            assert all(set(s) >= {"slug", "note"} for s in slugs), slugs
+
+    def test_형태가_어긋난_슬러그_선언은_거부된다(self, repo):
+        data = self._cat(slugs=[{"slug": "Doc Contradicts", "note": "x"}])
+        assert any("형태" in e for e in ldg.validate_taxonomy(data)), \
+            ldg.validate_taxonomy(data)
+
+    def test_선언이_받는_형태와_append_가_받는_형태가_같다(self, repo):
+        """정규식을 새로 쓰면 **선언한 슬러그를 append 가 exit 8 로 튕긴다.**
+
+        그리고 그 사실이 어디에도 안 드러난다 — 두 곳이 갈렸다는 것을
+        아무도 못 보는 종류의 결함이다. **소스에 `_SLUG_SHAPE` 가 적혔는지가
+        아니라 두 판정이 실제로 일치하는지**를 본다: 이름만 보면 정규식을
+        복사해 두 번 쓴 것을 못 잡는다.
+        """
+        candidates = ["nothing_locked", "a", "a_1", "A_b", "a-b", "a b",
+                      "1a", "_a", "a__b", "aB", "", "한글"]
+        for slug in candidates:
+            declared = ldg.validate_taxonomy(
+                self._cat(slugs=[{"slug": slug, "note": "x"}])) == []
+            accepted = bool(ldg._SLUG_SHAPE.match(slug))
+            assert declared == accepted, (slug, declared, accepted)
+
+    def test_한_카테고리_안에서_슬러그가_유니크하다(self, repo):
+        data = self._cat(slugs=[{"slug": "a_b", "note": "x"},
+                                {"slug": "a_b", "note": "y"}])
+        assert any("유니크" in e for e in ldg.validate_taxonomy(data))
+
+    def test_카테고리를_가로지르는_중복은_허용된다(self, repo):
+        """`rule_key` 가 category 를 포함하므로 **다른 규칙이다.**
+
+        금지하면 없는 제약을 만든다 — security 의 「신뢰 경계」와 data-layer 의
+        「외부 응답의 신뢰 경계」처럼 같은 말이 두 관점에 실재한다.
+        """
+        data = {"version": 1, "categories": [
+            {"code": "DOC_CODE_DRIFT", "enforceable": "prose",
+             "status": "active", "slugs": [{"slug": "a_b", "note": "x"}]},
+            {"code": "TX_BOUNDARY", "enforceable": "prose",
+             "status": "active", "slugs": [{"slug": "a_b", "note": "y"}]}]}
+        assert ldg.validate_taxonomy(data) == []
+
+    def test_승격_불가_카테고리는_어휘를_선언할_수_없다(self, repo):
+        """**이 한 줄이 「어휘가 선언된 곳에서만 필수」를 구조로 만든다.**
+
+        면제 목록을 코드에 손으로 적으면 어휘가 늘 때 한쪽만 고쳐진다.
+        스키마가 답하면 `OTHER`·`CONTRACT_DEFECT`·`other/*` 의 면제가
+        **선언에서** 나온다.
+        """
+        for status in ldg.NEVER_PROMOTE:
+            data = self._cat(code="OTHER", status=status,
+                             slugs=[{"slug": "a_b", "note": "x"}])
+            errs = ldg.validate_taxonomy(data)
+            assert any("승격" in e for e in errs), (status, errs)
+
+    def test_빈_배열_선언은_거부된다(self, repo):
+        """"선언했는데 비었다" 와 "선언 안 했다" 가 같은 침묵이 되면 안 된다."""
+        assert any("비었다" in e for e in ldg.validate_taxonomy(
+            self._cat(slugs=[])))
+
+    def test_note_없는_슬러그는_거부된다(self, repo):
+        """`note` 가 봉투의 유일한 화물이다.
+
+        없으면 arch·data·sec 가 `same_fact_two_places` 와
+        `doc_contradicts_code` 를 언제 가르는지 모른 채 고른다.
+        """
+        assert any("note" in e for e in ldg.validate_taxonomy(
+            self._cat(slugs=[{"slug": "a_b"}])))
+
+    def test_배열이_아닌_slugs_는_거부된다(self, repo):
+        assert ldg.validate_taxonomy(self._cat(slugs="a_b")) != []
+
+    def test_실물_taxonomy_가_새_검증을_통과한다(self, repo):
+        disk = harness._read_json(ROOT / ldg.TAXONOMY_REL)
+        assert ldg.validate_taxonomy(disk) == []
+
+    def test_seed_와_디스크의_슬러그_집합이_같다(self, repo):
+        """기존 대조는 `code` 집합만 봤다 — **슬러그 발산이 조용했다.**
+
+        `taxonomy.json` 은 시드가 만들고 사람이 늘리는 파일이라 둘이 갈리면
+        시드를 물려받는 파생 프로젝트가 다른 어휘를 갖는다.
+        """
+        disk = harness._read_json(ROOT / ldg.TAXONOMY_REL)
+
+        def vocab(data):
+            return {(c["code"], s["slug"])
+                    for c in data["categories"]
+                    for s in c.get("slugs") or []}
+
+        assert vocab(disk) == vocab(ldg.SEED_TAXONOMY)
+
+    def test_slug_vocabulary_는_없으면_빈_목록이다(self, repo):
+        """없는 것과 빈 것을 구분한다 — 호출부가 분기를 안 써도 되게."""
+        ldg.seed(repo)
+        assert ldg.slug_vocabulary(repo, "OTHER") == []
+        assert ldg.slug_vocabulary(repo, "지어낸_코드") == []
+        got = ldg.slug_vocabulary(repo, "DOC_CODE_DRIFT")
+        assert {s["slug"] for s in got} >= {"doc_contradicts_code",
+                                            "same_fact_two_places"}
+
+
+class TestC5RetroactiveCleanliness:
+    """**소급 무오염이 C5 의 통과 조건이다** — C3·C4 가 쓴 방법 그대로.
+
+    과거 168줄에 슬러그를 소급 부여하지 않고 `rule_key` 폴백이 항등이므로,
+    실물 원장의 집계는 한 비트도 안 바뀐다. 그 사실을 고정 기대값으로
+    못박아 **기계가 지키게** 한다 — 산문으로만 적으면 다음 증분이 지운다.
+    """
+
+    EXPECTED_BY_CATEGORY = {
+        "NAMING": (86, 84),
+        "DOC_CODE_DRIFT": (18, 18),
+        "TEST_MISSING_FAILURE_PATH": (18, 18),
+        "other/*": (16, 16),
+        "OTHER": (10, 10),
+        "CONTRACT_DEFECT": (5, 5),
+        "INPUT_VALIDATION": (2, 2),
+        "RESPONSE_SHAPE": (2, 2),
+        "TX_BOUNDARY": (1, 1),
+    }
+
+    def test_실물_집계가_C5_로_안_바뀐다(self, repo):
+        got = ldg.stage_promotions(ROOT)
+        assert got["candidates"] == [], got["candidates"]
+        assert got["held"] == [], got["held"]
+        assert got["distinct_runs"] == 6, got["distinct_runs"]
+        roll = {b["category"]: (b["count"], b["distinct_keys"])
+                for b in got["by_category"]}
+        assert roll == self.EXPECTED_BY_CATEGORY, roll
+
+    def test_판정_시한이_안_움직인다(self, repo):
+        """창은 「`rule_key` 값을 바꾸는 마지막 변경」에서 센다.
+
+        C5 는 P8 이 끝난 뒤이고 P9 전이므로 **창 밖**이다 — C4 가 못박은
+        P9~P11 이 그대로 최종 축 위의 3런이 된다.
+        """
+        got = ldg.stage_promotions(ROOT)["verdict_deadline"]
+        assert got["at"] == ldg.PROMOTION_VERDICT_AT_RUNS
+        assert got["seen"] == 6 and got["remaining"] == 3
+        assert got["due"] is False, got
+
+    def test_임계_여섯은_한_자리도_안_바뀐다(self, repo):
+        """축을 넓혔다고 임계가 맞다는 뜻이 아니다 — 캘리브레이션은 P9~P11 이다."""
+        assert ldg.THRESHOLDS == {
+            "critical": (2, 2), "major": (3, 2), "minor": (5, 3)}
 
 class TestLedgerPromotion:
     """임계값 여섯과 distinct_runs >= 2. 전부 미검증 상속값이다."""
@@ -5226,6 +5534,107 @@ class TestReview05Vocabulary:
         assert got["exit"] != 8 or "taxonomy" not in json.dumps(
             got, ensure_ascii=False), got
 
+
+class TestReview05SlugVocabulary:
+    """어휘가 **선언된** 카테고리에서만 `rule_slug` 가 필수다 (ADR-H035).
+
+    전면 선택이면 리뷰어가 그냥 안 적어 C5 가 아무것도 안 고치고, 전면
+    필수면 `OTHER`·`CONTRACT_DEFECT` 에 억지 슬러그를 만들게 되어 M46 이
+    고친 회차 예산 소진이 재현되는데 이번엔 **탈출구 자체가 없다.**
+    면제 목록은 코드에 없다 — `validate_taxonomy` 가 *"승격 못 하는
+    카테고리는 어휘를 선언할 수 없다"* 를 강제하므로 스키마가 답한다.
+    """
+
+    _taxonomy = TestReview05Vocabulary.__dict__["_taxonomy"]
+    _at_05 = TestReview05Vocabulary._at_05
+    _submit = TestReview05Vocabulary._submit
+
+    def _sub_drift(self, rule_slug=None, **kw):
+        f = {"id": "F-1", "category": "DOC_CODE_DRIFT", "severity": "major",
+             "target_role": "impl", "title": "주석이 코드와 어긋난다",
+             "path": "x.ts", "quote": "인가를 건너뛴다"}
+        if rule_slug is not None:
+            f["rule_slug"] = rule_slug
+        return _sub(by_checklist={"문서 정합": [f], "네이밍": []}, **kw)
+
+    def test_어휘가_선언된_카테고리는_슬러그가_필수다(self, repo):
+        got = rv.check(repo, _config(repo), self._sub_drift(), RAW_ONE, [],
+                       known=self._taxonomy(repo))
+        assert got["exit"] == 8, got
+        assert any("rule_slug" in e for e in got["errors"]), got["errors"]
+
+    def test_어휘가_없는_카테고리는_면제다(self, repo):
+        """**05 회귀 0의 증명이다.** `_sub()` 의 기본값은
+        `AUTHZ_MISSING_RULE` 이고 그 카테고리는 어휘를 선언하지 않는다 —
+        기존 05 테스트가 한 줄도 안 바뀌어야 하는 이유가 여기 있다.
+        """
+        got = rv.check(repo, _config(repo), _sub(), RAW_ONE, [],
+                       known=self._taxonomy(repo))
+        assert got["ok"], got["errors"]
+
+    def test_어휘_안의_슬러그는_통과한다(self, repo):
+        got = rv.check(repo, _config(repo),
+                       self._sub_drift(rule_slug="doc_contradicts_code"),
+                       RAW_ONE, [], known=self._taxonomy(repo))
+        assert got["ok"], got["errors"]
+
+    def test_어휘_밖_슬러그는_제출_시점에_거부된다(self, repo):
+        """`ledger.append` 는 어휘를 안 본다 — 막는 것은 이 층이다 (M46).
+
+        병합 뒤에 돌면 exit 8 이 마지막 제출자에게 가고 그는 남의 findings 를
+        고칠 수 없어 스스로 못 빠져나온다.
+        """
+        got = rv.check(repo, _config(repo),
+                       self._sub_drift(rule_slug="지어낸_슬러그"),
+                       RAW_ONE, [], known=self._taxonomy(repo))
+        assert got["exit"] == 8, got
+        assert any("rule_slug" in e for e in got["errors"]), got["errors"]
+
+    def test_거부_메시지가_그_카테고리의_어휘를_note_와_함께_말한다(self, repo):
+        """무엇이 틀렸는지 모르면 재제출이 추측이 된다 (M20).
+
+        `note` 까지 실어야 하는 이유는 실측이다 — `DOC_CODE_DRIFT` 를 내는
+        arch·data·sec 는 `docs-reviewer/SKILL.md` 를 읽지 않으므로, 이름만
+        나열하면 두 슬러그를 언제 가르는지 모른 채 고른다.
+        """
+        got = rv.check(repo, _config(repo),
+                       self._sub_drift(rule_slug="지어낸_슬러그"),
+                       RAW_ONE, [], known=self._taxonomy(repo))
+        joined = " ".join(got["errors"])
+        assert "F-1" in joined and "지어낸_슬러그" in joined, joined
+        assert "doc_contradicts_code" in joined, "허용 어휘를 보여 줘야 한다"
+        assert "같은 사실이 두 곳에" in joined, "note 까지 실어야 한다"
+
+    def test_known_을_안_주면_슬러그도_검사하지_않는다(self, repo):
+        """호출부가 taxonomy 를 못 읽는 경우까지 여기서 막지 않는다 — 기존 규약."""
+        got = rv.check(repo, _config(repo), self._sub_drift(), RAW_ONE, [])
+        assert got["ok"], got["errors"]
+
+    def test_슬러그_위반이_그_리뷰어의_제출_시도로_세어진다(self, gated, phases):
+        """`attempts` 예산과 강등 경로를 타야 스스로 빠져나올 수 있다 (M46)."""
+        repo, paths, s = gated
+        self._at_05(repo, paths, s)
+        got = self._submit(repo, paths,
+                           dict(self._sub_drift(), reviewer="arch"), "arch")
+        assert got["exit"] == 8, got
+        _p, after = st.load(repo, paths.run_id)
+        node = after["phases"]["05-code-review"]
+        assert node.get("attempts", {}).get("1", {}).get("arch") == 1, node
+
+    def test_봉투가_카테고리별_슬러그를_note_와_함께_먼저_말한다(self, repo):
+        """M20 — 리뷰어가 모르면 exit 8 이고, 모르게 둔 것은 봉투 잘못이다."""
+        self._taxonomy(repo)
+        got = cli._vocabulary_render(repo)
+        assert "doc_contradicts_code" in got, got
+        assert "nothing_locked" in got, got
+        assert "같은 사실이 두 곳에" in got, "note 가 화물이다"
+
+    def test_봉투가_어휘_없는_카테고리는_요구하지_않는다고_말한다(self, repo):
+        """침묵으로 두면 "안 적어도 되나" 가 리뷰어의 추측이 된다."""
+        self._taxonomy(repo)
+        got = cli._vocabulary_render(repo)
+        assert "AUTHZ_MISSING_RULE" in got, got
+        assert "요구하지 않는다" in got, got
 
 class TestReview05Truncation:
 
@@ -7920,6 +8329,54 @@ def _r07(paths, **kw):
     return p
 
 
+class TestRecord07SlugVocabulary:
+    """07 도 같은 대조를 한다 — **빼면 반사실의 후보 하나가 사라진다.**
+
+    `doc_contradicts_code` 후보 4건 중 2건이 07 행이다. 그리고 07 은 05 와
+    같은 결함에 다른 이름을 붙이면 새 것으로 세어지는 자리라(M48), 어휘가
+    한쪽에만 있으면 그 계수가 축을 가로질러 어긋난다.
+    """
+
+    def _f(self, rule_slug=None, **kw):
+        d = {"id": "R7-1", "category": "DOC_CODE_DRIFT", "severity": "major",
+             "target_role": "main", "title": "문서와 코드가 어긋난다",
+             "path": "docs/TRD.md", "quote": "x", "source": "code-review",
+             "evidence": "같은 자리다"}
+        if rule_slug is not None:
+            d["rule_slug"] = rule_slug
+        d.update(kw)
+        return d
+
+    def _record(self, repo, request_file, phases, finding):
+        ldg.seed(repo)
+        run_id, paths = _enter_07(repo, request_file, phases, decide=True)
+        _p, s = st.load(repo, run_id)
+        s.setdefault("pr", {})["head_sha"] = _git(
+            repo, "rev-parse", "HEAD").stdout.strip()
+        st.save(_p, s)
+        return cli.run_record(repo, "07", str(_r07(paths, findings=[finding])),
+                              run_id=run_id)
+
+    def test_어휘가_선언된_카테고리에_슬러그를_요구한다(
+            self, repo, request_file, phases):
+        got = self._record(repo, request_file, phases, self._f())
+        assert got["exit"] == 8, got
+        assert "rule_slug" in json.dumps(got, ensure_ascii=False)
+
+    def test_어휘_밖_슬러그는_거부된다(self, repo, request_file, phases):
+        got = self._record(repo, request_file, phases,
+                           self._f(rule_slug="지어낸_슬러그"))
+        assert got["exit"] == 8, got
+        assert "doc_contradicts_code" in json.dumps(got, ensure_ascii=False)
+
+    def test_어휘_안이면_원장에_슬러그가_남는다(
+            self, repo, request_file, phases):
+        got = self._record(repo, request_file, phases,
+                           self._f(rule_slug="doc_contradicts_code"))
+        assert got["exit"] != 8, got
+        rows = [r for r in ldg.read_all(repo) if r.get("phase") == "07"]
+        assert rows and rows[-1]["rule_slug"] == "doc_contradicts_code", rows
+
 class TestRecord07Resolution:
     """07 의 원장 줄이 스스로 모순되지 않는가 (M49).
 
@@ -7941,6 +8398,8 @@ class TestRecord07Resolution:
         d = {"id": "R7-2", "category": "DOC_CODE_DRIFT", "severity": "major",
              "target_role": "main", "title": "문서와 코드가 어긋난다",
              "path": "docs/TRD.md", "quote": "x", "source": "code-review",
+             # C5 부터 어휘를 선언한 카테고리는 슬러그가 필수다 (ADR-H035).
+             "rule_slug": "doc_contradicts_code",
              "evidence": "같은 자리다"}
         d.update(kw)
         return d

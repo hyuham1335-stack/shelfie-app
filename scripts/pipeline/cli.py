@@ -1236,11 +1236,48 @@ def _vocabulary_render(root):
                 % ledger.TAXONOMY_REL)
     usable = sorted(c for c, v in cats.items()
                     if (v.get("status") or "") != "retired")
-    return ("## 원장 어휘 — `category` 는 이 안에서 고른다\n\n"
-            + "\n".join("- `%s`" % c for c in usable)
-            + "\n\n밖의 코드를 **지어내지 마라** — 제출이 exit 8 로 되돌아온다. "
+    lines = ["## 원장 어휘 — `category` 는 이 안에서 고른다", ""]
+    lines += ["- `%s`" % c for c in usable]
+    lines += ["",
+              "밖의 코드를 **지어내지 마라** — 제출이 exit 8 로 되돌아온다. "
               "맞는 것이 없으면 `OTHER` 로 내고 무엇이 없는지를 evidence 에 적는다. "
-              "어휘를 늘리는 것은 승격의 일이지 제출의 일이 아니다.")
+              "어휘를 늘리는 것은 승격의 일이지 제출의 일이 아니다."]
+    lines += _slug_vocabulary_lines(cats, usable)
+    return "\n".join(lines)
+
+
+def _slug_vocabulary_lines(cats, usable):
+    """`rule_slug` 어휘 (ADR-H035). **어휘를 선언한 카테고리만 필수다.**
+
+    승격은 "무엇이 반복되는 유형인가" 를 묻는데 자유 서술 제목은 매번 달라
+    규칙이 아니다. 그래서 축의 값을 통제 어휘에서 고르게 한다.
+
+    `note` 를 함께 싣는 것이 이 절의 요점이다 — 한 카테고리를 여러 스킬이
+    가로질러 내므로(원장 실측: `DOC_CODE_DRIFT` 는 arch·data·sec 가 냈고
+    docs 는 0건), 이름만 나열하면 리뷰어가 뜻을 모른 채 고른다.
+
+    **어휘가 없는 카테고리는 침묵으로 두지 않는다** — 안 적으면 "여기도
+    필수인가" 가 리뷰어의 추측이 되고, 추측은 exit 8 아니면 억지 슬러그다.
+    """
+    with_vocab = [(c, cats[c]["slugs"]) for c in usable if cats[c].get("slugs")]
+    if not with_vocab:
+        return []
+    out = ["", "## 규칙 슬러그 — 승격의 축이다", "",
+           "아래 카테고리로 낼 때는 `rule_slug` 를 **함께** 적는다. 안 적거나 "
+           "어휘 밖을 적으면 제출이 exit 8 로 되돌아온다. 맞는 것이 없으면 "
+           "`category: OTHER` 로 내고 무엇이 없는지를 evidence 에 적어라 — "
+           "**어휘를 늘리는 것은 승격의 일이지 제출의 일이 아니다.**", ""]
+    for code, slugs in with_vocab:
+        out.append("- `%s`" % code)
+        out += ["  - `%s` — %s" % (s.get("slug"), s.get("note"))
+                for s in slugs]
+    bare = [c for c in usable if not cats[c].get("slugs")]
+    if bare:
+        out += ["",
+                "나머지(%s)는 슬러그를 **요구하지 않는다** — 아직 어휘가 "
+                "선언되지 않은 카테고리이고, 없는 것을 지어내면 무관한 지적이 "
+                "한 버킷에 뭉친다." % " · ".join("`%s`" % c for c in bare)]
+    return out
 
 def _contract_drift_lines(node, s):
     """계약이 바뀌어 프로파일이 다시 정해졌다는 것과, 파서가 흘린 줄.
@@ -1346,6 +1383,9 @@ def render_packet(root, phase, ctx, s, checks=None):
         # 07 이 05 와 같은 결함에 다른 이름을 붙이면 새 것으로 세어진다.
         # 목록을 봉투가 직접 준다 — 모델이 재구성하면 그 재구성이 곧 결함이다 (M48).
         parts.append(_open_from_05_render(_open_from_05(s)))
+        # 07 도 어휘를 대조받는 생산자다 (ADR-H035). 봉투가 먼저 말하지
+        # 않으면 필수를 모른 채 제출하고 exit 8 을 받는다 — M20 이 고친 모양.
+        parts.append(_vocabulary_render(root))
     warns = [c for c in (checks or []) if c.get("warn")]
     if warns:
         parts.append("## 경고\n\n" + "\n".join("- %s" % c["message"] for c in warns))
@@ -2602,6 +2642,7 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
     이미 끝난 것을 수리하거나 머지된 코드에 코멘트를 다는 것은 소음이다.
     """
     import ledger
+    import review as review_mod
     import review07 as rv7
 
     file = Path(file)
@@ -2659,6 +2700,10 @@ def _record_07(root, paths, s, phase_item, ctx, file, reviewer, round_):
         if f.get("category") not in known:
             errors.append("finding %s: taxonomy 에 없는 category 다 (%r)"
                           % (f.get("id"), f.get("category")))
+        else:
+            # 05 와 **같은 층**에서 같은 대조를 한다 (ADR-H035). 07 을 빼면
+            # 반사실의 `doc_contradicts_code` 후보 4건 중 2건이 사라진다.
+            errors += review_mod.slug_errors(f, known[f["category"]])
         if f.get("severity") not in verdict.SEVERITIES:
             errors.append("finding %s: severity 가 어휘 밖이다 (%r)"
                           % (f.get("id"), f.get("severity")))

@@ -1663,6 +1663,17 @@ git grep -I -l -E '"claude",[[:space:]]*"-p"' $(git rev-list --all)   # 0건
 
 ---
 
+**대상 리포와 그 주소를 여기 적는다** — <https://github.com/hyuham1335-stack/harness-template>
+(2026-09-08 생성 · public · 실 ref 없음). 같은 계정에 `project-harness` 라는 **별개**
+public 리포가 있어(2026-09-01) 이름만으로는 가른 적이 없다. **추출본에는 리모트가
+없다** — `filter-repo` 가 `origin` 을 지웠고 D 는 다시 붙이지 않았다. 붙이는 것과
+push 는 세션 G 의 몫이고(`ROADMAP` §6 항목 36 의 *"push 는 G 에서 한 번만"*), G 는
+`git remote add origin <위 주소>` 로 시작한다.
+
+**지금 push 하지 않는 이유를 실측으로 적는다.** 추출본은 스크럽(E) 전이라
+`harness/config.json` 이 `"shelfie"`·`adapter: nextjs-ts`·`roles[].owns: src/**` 를 그대로
+담고 있고 테스트 셋이 빨간불이다. 그 상태가 public 에 나가면 되돌릴 수 없다.
+
 **세션 D 는 여기서 멈춘다.** 추출본에 **커밋을 하나도 만들지 않는다.** "리포 골격"은
 `filter-repo` 가 만든 트리 그 자체이고, 손으로 얹는 것은 E·F 의 몫이다. 예측한
 빨간불을 D 가 고치면 그 순간 D 와 E 의 경계가 사라진다.

@@ -425,6 +425,27 @@ def _parse_stamp(value):
         return None
 
 
+def session_touched_run(born, updated, start, end):
+    """이 세션이 그 런을 **만졌는가**. 판정할 수 없으면 `None` (M59).
+
+    귀속을 **한 시점**으로 보면 안 된다. 세션 창은 `[직전 원장 줄의 ts, 이
+    줄의 ts]` 이고 런 구간은 `[created_at, updated_at]` 이며, 둘은 서로를
+    가로지른다 — P8 은 17:20 에 시작해 다음날 01:08 에 닫혔고 세션 둘이
+    걸쳐 있어서 `updated_at` 만 보면 앞 세션이 통째로 빠진다.
+
+    `start` 가 `None` 인 것은 **판정 불가가 아니다** — 원장 첫 줄이라 앞
+    경계가 없을 뿐이고 창이 열려 있다. 판정 불가는 런의 구간을 모르는
+    경우(`born`·`updated` 부재)이고, 그때 `latest_only` 로 단정하면 못 잰
+    것이 "무관하다" 는 주장으로 바뀐다 ([[ADR-H007]]).
+
+    **쓰는 쪽(`session_log`)과 읽는 쪽(`cost-state`)이 같은 함수를 부른다.**
+    같은 식을 두 곳이 각자 쓰면 갈라지고, 그때 원장이 자기와 모순된다.
+    """
+    if born is None or updated is None or end is None:
+        return None
+    return born <= end and (start is None or updated > start)
+
+
 def phase_durations(paths):
     """페이즈별 벽시계를 `events.jsonl` 에서 유도한다 (`PHASE_DURATION_BASIS`).
 
@@ -603,7 +624,11 @@ def counter_grant(s, name, extra, reason, now=None):
         raise ValueError("알 수 없는 카운터: %r (%s)" % (name, ", ".join(COUNTERS)))
     if not extra or extra < 0:
         raise ValueError("지급량은 양수여야 한다: %r" % (extra,))
-    node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": extra})
+    # 초기값은 **0 이다** (M58). `extra` 로 만들면 바로 아래가 그것에 `extra` 를
+    # 또 더해 소모 전 첫 지급이 상한을 두 배로 만든다. `max` 는 `grants` 의
+    # 파생값이므로 소모가 없는 상태의 상한은 지급 합계와 같아야 한다 —
+    # 선언값은 이 함수가 모르고 `counter_inc` 이 인자로 받는다.
+    node = s.setdefault("counters", {}).setdefault(name, {"used": 0, "max": 0})
     node["max"] = (node.get("max") or 0) + extra
     node.setdefault("grants", []).append(
         {"at": stamp(now), "extra": extra, "reason": reason})

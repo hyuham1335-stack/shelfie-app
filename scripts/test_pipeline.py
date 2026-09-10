@@ -594,6 +594,40 @@ class TestCounters:
         st.counter_grant(s, "repair", 2, "2차 지급")
         assert st.counter_inc(s, "repair", 2, "gate_failure") == (3, 6, False)
 
+    def test_소모_전_첫_지급이_상한을_두_배로_만들지_않는다(self, repo, request_file):
+        """M58 — `counter_grant` 가 카운터 노드를 만들 때 `extra` 를 두 번 센다.
+
+        `setdefault(name, {"used": 0, "max": extra})` 로 노드를 만든 **직후**
+        `node["max"] = (node.get("max") or 0) + extra` 를 하므로, 소모가 한 번도
+        없던 카운터의 첫 지급이 상한을 `2 * extra` 로 만든다.
+
+        **오늘 실물 경로로는 도달하지 않는다** — 지급은 `_grant_rounds` 한 곳에서
+        `round` 에만 일어나고 01 이 그 전에 반드시 라운드를 소모해 노드가 이미
+        있다. 재현이 라이브러리 직접 호출뿐이라는 것이 이 결함이 여섯 런을 조용히
+        지나온 이유다. **드러나지 않는다는 것이 안전하다는 뜻은 아니다** (M11 이
+        다섯 런 동안 같은 자리를 지났다).
+
+        `max` 는 `grants` 의 파생값이므로(`counter_grant` docstring) 소모가 없는
+        상태의 상한은 **지급 합계**여야 한다.
+        """
+        _, s = st.create_run(repo, "demo", request_file)
+        assert "repair" not in (s.get("counters") or {})
+        # 되돌리면 `(0, 10)` 이다 — 초기값 `extra` 에 `extra` 를 또 더한다.
+        assert st.counter_grant(s, "repair", 5, "소모 전 지급") == (0, 5)
+        assert s["counters"]["repair"]["max"] == 5, s["counters"]["repair"]
+
+    def test_소모_전_지급도_선언값_위에서_다시_계산된다(self, repo, request_file):
+        """M58 수정이 M56 의 재계산을 되돌리지 않는지 잠근다.
+
+        지급 직후의 `max` 는 지급 합계뿐이고 **선언값을 모른다** — 선언값은
+        `counter_inc` 이 인자로 받는다. 그러므로 그 첫 소모가 내는 실효 상한은
+        `선언값 + 지급 합` 이어야 한다. 초기값을 0 으로 내린 것이 이 경로를
+        깨뜨리면 여기가 먼저 빨간불이 된다.
+        """
+        _, s = st.create_run(repo, "demo", request_file)
+        st.counter_grant(s, "repair", 3, "소모 전 지급")
+        assert st.counter_inc(s, "repair", 2, "gate_failure") == (1, 5, False)
+
 
 class TestCounterSpendReason:
     """예산을 **무엇에 썼는지**가 원장에 남는가 (M47).
@@ -3177,6 +3211,31 @@ class TestRunCost:
         out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
         assert "latest_only" in out["render"]
 
+    def test_훅이_적은_basis_와_읽는_시점_판정이_일치한다(self, repo, request_file,
+                                                          tmp_path):
+        """M59 — 쓰는 쪽(`session_log`)과 읽는 쪽(`cost-state`)이 **한 함수**를
+        쓴다. 같은 식을 각자 쓰면 갈라지고, 그때 원장이 자기와 모순된다.
+        """
+        rid = self._run(repo, request_file, "2026-09-09T01:08:15+0900")
+        sl.append(repo, {"ts": "2026-09-08T16:51:21+0900", "session_id": "s0"})
+        for sid, ts in (("s1", "2026-09-09T09:05:38+0900"),
+                        ("s2", "2026-09-09T10:21:20+0900")):
+            rec = sl.collect(repo, dict(HOOK_IN, session_id=sid),
+                             now=st._parse_stamp(ts))
+            sl.append(repo, rec)
+        troot = tmp_path / "projects"
+        self._transcript(troot, "s1", 4.34)
+        self._transcript(troot, "s2", 20.29)
+
+        out = cli.run_cost(repo, run_id=rid, transcript_root=troot)
+        written = {r["session_id"]: (r.get("run") or {}).get("basis")
+                   for r in _ledger_lines(repo)
+                   if r.get("session_id") in ("s1", "s2")}
+        read = {x["session_id"]: x.get("basis")
+                for x in out["data"]["sessions"]}
+        assert written == {"s1": "touched", "s2": "latest_only"}
+        assert read == written
+
     def test_트랜스크립트가_없는_세션은_수로_적힌다(self, repo, request_file,
                                                     tmp_path):
         """빠진 것을 세지 않으면 합계가 얼마나 모자란지 알 수 없다."""
@@ -3306,6 +3365,96 @@ class TestSessionLedger:
         assert rec["run"]["rounds"] == 3
         assert rec["run"]["model_calls"] == 10
         assert rec["tests"]["app"] == 1333
+
+    def _run_dir(self, repo, rid, created_at, updated_at):
+        """런은 **구간**을 갖는다 — `[created_at, updated_at]`."""
+        d = repo / "_workspace" / "runs" / rid
+        d.mkdir(parents=True, exist_ok=True)
+        body = {"run_id": rid, "grade": "PASS_WITH_GAPS",
+                "gaps": ["stage_absent:e2e"],
+                "counters": {"round": {"used": 9}},
+                "budget": {"model_calls": {"total": 15}},
+                "tests": {"ran": 1459}}
+        if created_at is not None:
+            body["created_at"] = created_at
+        if updated_at is not None:
+            body["updated_at"] = updated_at
+        (d / "state.json").write_text(json.dumps(body, ensure_ascii=False),
+                                      encoding="utf-8")
+        return rid
+
+    def test_안_만진_런을_자기_것이라_적지_않는다(self, repo):
+        """M59 — `_latest_run` 이 가장 최근 런 디렉터리를 **무조건** 집는다.
+
+        실물 원장에 그 줄이 있다: P8(`20260908-1720-dca1`)은 2026-09-09
+        01:08 에 닫혔는데 09-10 13:12 에 끝난 C5 세션이 그 `run_id` 를 달았고,
+        그 세션은 그 런을 만진 적이 없다.
+
+        **침묵으로 지우지 않는다.** `run` 칸을 통째로 빼면 "파이프라인 런이
+        아예 없던 세션" 과 원장에서 구분되지 않는다 — 두 사실을 같은 침묵으로
+        뭉개는 것이 이 리포가 반복해서 잡아 온 모양이다. 그래서 `run_id` 와
+        `basis` 만 남기고, 등급·라운드처럼 **그 런의 사실**은 안 싣는다.
+        """
+        self._run_dir(repo, "20260908-1720-dca1",
+                      "2026-09-08T17:20:01+0900", "2026-09-09T01:08:15+0900")
+        sl.append(repo, {"ts": "2026-09-10T00:39:15+0900", "session_id": "앞"})
+        rec = sl.collect(repo, HOOK_IN,
+                         now=st._parse_stamp("2026-09-10T13:12:07+0900"))
+        assert rec["run"]["basis"] == "latest_only"
+        assert rec["run"]["run_id"] == "20260908-1720-dca1"
+        assert "grade" not in rec["run"], rec["run"]
+        assert "rounds" not in rec["run"], rec["run"]
+
+    def test_만진_런은_touched_로_그대로_실린다(self, repo):
+        """겹침 판정이 참인 경로에서는 기존 칸이 한 개도 안 줄어야 한다."""
+        self._run_dir(repo, "20260908-1720-dca1",
+                      "2026-09-08T17:20:01+0900", "2026-09-09T01:08:15+0900")
+        sl.append(repo, {"ts": "2026-09-08T16:51:21+0900", "session_id": "앞"})
+        rec = sl.collect(repo, HOOK_IN,
+                         now=st._parse_stamp("2026-09-09T09:05:38+0900"))
+        assert rec["run"]["basis"] == "touched"
+        assert rec["run"]["grade"] == "PASS_WITH_GAPS"
+        assert rec["run"]["rounds"] == 9
+        assert rec["run"]["model_calls"] == 15
+        assert rec["tests"] == {"app": 1459, "source": "run_state"}
+
+    def test_원장_첫_줄은_창이_열려_있다(self, repo):
+        """직전 줄이 없는 것은 **판정 불가가 아니다** — 앞 경계가 없을 뿐이다.
+
+        `cost-state` 의 `start is None` 분기와 같은 자리다.
+        """
+        self._run_dir(repo, "20260908-1720-dca1",
+                      "2026-09-08T17:20:01+0900", "2026-09-09T01:08:15+0900")
+        rec = sl.collect(repo, HOOK_IN,
+                         now=st._parse_stamp("2026-09-09T09:05:38+0900"))
+        assert rec["run"]["basis"] == "touched"
+
+    def test_구간을_모르는_런은_단정하지_않는다(self, repo):
+        """`created_at`·`updated_at` 이 없으면 `basis` 키를 **안 만든다.**
+
+        `latest_only` 로 단정하면 못 잰 것이 "무관하다" 는 주장으로 바뀐다
+        (`cli.py` 의 같은 자리가 같은 이유를 적고 있다 · ADR-H007).
+        """
+        self._run_dir(repo, "20260903-1220-d9c0", None, None)
+        rec = sl.collect(repo, HOOK_IN)
+        assert "basis" not in rec["run"], rec["run"]
+        assert rec["run"]["grade"] == "PASS_WITH_GAPS"
+        assert rec["tests"]["app"] == 1459
+
+    def test_안_만진_런의_테스트_수를_자기_것이라_적지_않는다(self, repo):
+        """`tests` 칸도 같이 오염됐다 — 실물 51번째 줄이 1459 를 실었는데
+        그 세션(C5)의 실제 앱 테스트는 1,460 이다. `latest_only` 면
+        `calibration.json` 으로 떨어지고 `source` 가 그 사실을 말한다."""
+        self._run_dir(repo, "20260908-1720-dca1",
+                      "2026-09-08T17:20:01+0900", "2026-09-09T01:08:15+0900")
+        cal = repo / "harness" / "calibration.json"
+        cal.parent.mkdir(parents=True, exist_ok=True)
+        cal.write_text(json.dumps({"stages": {"full": {"tests_ran": 1460}}}),
+                       encoding="utf-8")
+        sl.append(repo, {"ts": "2026-09-10T00:39:15+0900", "session_id": "앞"})
+        rec = sl.collect(repo, HOOK_IN,
+                         now=st._parse_stamp("2026-09-10T13:12:07+0900"))
+        assert rec["tests"] == {"app": 1460, "source": "calibration"}
 
     def test_append_only_keeps_existing_lines(self, repo):
         sl.append(repo, {"ts": "t1", "marker": "먼저"})

@@ -215,8 +215,49 @@ def _latest_run(root):
         return None
 
 
-def _run_summary(run_state):
-    """런이 남긴 것 중 **원장에 의미가 있는 칸만** 옮긴다. 없는 칸은 안 만든다."""
+def _prev_ts(root):
+    """직전 원장 줄의 `ts`. 세션 창의 **앞 경계**다 (M59).
+
+    없으면 `None` 이고 그것은 판정 불가가 아니다 — 원장 첫 줄이라 창이 열려
+    있다는 뜻이고, `state.session_touched_run` 이 그렇게 다룬다.
+    """
+    path = Path(root) / LEDGER_REL
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return None
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            return st._parse_stamp(json.loads(line).get("ts"))
+        except ValueError:
+            return None
+    return None
+
+
+def _touched(root, run_state, now_ts):
+    """이 세션이 그 런을 만졌는가. 판정 불가는 `None` (M59).
+
+    판정 자체는 `cost-state` 가 읽는 시점에 부르는 것과 **같은 함수**다.
+    """
+    return st.session_touched_run(
+        st._parse_stamp((run_state or {}).get("created_at")),
+        st._parse_stamp((run_state or {}).get("updated_at")),
+        _prev_ts(root), st._parse_stamp(now_ts))
+
+
+def _run_summary(run_state, touched=None):
+    """런이 남긴 것 중 **원장에 의미가 있는 칸만** 옮긴다. 없는 칸은 안 만든다.
+
+    **안 만진 런은 `run_id` 와 `basis` 만 남긴다** (M59). 등급·결손·라운드는
+    *그 런의* 사실이지 이 세션의 것이 아니다. 그렇다고 `run` 칸을 통째로 빼면
+    "파이프라인 런이 아예 없던 세션" 과 원장에서 구분되지 않는다 — 두 사실을
+    같은 침묵으로 뭉개지 않는다.
+    """
+    if touched is False:
+        rid = run_state.get("run_id")
+        return {"run_id": rid, "basis": "latest_only"} if rid else None
     out = {}
     for key in ("run_id", "grade", "run_status"):
         if run_state.get(key) is not None:
@@ -229,6 +270,10 @@ def _run_summary(run_state):
     calls = ((run_state.get("budget") or {}).get("model_calls") or {}).get("total")
     if calls is not None:
         out["model_calls"] = calls
+    if touched is True and out:
+        out["basis"] = "touched"
+    # `touched is None` 이면 키를 안 만든다 — 판정할 수 없는데 `latest_only`
+    # 로 단정하면 못 잰 것이 "무관하다" 는 주장으로 바뀐다 (ADR-H007).
     return out or None
 
 
@@ -308,11 +353,15 @@ def collect(root, hook_input, *, transcript_root=None, now=None):
         rec["uncommitted"] = uncommitted
 
     run_state = _latest_run(root)
+    touched = None
     if run_state:
-        summary = _run_summary(run_state)
+        touched = _touched(root, run_state, rec["ts"])
+        summary = _run_summary(run_state, touched)
         if summary:
             rec["run"] = summary
-    tests = _tests(root, run_state)
+    # 안 만진 런의 테스트 수도 이 세션의 사실이 아니다 — `calibration.json`
+    # 으로 떨어지고 `source` 가 그 사실을 같은 칸에서 말한다 (M59).
+    tests = _tests(root, None if touched is False else run_state)
     if tests:
         rec["tests"] = tests
 
